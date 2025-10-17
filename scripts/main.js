@@ -1,12 +1,14 @@
 let socket;
 
 Hooks.once("socketlib.ready", () => {
+	console.log("Socketlib is ready!");
 	socket = socketlib.registerModule("my-module");
 	socket.register("hello", showHelloMessage);
 	socket.register("add", add);
 });
 
 Hooks.once("ready", async () => {
+	console.log("System is ready!");
 	// Let's send a greeting to all other connected users.
 	// Functions can either be called by their given name...
 	socket.executeForEveryone("hello", game.user.name);
