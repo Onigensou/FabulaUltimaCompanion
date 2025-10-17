@@ -2,7 +2,7 @@ let socket;
 
 Hooks.once("socketlib.ready", () => {
 	console.log("Socketlib is ready!");
-	socket = socketlib.registerModule("my-module");
+	socket = socketlib.registerModule("fabula-ultima-companion");
 	socket.register("hello", showHelloMessage);
 	socket.register("add", add);
 });
