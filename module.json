@@ -16,6 +16,6 @@
   "esmodules": ["scripts/main.js"],
   "styles": ["styles/style.css"],
   "packs": [],
-  "manifest": "https://github.com/Onigensou/FabulaUltimaCompanion/module.json",
+  "manifest": "https://raw.githubusercontent.com/Onigensou/FabulaUltimaCompanion/refs/heads/main/module.json",
   "download": "https://github.com/Onigensou/FabulaUltimaCompanion.zip"
 }
