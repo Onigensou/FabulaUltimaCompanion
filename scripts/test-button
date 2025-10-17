@@ -1,34 +1,72 @@
-// fu-utils.js — Foundry VTT v12
-// Exposes a single global function: FU.applyAction(opts)
+// fu-chatbtn.js — Foundry VTT v12
+// Global delegated listener for chat-card buttons using [data-fu-apply].
+// Same method you approved, but auto-installed for every client via module.
 
-Hooks.once("init", () => {
-  // Global namespace (safe + reuse)
-  const FU = (window.FU ??= {});
+const MODULE_ID = "fu-chatbtn";
 
-  /**
-   * Apply button logic (DOM-free).
-   * @param {object} opts
-   * @param {string} [opts.chatMsgId]
-   * @param {object} [opts.payload]
-   * @returns {Promise<{ok:boolean, message?:string, appliedBy?:string, code?:string}>}
-   */
-  FU.applyAction = async function applyAction(opts = {}) {
+Hooks.once("ready", () => {
+  // Prefer #chat-log; fallback to body (some UIs change containers)
+  const root = document.querySelector("#chat-log") || document.body;
+  if (!root) return;
+
+  // Idempotent (per client)
+  if (root.__fuChatBtnBound) return;
+  root.__fuChatBtnBound = true;
+
+  root.addEventListener("click", async (ev) => {
+    const btn = ev.target.closest?.("[data-fu-apply]");
+    if (!btn) return;
+
+    // Double-click / lag guard
+    if (btn.dataset.fuLock === "1") return;
+    btn.dataset.fuLock = "1";
+
+    // Grab the chat message context
+    const msgEl = btn.closest?.(".message");
+    const msgId = msgEl?.dataset?.messageId;
+    const chatMsg = msgId ? game.messages.get(msgId) : null;
+
+    // Optional payload from button attribute
+    let args = {};
+    try { args = btn.dataset.fuArgs ? JSON.parse(btn.dataset.fuArgs) : {}; }
+    catch { args = {}; }
+
+    // GM-only guard
     if (!game.user?.isGM) {
-      return { ok: false, code: "not-gm", message: "Only the GM can Apply." };
+      ui.notifications?.warn("Only the GM can press Apply.");
+      btn.dataset.fuLock = "0"; // allow GM to press later
+      return;
     }
 
-    const { chatMsgId = "(unknown)", payload = {} } = opts;
+    try {
+      // --- POC UI feedback (you can keep/replace this) ---
+      btn.disabled = true;
+      btn.textContent = "Applied ✔";
+      btn.style.filter = "grayscale(1)";
 
-    // --- POC behavior; replace with real logic later ---
-    console.log(`[fu-utils] Apply OK by GM ${game.user.name} on message ${chatMsgId}`, { payload });
+      const stamp = msgEl?.querySelector?.("[data-fu-stamp]");
+      if (stamp) {
+        stamp.textContent = `Applied by GM: ${game.user.name}`;
+        stamp.style.opacity = ".9";
+      }
 
-    // Example (later): call your damage macro here
-    // const adv = game.macros.getName("AdvanceDamage");
-    // if (!adv) return { ok:false, code:"missing-macro", message:'Macro "AdvanceDamage" not found.' };
-    // await adv.execute({ __AUTO: true, __PAYLOAD: payload });
+      // --- Your real logic goes here ---
+      // Example:
+      // const adv = game.macros.getName("AdvanceDamage");
+      // await adv?.execute({ __AUTO: true, __PAYLOAD: { ...args } });
 
-    return { ok: true, appliedBy: game.user.name, message: "Applied." };
-  };
+      console.log(`[${MODULE_ID}] Apply clicked by GM:`, game.user.name, { msgId, chatMsg, args });
+      ui.notifications?.info(`Applied by GM: ${game.user.name}`);
+    } catch (err) {
+      console.error(err);
+      ui.notifications?.error("Apply failed (see console).");
+      // revert + unlock so GM can try again
+      btn.disabled = false;
+      btn.textContent = "Apply (GM)";
+      btn.style.filter = "";
+      btn.dataset.fuLock = "0";
+    }
+  }, { capture: false });
 
-  console.log("[fu-utils] init — FU.applyAction is ready");
+  console.log(`[${MODULE_ID}] ready — global chat-button listener installed on this client`);
 });
