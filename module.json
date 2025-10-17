@@ -14,7 +14,7 @@
     }
   ],
   "socket": true,
-  "scripts": ["scripts/main.js"],
+  "scripts": ["scripts/main.js", "scripts/test-button.js"],
   "styles": ["styles/style.css"],
   "packs": [],
   "manifest": "https://raw.githubusercontent.com/Onigensou/FabulaUltimaCompanion/refs/heads/main/module.json",
