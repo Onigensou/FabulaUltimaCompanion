@@ -6,15 +6,21 @@ const MODULE_ID = "fu-chatbtn";
 
 Hooks.once("ready", async () => {
   
-  // Hide [data-fu-apply] for non-GM clients (works across all chat cards)
-  if (!game.user?.isGM) {
-    const style = document.createElement("style");
-    style.id = "fu-chatbtn-hide-apply";
-    style.textContent = `
-      [data-fu-apply] { display: none !important; }
-    `;
-    document.head.appendChild(style);
-  }
+  // Hide ALL action-card buttons for non-GMs
+if (!game.user?.isGM) {
+  const style = document.createElement("style");
+  style.id = "fu-chatbtn-hide-player-buttons";
+  style.textContent = `
+    /* Hide the whole button row and any individual buttons */
+    .fu-btns,
+    [data-fu-apply],
+    [data-action="dismiss"] {
+      display: none !important;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
   
   const root = document.querySelector("#chat-log") || document.body;
   if (!root) return;
