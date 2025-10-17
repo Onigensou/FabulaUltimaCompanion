@@ -4,7 +4,7 @@
 
 const MODULE_ID = "fu-chatbtn";
 
-Hooks.once("ready", () => {
+Hooks.once("ready", async () => {
   // Prefer #chat-log; fallback to body (some UIs change containers)
   const root = document.querySelector("#chat-log") || document.body;
   if (!root) return;
