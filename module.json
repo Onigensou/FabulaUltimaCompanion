@@ -1,0 +1,21 @@
+{
+  "id": "fabula-ultima-companion",
+  "title": "FabulaUltimaCompanion",
+  "description": "Adds custom hooks and cool functionality.",
+  "version": "1.0.0",
+  "compatibility": {
+    "minimum": "12",
+    "verified": "12"
+  },
+  "authors": [
+    {
+      "name": "Onigensou",
+      "url": "https://github.com/Onigensou"
+    }
+  ],
+  "esmodules": ["scripts/main.js"],
+  "styles": ["styles/style.css"],
+  "packs": [],
+  "manifest": "https://github.com/Onigensou/FabulaUltimaCompanion/module.json",
+  "download": "https://github.com/Onigensou/FabulaUltimaCompanion.zip"
+}
