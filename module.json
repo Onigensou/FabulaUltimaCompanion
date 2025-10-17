@@ -17,5 +17,5 @@
   "styles": ["styles/style.css"],
   "packs": [],
   "manifest": "https://raw.githubusercontent.com/Onigensou/FabulaUltimaCompanion/refs/heads/main/module.json",
-  "download": "https://github.com/Onigensou/FabulaUltimaCompanion.zip"
+  "download": "https://codeload.github.com/Onigensou/FabulaUltimaCompanion/zip/refs/tags/v1.0.0"
 }
