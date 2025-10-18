@@ -17,8 +17,10 @@
   "scripts": [
     "scripts/main.js",
     "scripts/applyDamage-button.js",
+    "scripts/invokeTrait-button.js",
+    "scripts/invokeBond-button.js",
     "scripts/create-damage-card.js"
-  ],
+  ]
   "styles": ["styles/style.css"],
   "packs": [],
   "manifest": "https://raw.githubusercontent.com/Onigensou/FabulaUltimaCompanion/refs/heads/main/module.json",
