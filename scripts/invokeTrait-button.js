@@ -135,28 +135,36 @@ Hooks.once("ready", () => {
         hrUsed: next.meta?.ignoreHR ? null : hr
       };
 
-      // Recompute damage preview bits dependent on HR (weapon attacks, non-heal)
-      const elem   = String(next?.meta?.elementType || "physical").toLowerCase();
-      const healRx = /^(heal|healing|recovery|restore|restoration)$/i;
-      const declaresHealing = healRx.test(elem);
-      const ignoreHR = !!next?.meta?.ignoreHR;
+// Recompute damage preview that depends on HR
+const elem   = String(next?.meta?.elementType || "physical").toLowerCase();
+const healRx = /^(heal|healing|recovery|restore|restoration)$/i;
+const declaresHealing = healRx.test(elem);
+const ignoreHR = !!next?.meta?.ignoreHR;
 
-      const flatBonus = Number(next?.core?.damageBonus ?? next?.advPayload?.bonus ?? 0);
-      const baseVal   = Math.max(0, Number(next?.core?.damageBonus ?? 0)); // original base (no HR)
-      const hrBonus   = (!declaresHealing && !ignoreHR) ? hr : 0;
-      const combined  = declaresHealing ? baseVal : (baseVal + hrBonus);
+// 🔧 Rebuild the *base without HR* from the previous card
+const prevCombined = Number(next?.meta?.baseValueStrForCard ?? 0);
+const prevHr       = Number(next?.meta?.hrBonus ?? 0);
+// If healing, prevCombined already is the base; if damage, strip the old HR (unless HR was ignored)
+const baseNoHR = declaresHealing ? prevCombined : Math.max(0, prevCombined - (ignoreHR ? 0 : prevHr));
 
-      next.meta.declaresHealing = declaresHealing;
-      next.meta.hasDamageSection = (combined > 0);
-      next.meta.hrBonus = hrBonus;
-      next.meta.baseValueStrForCard = String(combined);
-      if (next.advPayload) {
-        next.advPayload.hr = ignoreHR ? null : hr;
-        next.advPayload.isCrit = !!isCrit;
-        next.advPayload.isFumble = !!isFumble;
-        // baseValue for AdvanceDamage: keep your existing pattern
-        next.advPayload.baseValue = declaresHealing ? `+${baseVal}` : String(combined);
-      }
+// New HR from reroll
+const newHrBonus = (!declaresHealing && !ignoreHR) ? hr : 0;
+const newCombined = declaresHealing ? baseNoHR : (baseNoHR + newHrBonus);
+
+// Update meta + advPayload to match CreateActionCard expectations
+next.meta.declaresHealing = declaresHealing;
+next.meta.hasDamageSection = (newCombined > 0);
+next.meta.hrBonus = newHrBonus;
+next.meta.baseValueStrForCard = String(newCombined);
+
+if (next.advPayload) {
+  next.advPayload.hr = ignoreHR ? null : hr;
+  next.advPayload.isCrit = !!isCrit;
+  next.advPayload.isFumble = !!isFumble;
+  // For AdvanceDamage: healing uses "+<base>", damage uses the combined number
+  next.advPayload.baseValue = declaresHealing ? `+${baseNoHR}` : String(newCombined);
+}
+
 
       // Spawn a fresh Action Card; then delete the old one
       const cardMacro = game.macros.getName("CreateActionCard");
