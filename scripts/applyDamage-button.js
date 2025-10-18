@@ -6,13 +6,13 @@ const MODULE_ID = "fu-chatbtn";
 
 Hooks.once("ready", async () => {
   
-  // Hide ALL action-card buttons for non-GMs
+  // In scripts/applyDamage-button.js — replace the non-GM CSS block with:
 if (!game.user?.isGM) {
   const style = document.createElement("style");
   style.id = "fu-chatbtn-hide-player-buttons";
   style.textContent = `
-    /* Hide the whole button row and any individual buttons */
-    .fu-btns,
+    /* Players should NOT see/press Apply or any dismiss button,
+       but SHOULD see Invoke Trait/Bond */
     [data-fu-apply],
     [data-action="dismiss"] {
       display: none !important;
