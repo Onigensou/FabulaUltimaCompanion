@@ -8,6 +8,8 @@
 const MODULE_NS = "fabula-ultima-companion";
 const CARD_FLAG = "actionCard";
 
+console.log("[fu-invokeBond] script file loaded"); // add near top
+
 Hooks.once("ready", () => {
   const root = document.querySelector("#chat-log") || document.body;
   if (!root || root.__fuInvokeBondBound) return;
