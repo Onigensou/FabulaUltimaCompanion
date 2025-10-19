@@ -11,44 +11,72 @@
 
   console.log("[fu-invokeButtons] script file loaded");
 
-// ---------- helpers (shared) ----------
-async function getPayload(chatMsg) {
-  try {
-    // getFlag is synchronous in practice; awaiting is harmless
-    const f = await chatMsg.getFlag(MODULE_NS, CARD_FLAG);
-    // support both shapes: {payload:{...}} and legacy {...}
-    return f?.payload ?? f ?? null;
-  } catch (e) {
-    console.warn("[fu-invokeButtons] getPayload failed:", e);
-    return null;
-  }
-}
-
-async function rebuildCard(nextPayload, oldMsg) {
-  const cardMacro = game.macros.getName("CreateActionCard");
-  if (!cardMacro) return ui.notifications.error('Macro "CreateActionCard" not found.');
-
-  // Your CreateActionCard reads globals (__AUTO/__PAYLOAD); set them, run, then clean up.
-  try {
-    window.__AUTO = true;
-    window.__PAYLOAD = nextPayload;
-    await cardMacro.execute();      // no args: it uses the globals
-  } finally {
-    try { delete window.__AUTO; } catch {}
-    try { delete window.__PAYLOAD; } catch {}
+  // ---------- helpers (shared) ----------
+  async function getPayload(chatMsg) {
+    try {
+      // getFlag isn't a Promise in V12; awaiting is harmless and keeps the signature uniform
+      const f = await chatMsg.getFlag(MODULE_NS, CARD_FLAG);
+      return f?.payload ?? f ?? null; // support {payload:{...}} and legacy {...}
+    } catch (e) {
+      console.warn("[fu-invokeButtons] getPayload failed:", e);
+      return null;
+    }
   }
 
-  try { await oldMsg.delete(); } catch {}
-}
+  async function rebuildCard(nextPayload, oldMsg) {
+    const cardMacro = game.macros.getName("CreateActionCard");
+    if (!cardMacro) return ui.notifications.error('Macro "CreateActionCard" not found.');
 
-  // Actor → die size for attribute label (e.g., "DEX"→d?); safe defaults
+    // Your CreateActionCard reads globals (__AUTO/__PAYLOAD)
+    try {
+      window.__AUTO = true;
+      window.__PAYLOAD = nextPayload;
+      await cardMacro.execute(); // no args: it uses the globals
+    } finally {
+      try { delete window.__AUTO; } catch {}
+      try { delete window.__PAYLOAD; } catch {}
+    }
+
+    try { await oldMsg.delete(); } catch {}
+  }
+
+  async function getActorFromUuid(uuid) {
+    if (!uuid) return null;
+    try {
+      const doc = await fromUuid(uuid);
+      if (!doc) return null;
+      if (doc?.actor) return doc.actor;                 // TokenDocument or embedded context
+      if (doc?.type === "Actor") return doc;            // Actor doc
+      return doc?.document?.actor ?? null;              // Fallback from embedded docs
+    } catch {
+      return null;
+    }
+  }
+
+  function ensureOwner(actor, what = "this action") {
+    const ok = actor?.isOwner || game.user?.isGM;
+    if (!ok) ui.notifications?.warn(`Only the attacker’s owner (or GM) can ${what}.`);
+    return ok;
+  }
+
+  function lock(btn) {
+    if (!btn) return true;
+    if (btn.dataset.fuLock === "1") return true;
+    btn.dataset.fuLock = "1";
+    return false;
+  }
+  function unlock(btn) {
+    if (btn) btn.dataset.fuLock = "0";
+  }
+
+  // Actor → die size for attribute label (e.g., "DEX"→d?)
   function dieSizeFor(actor, attr) {
     const k = String(attr || "").toLowerCase();
     const P = actor?.system?.props ?? {};
     const cur  = Number(P[`${k}_current`]);
     const base = Number(P[`${k}_base`]);
     const n = Number.isFinite(cur) ? cur : (Number.isFinite(base) ? base : 6);
-    return [4,6,8,10,12,20].includes(n) ? n : 6;
+    return [4, 6, 8, 10, 12, 20].includes(n) ? n : 6;
   }
 
   // Extract bonds in expected shape: { index, name, bonus, filled }
@@ -61,7 +89,7 @@ async function rebuildCard(nextPayload, oldMsg) {
       const e1 = !!P[`emotion_${i}_1`];
       const e2 = !!P[`emotion_${i}_2`];
       const e3 = !!P[`emotion_${i}_3`];
-      const filled = [e1, e2, e3].filter(Boolean).length;
+      const filled = (e1 ? 1 : 0) + (e2 ? 1 : 0) + (e3 ? 1 : 0);
       const bonus = Math.min(3, Math.max(0, filled));
       bonds.push({ index: i, name, bonus, filled });
     }
@@ -102,7 +130,7 @@ async function rebuildCard(nextPayload, oldMsg) {
     const invoked = payload?.meta?.invoked ?? { trait:false, bond:false };
     if (invoked.trait) return ui.notifications?.warn("Trait already invoked for this action.");
 
-    const atkUuid = payload?.meta?.attackerUuid ?? payload?.meta?.attacker_uuid ?? null;
+    const atkUuid  = payload?.meta?.attackerUuid ?? payload?.meta?.attacker_uuid ?? null;
     const attacker = await getActorFromUuid(atkUuid);
     if (!ensureOwner(attacker, "Invoke Trait")) return;
 
@@ -260,6 +288,7 @@ async function rebuildCard(nextPayload, oldMsg) {
     root.__fuInvokeButtonsBound = true;
 
     root.addEventListener("click", async (ev) => {
+      // NOTE: keep selectors EXACTLY as used in your chat card HTML
       const btnTrait = ev.target.closest?.("[data-fu-trait]");
       const btnBond  = btnTrait ? null : ev.target.closest?.("[data-fu-bond]"); // avoid double hits
 
