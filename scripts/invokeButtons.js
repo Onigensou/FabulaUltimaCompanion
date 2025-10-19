@@ -161,8 +161,10 @@
       },
       default: "ok"
     }).render(true));
-    if (!choice) return;
-
+    if (!choice) {
+  ui.notifications.info("Trait invoke cancelled.");
+  return "CANCELLED";
+}
     // Reroll
     const dA = dieSizeFor(attacker, A.A1);
     const dB = dieSizeFor(attacker, A.A2);
@@ -229,57 +231,74 @@
     await rebuildCard(next, chatMsg);
   }
 
-  async function handleInvokeBond(btn, chatMsg) {
-    const payload = await getPayload(chatMsg);
-    if (!payload) return ui.notifications?.error("Invoke Bond: Missing payload on the card.");
+async function handleInvokeBond(btn, chatMsg) {
+  const payload = await getPayload(chatMsg);
+  if (!payload) return ui.notifications?.error("Invoke Bond: Missing payload on the card.");
 
-    const invoked = payload?.meta?.invoked ?? { trait:false, bond:false };
-    if (invoked.bond) return ui.notifications?.warn("Bond already invoked for this action.");
+  const invoked = payload?.meta?.invoked ?? { trait:false, bond:false };
+  if (invoked.bond) return ui.notifications?.warn("Bond already invoked for this action.");
 
-    const atkUuid  = payload?.meta?.attackerUuid ?? payload?.meta?.attacker_uuid ?? null;
-    const attacker = await getActorFromUuid(atkUuid);
-    if (!ensureOwner(attacker, "Invoke Bond")) return;
+  const atkUuid  = payload?.meta?.attackerUuid ?? payload?.meta?.attacker_uuid ?? null;
 
-    const A = payload.accuracy;
-    if (!A) return ui.notifications?.warn("No Accuracy check to modify.");
+  // We still gate by ownership, but we no longer read bonds from the actor.
+  const attacker = await getActorFromUuid(atkUuid);
+  if (!ensureOwner(attacker, "Invoke Bond")) return;
 
-    const bonds = collectBonds(attacker);
-    if (!bonds.length) return ui.notifications?.warn("No Bonds found on this actor.");
-    const viable = bonds.filter(b => b.bonus > 0);
-    if (!viable.length) return ui.notifications?.warn("No eligible Bonds (no filled emotions).");
+  const A = payload.accuracy;
+  if (!A) return ui.notifications?.warn("No Accuracy check to modify.");
 
-    let chosen = viable[0];
-    if (viable.length > 1) {
-      const pick = await chooseBondDialog(bonds);
-      if (!pick) return;
-      chosen = bonds.find(b => b.index === pick) ?? viable[0];
-    }
+  // 🔹 Prefer bonds from payload.meta (snapshot made by ActionDataFetch)
+  const bondSnap = payload?.meta?.bonds || { list:[], viable:[] };
+  const viable = Array.isArray(bondSnap.viable) ? bondSnap.viable
+               : Array.isArray(bondSnap.list)   ? bondSnap.list.filter(b => (b?.bonus||0) > 0)
+               : [];
 
-    const addBonus = Number(chosen.bonus || 0);
-    if (!(addBonus > 0)) return ui.notifications?.warn("Chosen Bond gives no bonus.");
+  if (!viable.length) return ui.notifications?.warn("No eligible Bonds on this action.");
 
-    const next = foundry.utils.deepClone(payload);
-    next.meta = next.meta || {};
-    next.meta.invoked = next.meta.invoked || { trait:false, bond:false };
-    next.meta.invoked.bond = true;
-    next.meta.bondInfo = { index: chosen.index, name: chosen.name, bonus: addBonus };
-
-    const oldBonus = Number(A.checkBonus || 0);
-    const newBonus = oldBonus + addBonus;
-    const rA = Number(A.rA?.total ?? 0);
-    const rB = Number(A.rB?.total ?? 0);
-    const newTotal = rA + rB + newBonus;
-
-    next.accuracy = {
-      ...A,
-      rA: { total: rA, result: A.rA?.result ?? rA },
-      rB: { total: rB, result: A.rB?.result ?? rB },
-      checkBonus: newBonus,
-      total: newTotal
-    };
-
-    await rebuildCard(next, chatMsg);
+  // If multiple, ask the user; otherwise auto-pick
+  let chosen = viable[0];
+  if (viable.length > 1) {
+    const opts = viable.map(b => `<option value="${b.index}">${foundry.utils.escapeHTML(b.name)} — +${b.bonus}</option>`).join("");
+    const content = `<form>
+      <div class="form-group">
+        <label>Choose a Bond to Invoke</label>
+        <select name="bondIndex" style="width:100%;">${opts}</select>
+      </div></form>`;
+    const pick = await new Promise(res => new Dialog({
+      title:"Invoke Bond — Choose Bond", content,
+      buttons:{ ok:{label:"Invoke", callback:html=>res(Number(html[0].querySelector('[name="bondIndex"]').value))},
+                cancel:{label:"Cancel", callback:()=>res(null)} },
+      default:"ok"
+    }).render(true));
+    if (pick == null) { ui.notifications.info("Bond invoke cancelled."); return "CANCELLED"; }
+    chosen = viable.find(b => Number(b.index) === Number(pick)) ?? chosen;
   }
+
+  const addBonus = Number(chosen.bonus || 0);
+  if (!(addBonus > 0)) return ui.notifications?.warn("Chosen Bond gives no bonus.");
+
+  const next = foundry.utils.deepClone(payload);
+  next.meta = next.meta || {};
+  next.meta.invoked = next.meta.invoked || { trait:false, bond:false };
+  next.meta.invoked.bond = true;
+  next.meta.bondInfo = { index: chosen.index, name: chosen.name, bonus: addBonus };
+
+  const oldBonus = Number(A.checkBonus || 0);
+  const newBonus = oldBonus + addBonus;
+  const rA = Number(A.rA?.total ?? 0);
+  const rB = Number(A.rB?.total ?? 0);
+  const newTotal = rA + rB + newBonus;
+
+  next.accuracy = {
+    ...A,
+    rA: { total: rA, result: A.rA?.result ?? rA },
+    rB: { total: rB, result: A.rB?.result ?? rB },
+    checkBonus: newBonus,
+    total: newTotal
+  };
+
+  await rebuildCard(next, chatMsg);
+}
 
   // ---------- binder (single listener handles both buttons) ----------
   function bindInvokeButtons() {
