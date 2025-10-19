@@ -12,30 +12,28 @@
   console.log("[fu-invokeButtons] script file loaded");
 
   // ---------- helpers (shared) ----------
-const esc = (v) => {
-  const s = String(v ?? "");
-  // Use Foundry's helper if present (V12 exposes TextEditor.escapeHTML)
-  if (window.TextEditor?.escapeHTML) return TextEditor.escapeHTML(s);
-  // Fallback
-  return s.replace(/[&<>"']/g, (m) => (
-    m === "&" ? "&amp;" :
-    m === "<" ? "&lt;"  :
-    m === ">" ? "&gt;"  :
-    m === '"' ? "&quot;":
-                "&#39;"
-  ));
-};
+  const esc = (v) => {
+    const s = String(v ?? "");
+    if (window.TextEditor?.escapeHTML) return TextEditor.escapeHTML(s);
+    return s.replace(/[&<>"']/g, (m) => (
+      m === "&" ? "&amp;" :
+      m === "<" ? "&lt;"  :
+      m === ">" ? "&gt;"  :
+      m === '"' ? "&quot;":
+                  "&#39;"
+    ));
+  };
 
-async function getPayload(chatMsg) {
-  try {
-    // getFlag is sync in V12; awaiting is harmless and keeps a uniform signature
-    const f = await chatMsg.getFlag(MODULE_NS, CARD_FLAG);
-    return f?.payload ?? f ?? null; // support {payload:{...}} and legacy {...}
-  } catch (e) {
-    console.warn("[fu-invokeButtons] getPayload failed:", e);
-    return null;
+  async function getPayload(chatMsg) {
+    try {
+      // getFlag is sync in V12; awaiting is harmless and keeps a uniform signature
+      const f = await chatMsg.getFlag(MODULE_NS, CARD_FLAG);
+      return f?.payload ?? f ?? null; // support {payload:{...}} and legacy {...}
+    } catch (e) {
+      console.warn("[fu-invokeButtons] getPayload failed:", e);
+      return null;
+    }
   }
-}
 
   async function rebuildCard(nextPayload, oldMsg) {
     const cardMacro = game.macros.getName("CreateActionCard");
@@ -132,7 +130,9 @@ async function getPayload(chatMsg) {
         ok:     { label: "Invoke", callback: html => resolve(Number(html[0].querySelector('[name="bondIndex"]').value)) },
         cancel: { label: "Cancel", callback: () => resolve(null) }
       },
-      default: "ok"
+      default: "ok",
+      // ✅ Close with window “X” acts like Cancel
+      close: () => resolve(null)
     }).render(true));
   }
 
@@ -159,30 +159,29 @@ async function getPayload(chatMsg) {
       <p>Choose which die to reroll (once per action):</p>
     `;
     const choice = await new Promise((resolve) => new Dialog({
-  title: "Invoke Trait — Reroll",
-  content: `<form>${dieInfo}
-    <div class="form-group">
-      <label>Reroll</label>
-      <select name="which" style="width:100%">
-        <option value="A">${A.A1} (die A)</option>
-        <option value="B">${A.A2} (die B)</option>
-        <option value="AB">${A.A1} and ${A.A2} (both dice)</option>
-      </select>
-    </div></form>`,
-  buttons: {
-    ok:     { label: "Reroll", callback: (html) => resolve(html[0].querySelector('[name="which"]').value) },
-    cancel: { label: "Cancel", callback: () => resolve(null) }
-  },
-  default: "ok"
-}, { 
-  // ✅ Treat window “X” like Cancel so the button lock is released
-  close: () => resolve(null)
-}).render(true));
+      title: "Invoke Trait — Reroll",
+      content: `<form>${dieInfo}
+        <div class="form-group">
+          <label>Reroll</label>
+          <select name="which" style="width:100%">
+            <option value="A">${A.A1} (die A)</option>
+            <option value="B">${A.A2} (die B)</option>
+            <option value="AB">${A.A1} and ${A.A2} (both dice)</option>
+          </select>
+        </div></form>`,
+      buttons: {
+        ok:     { label: "Reroll", callback: (html) => resolve(html[0].querySelector('[name="which"]').value) },
+        cancel: { label: "Cancel", callback: () => resolve(null) }
+      },
+      default: "ok",
+      close: () => resolve(null)
+    }).render(true));
 
     if (!choice) {
-  ui.notifications.info("Trait invoke cancelled.");
-  return "CANCELLED";
-}
+      ui.notifications.info("Trait invoke cancelled.");
+      return "CANCELLED";
+    }
+
     // Reroll
     const dA = dieSizeFor(attacker, A.A1);
     const dB = dieSizeFor(attacker, A.A2);
@@ -249,81 +248,79 @@ async function getPayload(chatMsg) {
     await rebuildCard(next, chatMsg);
   }
 
-async function handleInvokeBond(btn, chatMsg) {
-  const payload = await getPayload(chatMsg);
-  if (!payload) return ui.notifications?.error("Invoke Bond: Missing payload on the card.");
+  async function handleInvokeBond(btn, chatMsg) {
+    const payload = await getPayload(chatMsg);
+    if (!payload) return ui.notifications?.error("Invoke Bond: Missing payload on the card.");
 
-  const invoked = payload?.meta?.invoked ?? { trait:false, bond:false };
-  if (invoked.bond) return ui.notifications?.warn("Bond already invoked for this action.");
+    const invoked = payload?.meta?.invoked ?? { trait:false, bond:false };
+    if (invoked.bond) return ui.notifications?.warn("Bond already invoked for this action.");
 
-  const atkUuid  = payload?.meta?.attackerUuid ?? payload?.meta?.attacker_uuid ?? null;
+    const atkUuid  = payload?.meta?.attackerUuid ?? payload?.meta?.attacker_uuid ?? null;
 
-  // We still gate by ownership, but we no longer read bonds from the actor.
-  const attacker = await getActorFromUuid(atkUuid);
-  if (!ensureOwner(attacker, "Invoke Bond")) return;
+    // We still gate by ownership, but we no longer read bonds from the actor.
+    const attacker = await getActorFromUuid(atkUuid);
+    if (!ensureOwner(attacker, "Invoke Bond")) return;
 
-  const A = payload.accuracy;
-  if (!A) return ui.notifications?.warn("No Accuracy check to modify.");
+    const A = payload.accuracy;
+    if (!A) return ui.notifications?.warn("No Accuracy check to modify.");
 
-  // 🔹 Prefer bonds from payload.meta (snapshot made by ActionDataFetch)
-  const bondSnap = payload?.meta?.bonds || { list:[], viable:[] };
-  const viable = Array.isArray(bondSnap.viable) ? bondSnap.viable
-               : Array.isArray(bondSnap.list)   ? bondSnap.list.filter(b => (b?.bonus||0) > 0)
-               : [];
+    // Prefer bonds from payload.meta (snapshot made by ActionDataFetch)
+    const bondSnap = payload?.meta?.bonds || { list:[], viable:[] };
+    const viable = Array.isArray(bondSnap.viable) ? bondSnap.viable
+                 : Array.isArray(bondSnap.list)   ? bondSnap.list.filter(b => (b?.bonus||0) > 0)
+                 : [];
 
-  if (!viable.length) return ui.notifications?.warn("No eligible Bonds on this action.");
+    if (!viable.length) return ui.notifications?.warn("No eligible Bonds on this action.");
 
-  // If multiple, ask the user; otherwise auto-pick
-  let chosen = viable[0];
-  if (viable.length > 1) {
-    const opts = viable.map(b => `<option value="${b.index}">${esc(b.name)} — +${b.bonus}</option>`).join("");
-    const content = `<form>
-      <div class="form-group">
-        <label>Choose a Bond to Invoke</label>
-        <select name="bondIndex" style="width:100%;">${opts}</select>
-      </div></form>`;
-    const pick = await new Promise(res => new Dialog({
-  title: "Invoke Bond — Choose Bond",
-  content,
-  buttons: {
-    ok:     { label: "Invoke", callback: html => res(Number(html[0].querySelector('[name="bondIndex"]').value)) },
-    cancel: { label: "Cancel", callback: () => res(null) }
-  },
-  default: "ok"
-}, {
-  // ✅ Closing with “X” resolves like Cancel
-  close: () => res(null)
-}).render(true));
+    // If multiple, ask the user; otherwise auto-pick
+    let chosen = viable[0];
+    if (viable.length > 1) {
+      const opts = viable.map(b => `<option value="${b.index}">${esc(b.name)} — +${b.bonus}</option>`).join("");
+      const content = `<form>
+        <div class="form-group">
+          <label>Choose a Bond to Invoke</label>
+          <select name="bondIndex" style="width:100%;">${opts}</select>
+        </div></form>`;
+      const pick = await new Promise(res => new Dialog({
+        title: "Invoke Bond — Choose Bond",
+        content,
+        buttons: {
+          ok:     { label: "Invoke", callback: html => res(Number(html[0].querySelector('[name="bondIndex"]').value)) },
+          cancel: { label: "Cancel", callback: () => res(null) }
+        },
+        default: "ok",
+        close: () => res(null)
+      }).render(true));
 
-    if (pick == null) { ui.notifications.info("Bond invoke cancelled."); return "CANCELLED"; }
-    chosen = viable.find(b => Number(b.index) === Number(pick)) ?? chosen;
+      if (pick == null) { ui.notifications.info("Bond invoke cancelled."); return "CANCELLED"; }
+      chosen = viable.find(b => Number(b.index) === Number(pick)) ?? chosen;
+    }
+
+    const addBonus = Number(chosen.bonus || 0);
+    if (!(addBonus > 0)) return ui.notifications?.warn("Chosen Bond gives no bonus.");
+
+    const next = foundry.utils.deepClone(payload);
+    next.meta = next.meta || {};
+    next.meta.invoked = next.meta.invoked || { trait:false, bond:false };
+    next.meta.invoked.bond = true;
+    next.meta.bondInfo = { index: chosen.index, name: chosen.name, bonus: addBonus };
+
+    const oldBonus = Number(A.checkBonus || 0);
+    const newBonus = oldBonus + addBonus;
+    const rA = Number(A.rA?.total ?? 0);
+    const rB = Number(A.rB?.total ?? 0);
+    const newTotal = rA + rB + newBonus;
+
+    next.accuracy = {
+      ...A,
+      rA: { total: rA, result: A.rA?.result ?? rA },
+      rB: { total: rB, result: A.rB?.result ?? rB },
+      checkBonus: newBonus,
+      total: newTotal
+    };
+
+    await rebuildCard(next, chatMsg);
   }
-
-  const addBonus = Number(chosen.bonus || 0);
-  if (!(addBonus > 0)) return ui.notifications?.warn("Chosen Bond gives no bonus.");
-
-  const next = foundry.utils.deepClone(payload);
-  next.meta = next.meta || {};
-  next.meta.invoked = next.meta.invoked || { trait:false, bond:false };
-  next.meta.invoked.bond = true;
-  next.meta.bondInfo = { index: chosen.index, name: chosen.name, bonus: addBonus };
-
-  const oldBonus = Number(A.checkBonus || 0);
-  const newBonus = oldBonus + addBonus;
-  const rA = Number(A.rA?.total ?? 0);
-  const rB = Number(A.rB?.total ?? 0);
-  const newTotal = rA + rB + newBonus;
-
-  next.accuracy = {
-    ...A,
-    rA: { total: rA, result: A.rA?.result ?? rA },
-    rB: { total: rB, result: A.rB?.result ?? rB },
-    checkBonus: newBonus,
-    total: newTotal
-  };
-
-  await rebuildCard(next, chatMsg);
-}
 
   // ---------- binder (single listener handles both buttons) ----------
   function bindInvokeButtons() {
