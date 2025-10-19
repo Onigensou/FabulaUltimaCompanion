@@ -15,10 +15,9 @@
   ],
   "socket": true,
   "scripts": [
-    "scripts/main.js",
+  "scripts/main.js",
   "scripts/applyDamage-button.js",
-  "scripts/invokeTrait-button.js",
-  "scripts/invokeBond-button.js", 
+  "scripts/invokeButtons.js", 
   "scripts/create-damage-card.js"
   ],
   "styles": ["styles/style.css"],
