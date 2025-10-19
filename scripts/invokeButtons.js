@@ -11,38 +11,35 @@
 
   console.log("[fu-invokeButtons] script file loaded");
 
-  // ---------- helpers (shared) ----------
-  async function getPayload(chatMsg) {
-    const f = await chatMsg.getFlag(MODULE_NS, CARD_FLAG).catch(() => null);
-    return f?.payload ?? null;
+// ---------- helpers (shared) ----------
+async function getPayload(chatMsg) {
+  try {
+    // getFlag is synchronous in practice; awaiting is harmless
+    const f = await chatMsg.getFlag(MODULE_NS, CARD_FLAG);
+    // support both shapes: {payload:{...}} and legacy {...}
+    return f?.payload ?? f ?? null;
+  } catch (e) {
+    console.warn("[fu-invokeButtons] getPayload failed:", e);
+    return null;
+  }
+}
+
+async function rebuildCard(nextPayload, oldMsg) {
+  const cardMacro = game.macros.getName("CreateActionCard");
+  if (!cardMacro) return ui.notifications.error('Macro "CreateActionCard" not found.');
+
+  // Your CreateActionCard reads globals (__AUTO/__PAYLOAD); set them, run, then clean up.
+  try {
+    window.__AUTO = true;
+    window.__PAYLOAD = nextPayload;
+    await cardMacro.execute();      // no args: it uses the globals
+  } finally {
+    try { delete window.__AUTO; } catch {}
+    try { delete window.__PAYLOAD; } catch {}
   }
 
-  async function getActorFromUuid(uuid) {
-    if (!uuid) return null;
-    try {
-      let doc = await fromUuid(uuid);
-      if (!doc) return null;
-      if (doc?.actor) return doc.actor;            // TokenDocument / owned doc
-      if (doc?.type === "Actor") return doc;       // Actor
-      return doc?.document?.actor ?? null;         // Embedded case
-    } catch { return null; }
-  }
-
-  function ensureOwner(actor, what = "this action") {
-    const ok = actor?.isOwner || game.user?.isGM;
-    if (!ok) ui.notifications?.warn(`Only the attacker’s owner (or GM) can ${what}.`);
-    return ok;
-  }
-
-  function lock(btn) { if (!btn) return true; if (btn.dataset.fuLock === "1") return true; btn.dataset.fuLock = "1"; return false; }
-  function unlock(btn) { if (btn) btn.dataset.fuLock = "0"; }
-
-  async function rebuildCard(nextPayload, oldMsg) {
-    const cardMacro = game.macros.getName("CreateActionCard");
-    if (!cardMacro) return ui.notifications.error('Macro "CreateActionCard" not found.');
-    await cardMacro.execute({ __AUTO: true, __PAYLOAD: nextPayload });
-    try { await oldMsg.delete(); } catch {}
-  }
+  try { await oldMsg.delete(); } catch {}
+}
 
   // Actor → die size for attribute label (e.g., "DEX"→d?); safe defaults
   function dieSizeFor(actor, attr) {
