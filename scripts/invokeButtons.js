@@ -159,22 +159,26 @@ async function getPayload(chatMsg) {
       <p>Choose which die to reroll (once per action):</p>
     `;
     const choice = await new Promise((resolve) => new Dialog({
-      title: "Invoke Trait — Reroll",
-      content: `<form>${dieInfo}
-        <div class="form-group">
-          <label>Reroll</label>
-          <select name="which" style="width:100%">
-            <option value="A">${A.A1} (die A)</option>
-            <option value="B">${A.A2} (die B)</option>
-            <option value="AB">${A.A1} and ${A.A2} (both dice)</option>
-          </select>
-        </div></form>`,
-      buttons: {
-        ok:     { label: "Reroll", callback: (html) => resolve(html[0].querySelector('[name="which"]').value) },
-        cancel: { label: "Cancel", callback: () => resolve(null) }
-      },
-      default: "ok"
-    }).render(true));
+  title: "Invoke Trait — Reroll",
+  content: `<form>${dieInfo}
+    <div class="form-group">
+      <label>Reroll</label>
+      <select name="which" style="width:100%">
+        <option value="A">${A.A1} (die A)</option>
+        <option value="B">${A.A2} (die B)</option>
+        <option value="AB">${A.A1} and ${A.A2} (both dice)</option>
+      </select>
+    </div></form>`,
+  buttons: {
+    ok:     { label: "Reroll", callback: (html) => resolve(html[0].querySelector('[name="which"]').value) },
+    cancel: { label: "Cancel", callback: () => resolve(null) }
+  },
+  default: "ok"
+}, { 
+  // ✅ Treat window “X” like Cancel so the button lock is released
+  close: () => resolve(null)
+}).render(true));
+
     if (!choice) {
   ui.notifications.info("Trait invoke cancelled.");
   return "CANCELLED";
@@ -279,11 +283,18 @@ async function handleInvokeBond(btn, chatMsg) {
         <select name="bondIndex" style="width:100%;">${opts}</select>
       </div></form>`;
     const pick = await new Promise(res => new Dialog({
-      title:"Invoke Bond — Choose Bond", content,
-      buttons:{ ok:{label:"Invoke", callback:html=>res(Number(html[0].querySelector('[name="bondIndex"]').value))},
-                cancel:{label:"Cancel", callback:()=>res(null)} },
-      default:"ok"
-    }).render(true));
+  title: "Invoke Bond — Choose Bond",
+  content,
+  buttons: {
+    ok:     { label: "Invoke", callback: html => res(Number(html[0].querySelector('[name="bondIndex"]').value)) },
+    cancel: { label: "Cancel", callback: () => res(null) }
+  },
+  default: "ok"
+}, {
+  // ✅ Closing with “X” resolves like Cancel
+  close: () => res(null)
+}).render(true));
+
     if (pick == null) { ui.notifications.info("Bond invoke cancelled."); return "CANCELLED"; }
     chosen = viable.find(b => Number(b.index) === Number(pick)) ?? chosen;
   }
