@@ -12,16 +12,30 @@
   console.log("[fu-invokeButtons] script file loaded");
 
   // ---------- helpers (shared) ----------
-  async function getPayload(chatMsg) {
-    try {
-      // getFlag isn't a Promise in V12; awaiting is harmless and keeps the signature uniform
-      const f = await chatMsg.getFlag(MODULE_NS, CARD_FLAG);
-      return f?.payload ?? f ?? null; // support {payload:{...}} and legacy {...}
-    } catch (e) {
-      console.warn("[fu-invokeButtons] getPayload failed:", e);
-      return null;
-    }
+const esc = (v) => {
+  const s = String(v ?? "");
+  // Use Foundry's helper if present (V12 exposes TextEditor.escapeHTML)
+  if (window.TextEditor?.escapeHTML) return TextEditor.escapeHTML(s);
+  // Fallback
+  return s.replace(/[&<>"']/g, (m) => (
+    m === "&" ? "&amp;" :
+    m === "<" ? "&lt;"  :
+    m === ">" ? "&gt;"  :
+    m === '"' ? "&quot;":
+                "&#39;"
+  ));
+};
+
+async function getPayload(chatMsg) {
+  try {
+    // getFlag is sync in V12; awaiting is harmless and keeps a uniform signature
+    const f = await chatMsg.getFlag(MODULE_NS, CARD_FLAG);
+    return f?.payload ?? f ?? null; // support {payload:{...}} and legacy {...}
+  } catch (e) {
+    console.warn("[fu-invokeButtons] getPayload failed:", e);
+    return null;
   }
+}
 
   async function rebuildCard(nextPayload, oldMsg) {
     const cardMacro = game.macros.getName("CreateActionCard");
