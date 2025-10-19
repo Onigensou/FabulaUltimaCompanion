@@ -1,16 +1,100 @@
-// invokeBond-button.js — Foundry VTT v12
-// Global delegated listener for [data-fu-bond] on Action Cards.
-// Lets an attacker add a Bond bonus ONCE per action (default: +1 per filled emotion, max +3).
-// Reads Bonds from attackerActor.system.props: bond_1..6 + emotion_X_1..3.
+// scripts/invokeBond-button.js — Foundry VTT v12
+// Invoke Bond: add a fixed +1..+3 bonus to the Accuracy check ONCE per action.
+// Reads bonds from attackerActor.system.props:
+//   bond_1..bond_6  (string label; empty = unused slot)
+//   emotion_X_1..emotion_X_3 (truthy if filled); bonus = count of filled (cap 3)
 //
-// Flags: payload.meta.invoked = { trait: boolean, bond: boolean }
+// Requires CreateActionCard to save { payload } on the ChatMessage flag:
+//   await posted.setFlag("fabula-ultima-companion", "actionCard", { payload: PAYLOAD });
+//
+// Flags used:
+//   payload.meta.invoked = { trait:boolean, bond:boolean }
+//   payload.meta.bondInfo = { index:number, name:string, bonus:number }   // (added by this script)
 
 const MODULE_NS = "fabula-ultima-companion";
 const CARD_FLAG = "actionCard";
 
-console.log("[fu-invokeBond] script file loaded"); // add near top
+console.log("[fu-invokeBond] script file loaded");
 
-Hooks.once("ready", () => {
+// ---------- helpers ----------
+async function getPayload(chatMsg) {
+  const f = await chatMsg.getFlag(MODULE_NS, CARD_FLAG).catch(() => null);
+  return f?.payload ?? null;
+}
+async function getActorFromUuid(uuid) {
+  if (!uuid) return null;
+  try {
+    let doc = await fromUuid(uuid);
+    if (!doc) return null;
+    if (doc?.actor) return doc.actor;
+    if (doc?.type === "Actor") return doc;
+    return doc?.document?.actor ?? null;
+  } catch { return null; }
+}
+function ensureOwner(actor) {
+  const ok = actor?.isOwner || game.user?.isGM;
+  if (!ok) ui.notifications?.warn("Only the attacker’s owner (or GM) can Invoke Bond.");
+  return ok;
+}
+function lock(btn) { if (!btn) return true; if (btn.dataset.fuLock === "1") return true; btn.dataset.fuLock = "1"; return false; }
+function unlock(btn) { if (btn) btn.dataset.fuLock = "0"; }
+
+async function rebuildCard(nextPayload, oldMsg) {
+  const cardMacro = game.macros.getName("CreateActionCard");
+  if (!cardMacro) return ui.notifications.error('Macro "CreateActionCard" not found.');
+  await cardMacro.execute({ __AUTO: true, __PAYLOAD: nextPayload });
+  try { await oldMsg.delete(); } catch {}
+}
+
+// Extract bonds from actor.system.props in the expected shape
+function collectBonds(actor) {
+  const P = actor?.system?.props ?? {};
+  const bonds = [];
+  for (let i = 1; i <= 6; i++) {
+    const name = String(P[`bond_${i}`] ?? "").trim();
+    if (!name) continue; // empty slot
+    const e1 = !!P[`emotion_${i}_1`];
+    const e2 = !!P[`emotion_${i}_2`];
+    const e3 = !!P[`emotion_${i}_3`];
+    const filled = [e1, e2, e3].filter(Boolean).length;
+    const bonus = Math.min(3, Math.max(0, filled));
+    bonds.push({ index: i, name, bonus, filled });
+  }
+  return bonds;
+}
+
+async function chooseBondDialog(bonds) {
+  // Only show options that yield a positive bonus
+  const viable = bonds.filter(b => b.bonus > 0);
+  if (!viable.length) return null;
+
+  const opts = viable
+    .map(b => `<option value="${b.index}">${foundry.utils.escapeHTML(b.name)} — +${b.bonus}</option>`)
+    .join("");
+
+  const content = `<form>
+    <div class="form-group">
+      <label>Choose a Bond to Invoke</label>
+      <select name="bondIndex" style="width:100%;">${opts}</select>
+    </div>
+    <p style="margin:.4rem 0 0; font-size:12px; opacity:.75;">
+      Bond bonus is +1 per filled emotion (max +3).
+    </p>
+  </form>`;
+
+  return await new Promise(resolve => new Dialog({
+    title: "Invoke Bond — Choose Bond",
+    content,
+    buttons: {
+      ok:     { label: "Invoke", callback: html => resolve(Number(html[0].querySelector('[name="bondIndex"]').value)) },
+      cancel: { label: "Cancel", callback: () => resolve(null) }
+    },
+    default: "ok"
+  }).render(true));
+}
+
+// ---------- binder ----------
+function bindInvokeBond() {
   const root = document.querySelector("#chat-log") || document.body;
   if (!root || root.__fuInvokeBondBound) return;
   root.__fuInvokeBondBound = true;
@@ -18,108 +102,86 @@ Hooks.once("ready", () => {
   root.addEventListener("click", async (ev) => {
     const btn = ev.target.closest?.("[data-fu-bond]");
     if (!btn) return;
-
-    if (btn.dataset.fuLock === "1") return;
-    btn.dataset.fuLock = "1";
+    if (lock(btn)) return;
 
     try {
-      const msgEl = btn.closest?.(".message");
-      const msgId = msgEl?.dataset?.messageId;
+      // Locate the message and payload
+      const msgEl   = btn.closest?.(".message");
+      const msgId   = msgEl?.dataset?.messageId;
       const chatMsg = msgId ? game.messages.get(msgId) : null;
       if (!chatMsg) return;
 
-      const stored = await chatMsg.getFlag(MODULE_NS, CARD_FLAG);
-      const payload = stored?.payload ?? null;
+      const payload = await getPayload(chatMsg);
       if (!payload) return ui.notifications?.error("Invoke Bond: Missing payload on the card.");
 
       // Already used?
       const invoked = payload?.meta?.invoked ?? { trait:false, bond:false };
       if (invoked.bond) return ui.notifications?.warn("Bond already invoked for this action.");
 
-      // Owner gating
-      const atkUuid = payload?.meta?.attackerUuid ?? null;
-      let attackerActor = null;
-      if (atkUuid) attackerActor = await fromUuid(atkUuid).catch(()=>null);
-      attackerActor = attackerActor?.actor ?? (attackerActor?.type === "Actor" ? attackerActor : null);
-      const isOwner = attackerActor?.isOwner || false;
-      if (!isOwner && !game.user?.isGM) {
-        return ui.notifications?.warn("Only the attacker’s owner (or GM) can Invoke Bond.");
+      // Ownership gate (attacker only)
+      const atkUuid  = payload?.meta?.attackerUuid ?? payload?.meta?.attacker_uuid ?? null;
+      const attacker = await getActorFromUuid(atkUuid);
+      if (!ensureOwner(attacker)) return;
+
+      // Must have an Accuracy block (we’re adding to the check)
+      const A = payload.accuracy;
+      if (!A) return ui.notifications?.warn("No Accuracy check to modify.");
+
+      // Pull bonds from actor
+      const bonds = collectBonds(attacker);
+      if (!bonds.length) return ui.notifications?.warn("No Bonds found on this actor.");
+      const viable = bonds.filter(b => b.bonus > 0);
+      if (!viable.length) return ui.notifications?.warn("No eligible Bonds (no filled emotions).");
+
+      // Ask which bond to invoke when multiple are viable
+      let chosen = viable[0];
+      if (viable.length > 1) {
+        const pick = await chooseBondDialog(bonds);
+        if (!pick) return; // cancelled
+        chosen = bonds.find(b => b.index === pick) ?? viable[0];
       }
 
-      // Build a small list of bonds from props (bond_1..bond_6 with emotion_X_1..3)
-      const P = attackerActor?.system?.props ?? {};
-      const rows = Array.from({length:6}, (_,i) => i+1).map(i => {
-        const label = String(P[`bond_${i}`] || "").trim();
-        const e1 = String(P[`emotion_${i}_1`] || "").trim();
-        const e2 = String(P[`emotion_${i}_2`] || "").trim();
-        const e3 = String(P[`emotion_${i}_3`] || "").trim();
-        const lvl = Math.min([e1,e2,e3].filter(Boolean).length, 3);
-        return { idx:i, label, lvl, emotions:[e1,e2,e3].filter(Boolean) };
-      }).filter(r => r.label || r.emotions.length);
+      const addBonus = Number(chosen.bonus || 0);
+      if (!(addBonus > 0)) return ui.notifications?.warn("Chosen Bond gives no bonus.");
 
-      if (!rows.length) return ui.notifications?.warn("No bonds filled on the attacker’s sheet.");
-
-      const options = rows.map(r => `<option value="${r.idx}">${r.idx}. ${r.label} [Level ${r.lvl}]</option>`).join("");
-      const selection = await new Promise((resolve) => new Dialog({
-        title: "Invoke Bond — Choose a Bond",
-        content: `<form>
-          <p>Select one bond to empower your check (Level = filled emotions, max 3).</p>
-          <div class="form-group">
-            <label>Bond</label>
-            <select name="bondRow" style="width:100%">${options}</select>
-          </div>
-        </form>`,
-        buttons: {
-          ok: { label: "Use Bond", callback: (html)=>resolve(Number(html[0].querySelector('[name="bondRow"]').value)) },
-          cancel: { label: "Cancel", callback: ()=>resolve(null) }
-        },
-        default: "ok"
-      }).render(true));
-
-      if (selection == null) { btn.dataset.fuLock = "0"; return; }
-
-      const chosen = rows.find(r => r.idx === selection);
-      const level  = chosen?.lvl ?? 0;
-
-      // Default rule: +1 per level (cap 3). Adjust here if your table uses a different mapping.
-      const bondBonus = Math.max(0, Math.min(level, 3)); // ← tweak if needed
-
-      // Need an Accuracy block
-      const A = payload.accuracy;
-      if (!A) return ui.notifications?.warn("No Accuracy check to empower.");
-
-      // Clone payload and add the bond bonus to accuracy.total
+      // Build the next payload
       const next = foundry.utils.deepClone(payload);
-
       next.meta = next.meta || {};
       next.meta.invoked = next.meta.invoked || { trait:false, bond:false };
       next.meta.invoked.bond = true;
+      next.meta.bondInfo = { index: chosen.index, name: chosen.name, bonus: addBonus };
 
-      const total = Number(A.rA.total) + Number(A.rB.total) + Number(A.checkBonus||0) + bondBonus;
+      // Update Accuracy totals (increase the checkBonus too so tooltips stay correct)
+      const oldBonus = Number(A.checkBonus || 0);
+      const newBonus = oldBonus + addBonus;
+      const rA = Number(A.rA?.total ?? 0);
+      const rB = Number(A.rB?.total ?? 0);
+      const newTotal = rA + rB + newBonus;
 
       next.accuracy = {
         ...A,
-        total
+        rA: { total: rA, result: A.rA?.result ?? rA },
+        rB: { total: rB, result: A.rB?.result ?? rB },
+        checkBonus: newBonus,
+        total: newTotal
       };
 
-      // Damage preview does not change here EXCEPT for miss/hit thresholds later — apply remains GM-only.
-      // We keep the hr, crit/fumble as-is; this is strictly a check boost.
+      // No change to HR/damage base — Invoke Bond doesn’t affect HR
+      // Keep advPayload as-is; CreateActionCard reads accuracy.total for Apply logic
 
-      // Also add a small crumb so the card can show “Bond +X” in the Accuracy tooltip/row if you like
-      next.accuracy._bondBonus = bondBonus;
-
-      // Spawn new card, delete old
-      const cardMacro = game.macros.getName("CreateActionCard");
-      if (!cardMacro) return ui.notifications.error(`Macro "CreateActionCard" not found.`);
-      await cardMacro.execute({ __AUTO: true, __PAYLOAD: next });
-      await chatMsg.delete();
+      // Rebuild card and remove the old one
+      await rebuildCard(next, chatMsg);
     } catch (err) {
       console.error(err);
       ui.notifications?.error("Invoke Bond failed (see console).");
     } finally {
-      btn.dataset.fuLock = "0";
+      unlock(btn);
     }
-  }, { capture:false });
+  }, { capture: false });
 
   console.log("[fu-invokeBond] ready — installed chat listener");
-});
+}
+
+// Bind even if this script loads after the 'ready' hook
+if (window.game?.ready) bindInvokeBond();
+else Hooks.once("ready", bindInvokeBond);
