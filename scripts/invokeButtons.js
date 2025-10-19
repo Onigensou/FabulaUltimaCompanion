@@ -100,7 +100,7 @@
     const viable = bonds.filter(b => b.bonus > 0);
     if (!viable.length) return null;
     const opts = viable
-      .map(b => `<option value="${b.index}">${foundry.utils.escapeHTML(b.name)} — +${b.bonus}</option>`)
+      .map(b => `<option value="${b.index}">${esc(b.name)} — +${b.bonus}</option>`)
       .join("");
     const content = `<form>
       <div class="form-group">
@@ -258,7 +258,7 @@ async function handleInvokeBond(btn, chatMsg) {
   // If multiple, ask the user; otherwise auto-pick
   let chosen = viable[0];
   if (viable.length > 1) {
-    const opts = viable.map(b => `<option value="${b.index}">${foundry.utils.escapeHTML(b.name)} — +${b.bonus}</option>`).join("");
+    const opts = viable.map(b => `<option value="${b.index}">${esc(b.name)} — +${b.bonus}</option>`).join("");
     const content = `<form>
       <div class="form-group">
         <label>Choose a Bond to Invoke</label>
