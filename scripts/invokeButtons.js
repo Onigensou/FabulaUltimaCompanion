@@ -65,11 +65,16 @@
     }
   }
 
-  function ensureOwner(actor, what = "this action") {
-    const ok = actor?.isOwner || game.user?.isGM;
-    if (!ok) ui.notifications?.warn(`Only the attacker’s owner (or GM) can ${what}.`);
-    return ok;
-  }
+  function ensureOwner(actor, payload, what = "this action") {
+  const initUid = payload?.meta?.ownerUserId || null;     // user who built the card
+  const allow =
+    game.user?.isGM ||
+    actor?.isOwner === true ||
+    (initUid && game.user?.id === initUid);
+
+  if (!allow) ui.notifications?.warn(`Only the attacker’s owner (or GM) can ${what}.`);
+  return allow;
+}
 
   function lock(btn) {
     if (!btn) return true;
@@ -146,7 +151,7 @@
 
     const atkUuid  = payload?.meta?.attackerUuid ?? payload?.meta?.attacker_uuid ?? null;
     const attacker = await getActorFromUuid(atkUuid);
-    if (!ensureOwner(attacker, "Invoke Trait")) return;
+    if (!ensureOwner(attacker, payload, "Invoke Trait")) return;
 
     const A = payload.accuracy;
     if (!A) return ui.notifications?.warn("No Accuracy check to reroll.");
@@ -259,7 +264,7 @@
 
     // We still gate by ownership, but we no longer read bonds from the actor.
     const attacker = await getActorFromUuid(atkUuid);
-    if (!ensureOwner(attacker, "Invoke Bond")) return;
+    if (!ensureOwner(attacker, payload, "Invoke Bond")) return;
 
     const A = payload.accuracy;
     if (!A) return ui.notifications?.warn("No Accuracy check to modify.");
