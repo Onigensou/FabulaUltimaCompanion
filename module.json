@@ -17,7 +17,8 @@
   "scripts": [
   "scripts/main.js",
   "scripts/applyDamage-button.js",
-  "scripts/invokeButtons.js", 
+  "scripts/invokeButtons.js",
+  "scripts/fu-card-hydrate.js",
   "scripts/create-damage-card.js"
   ],
   "styles": ["styles/style.css"],
