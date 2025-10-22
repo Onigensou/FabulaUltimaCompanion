@@ -204,7 +204,7 @@ console.log("[CHATBTN] invoking AE macro", {
 
       await ae.execute({ __AUTO: true, __PAYLOAD: payloadForAE });
     } else {
-      // No configured rows; nothing to do
+      console.log("[CHATBTN] No AE rows configured on this card.");
     }
   }
 } catch (e) {
