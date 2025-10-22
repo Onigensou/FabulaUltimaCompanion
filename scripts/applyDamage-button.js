@@ -62,6 +62,9 @@ if (!game.user?.isGM) {
       weaponType       = "",
       attackRange      = "Melee",
       attackerName     = "Unknown",
+      aeMacroName      = "ApplyActiveEffect",
+      aeDirectives     = [],
+      attackerUuid     = null,
       originalTargetUUIDs = [],
       chatMsgId        = msgId // fallback to DOM id if not injected
     } = args;
@@ -80,6 +83,7 @@ if (!game.user?.isGM) {
 
       const adv  = game.macros.getName(advMacroName);
       const miss = game.macros.getName(missMacroName);
+      const ae   = game.macros.getName(aeMacroName);
       if (!adv) {
         ui.notifications?.error(`Advanced Damage macro "${advMacroName}" not found or no permission.`);
         throw new Error("AdvanceDamage not found");
@@ -142,6 +146,22 @@ if (!game.user?.isGM) {
 
       const prevTargets = Array.from(game.user?.targets ?? []).map(t => t.id);
 
+      // Active Effects: On Attack (all saved targets, regardless of hit/miss)
+      if (ae && aeDirectives.length && savedUUIDs.length) {
+        await ae.execute({
+          __AUTO: true,
+          __PAYLOAD: {
+            directives : aeDirectives,
+            attackerUuid,
+            targetUUIDs: savedUUIDs,
+            trigger    : "on_attack",
+            accTotal   : accTotal,
+            isSpellish : !!isSpellish,
+            weaponType
+          }
+        });
+      }
+
       // Fire Miss for the “missUUIDs” subset
       if (missUUIDs.length && miss) {
         const missIds = (await Promise.all(missUUIDs.map(async u => {
@@ -174,6 +194,21 @@ if (!game.user?.isGM) {
 
         if (hitIds.length) {
           await game.user.updateTokenTargets(hitIds, { releaseOthers: true });
+       // Active Effects: On Hit (only the targets that were actually hit)
+          if (ae && aeDirectives.length && hitUUIDs.length) {
+            await ae.execute({
+              __AUTO: true,
+              __PAYLOAD: {
+                directives : aeDirectives,
+                attackerUuid,
+                targetUUIDs: hitUUIDs,
+                trigger    : "on_hit",
+                accTotal   : accTotal,
+                isSpellish : !!isSpellish,
+                weaponType
+              }
+            });
+          }
           await adv.execute({ __AUTO: true, __PAYLOAD: advPayload });
         }
       }
