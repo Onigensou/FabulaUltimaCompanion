@@ -141,18 +141,6 @@ const {
       const isHealing = /^(heal|healing|recovery|restore|restoration)$/i.test(elemKey);
       const accTotal  = Number(accuracyTotal ?? 0);
 
-      // Collect Active-Effect results (from on_attack and on_hit) to show on the card
-const aeAppliedByTarget = {};
-const mergeAE = (res) => {
-  try {
-    const m = res?.appliedByTarget || {};
-    for (const [k, v] of Object.entries(m)) {
-      aeAppliedByTarget[k] = (aeAppliedByTarget[k] || []).concat(v || []);
-    }
-  } catch {}
-};
-
-
       const missUUIDs = [];
       const hitUUIDs  = [];
 
@@ -169,20 +157,19 @@ const mergeAE = (res) => {
       const prevTargets = Array.from(game.user?.targets ?? []).map(t => t.id);
 
       // Active Effects: On Attack (all saved targets, regardless of hit/miss)
-     const resAttack = await ae.execute({
-  __AUTO: true,
-  __PAYLOAD: {
-    directives : aeDirectives,
-    attackerUuid,
-    targetUUIDs: savedUUIDs,
-    trigger    : "on_attack",
-    accTotal   : accTotal,
-    isSpellish : !!isSpellish,
-    weaponType
-  }
-});
-mergeAE(resAttack);
-
+      if (ae && aeDirectives.length && savedUUIDs.length) {
+        await ae.execute({
+          __AUTO: true,
+          __PAYLOAD: {
+            directives : aeDirectives,
+            attackerUuid,
+            targetUUIDs: savedUUIDs,
+            trigger    : "on_attack",
+            accTotal   : accTotal,
+            isSpellish : !!isSpellish,
+            weaponType
+          }
+        });
       }
 
       // Fire Miss for the “missUUIDs” subset
@@ -219,26 +206,20 @@ mergeAE(resAttack);
           await game.user.updateTokenTargets(hitIds, { releaseOthers: true });
        // Active Effects: On Hit (only the targets that were actually hit)
           if (ae && aeDirectives.length && hitUUIDs.length) {
-            const resHit = await ae.execute({
-  __AUTO: true,
-  __PAYLOAD: {
-    directives : aeDirectives,
-    attackerUuid,
-    targetUUIDs: hitUUIDs,
-    trigger    : "on_hit",
-    accTotal   : accTotal,
-    isSpellish : !!isSpellish,
-    weaponType
-  }
-});
-mergeAE(resHit);
-
+            await ae.execute({
+              __AUTO: true,
+              __PAYLOAD: {
+                directives : aeDirectives,
+                attackerUuid,
+                targetUUIDs: hitUUIDs,
+                trigger    : "on_hit",
+                accTotal   : accTotal,
+                isSpellish : !!isSpellish,
+                weaponType
+              }
+            });
           }
-          await adv.execute({
-  __AUTO: true,
-  __PAYLOAD: Object.assign({}, advPayload, { aeAppliedByTarget })
-});
-
+          await adv.execute({ __AUTO: true, __PAYLOAD: advPayload });
         }
       }
 
