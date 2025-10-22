@@ -178,40 +178,6 @@ if (!game.user?.isGM) {
         }
       }
 
-      // Apply Active Effects (uses the full payload saved on the chat message)
-try {
-  const ae = game.macros.getName("ApplyActiveEffect");
-  if (ae) {
-    // Pull the original full payload off the chat message flag that CreateActionCard set
-    const flagged = await chatMsg?.getFlag("fabula-ultima-companion", "actionCard");
-    const payloadForAE = flagged?.payload;
-
-    if (payloadForAE?.activeEffectPlan?.rows?.length) {
-      // DEBUG: show what we’re about to send to ApplyActiveEffect
-const plan = payloadForAE?.activeEffectPlan;
-console.log("[CHATBTN] invoking AE macro", {
-  chatMsgId,
-  skillUuid: plan?.skillUuid,
-  defenseTargetType: plan?.defenseTargetType,
-  accTotal: payloadForAE?.accuracy?.total ?? null,
-  defSnapShape: Array.isArray(payloadForAE?.meta?.defenseSnapshot)
-                ? "array"
-                : (payloadForAE?.meta?.defenseSnapshot ? "object" : "missing"),
-  perTargetCount: payloadForAE?.meta?.defenseSnapshot?.perTarget?.length ?? (payloadForAE?.meta?.defenseSnapshot?.length ?? 0),
-  rowsCount: plan?.rows?.length ?? 0,
-  rows: plan?.rows
-});
-
-      await ae.execute({ __AUTO: true, __PAYLOAD: payloadForAE });
-    } else {
-      console.log("[CHATBTN] No AE rows configured on this card.");
-    }
-  }
-} catch (e) {
-  console.error("[fu-chatbtn] ApplyActiveEffect failed:", e);
-  ui.notifications?.warn("Active Effect application failed (see console).");
-}
-
       // Restore prior targets
       await game.user.updateTokenTargets(prevTargets, { releaseOthers: true });
 
