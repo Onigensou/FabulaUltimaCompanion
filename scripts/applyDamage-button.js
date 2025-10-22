@@ -178,6 +178,25 @@ if (!game.user?.isGM) {
         }
       }
 
+      // Apply Active Effects (uses the full payload saved on the chat message)
+try {
+  const ae = game.macros.getName("ApplyActiveEffect");
+  if (ae) {
+    // Pull the original full payload off the chat message flag that CreateActionCard set
+    const flagged = await chatMsg?.getFlag("fabula-ultima-companion", "actionCard");
+    const payloadForAE = flagged?.payload;
+
+    if (payloadForAE?.activeEffectPlan?.rows?.length) {
+      await ae.execute({ __AUTO: true, __PAYLOAD: payloadForAE });
+    } else {
+      // No configured rows; nothing to do
+    }
+  }
+} catch (e) {
+  console.error("[fu-chatbtn] ApplyActiveEffect failed:", e);
+  ui.notifications?.warn("Active Effect application failed (see console).");
+}
+
       // Restore prior targets
       await game.user.updateTokenTargets(prevTargets, { releaseOthers: true });
 
