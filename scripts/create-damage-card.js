@@ -157,6 +157,24 @@
     const attackerId  = attackerUuid || await guessAttackerByName(attackerName);
     const attackerImg = await tokenImgFromUuid(attackerId);
 
+    // New: tiny badges for any Active Effects that landed this hit
+const aeApplied = Array.isArray(payload?.aeApplied) ? payload.aeApplied : [];
+const aeBadgesHTML = aeApplied.length ? `
+  <div style="
+       position:absolute; left:36px; bottom:2px; z-index:6;
+       display:flex; gap:4px; align-items:center;">
+    ${aeApplied.map(e => `
+      <span class="fu-tip-host" data-tip="${encodeURIComponent(`<b>${(e.name||'Effect')}</b>`)}"
+            style="display:inline-flex; align-items:center; gap:2px;
+                   padding:.05rem .25rem; border-radius:999px;
+                   background:#f7ecd9; border:1px solid #cfa057; box-shadow:0 1px 0 rgba(255,255,255,.5) inset, 0 1px 2px rgba(0,0,0,.15);">
+        <b style="color:#8a4b22; font-size:12px; line-height:1;">+</b>
+        <img src="${(e.icon || 'icons/svg/aura.svg')}" alt="" style="width:16px; height:16px; object-fit:contain; display:block;">
+      </span>
+    `).join("")}
+  </div>
+` : "";
+
     // Colors
     const COLOR = {
       physical:"#111111", fire:"#e25822", ice:"#5ab3d4", air:"#48c774",
@@ -212,6 +230,7 @@
       <div class="fu-compact" style="position:relative;display:grid;grid-template-columns:1fr auto;align-items:center;gap:.6rem;min-height:56px;">
         <img src="${targetImg}" alt=""
              style="position:absolute;left:-14px;top:50%;transform:translateY(-55%);width:72px;height:72px;object-fit:contain;border:none;box-shadow:none;pointer-events:none;z-index:1;opacity:.98;">
+          ${aeBadgesHTML}    
         <div class="fu-right" style="margin-left:58px;display:flex;align-items:baseline;justify-content:flex-end;gap:.6rem;position:relative;z-index:2;">
           ${shieldBreak ? `<span style="color:#ff3838;font-weight:900;">BREAK!</span>` : ``}
           ${numberHTML}
