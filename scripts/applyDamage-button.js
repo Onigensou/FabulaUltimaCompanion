@@ -187,6 +187,21 @@ try {
     const payloadForAE = flagged?.payload;
 
     if (payloadForAE?.activeEffectPlan?.rows?.length) {
+      // DEBUG: show what we’re about to send to ApplyActiveEffect
+const plan = payloadForAE?.activeEffectPlan;
+console.log("[CHATBTN] invoking AE macro", {
+  chatMsgId,
+  skillUuid: plan?.skillUuid,
+  defenseTargetType: plan?.defenseTargetType,
+  accTotal: payloadForAE?.accuracy?.total ?? null,
+  defSnapShape: Array.isArray(payloadForAE?.meta?.defenseSnapshot)
+                ? "array"
+                : (payloadForAE?.meta?.defenseSnapshot ? "object" : "missing"),
+  perTargetCount: payloadForAE?.meta?.defenseSnapshot?.perTarget?.length ?? (payloadForAE?.meta?.defenseSnapshot?.length ?? 0),
+  rowsCount: plan?.rows?.length ?? 0,
+  rows: plan?.rows
+});
+
       await ae.execute({ __AUTO: true, __PAYLOAD: payloadForAE });
     } else {
       // No configured rows; nothing to do
