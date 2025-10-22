@@ -3,7 +3,6 @@
 //  Create Damage Card (module version, speakerless) · V12
 //  Exposes: game.modules.get('fabula-ultima-companion')?.api.createDamageCard(payload)
 //  Change: Speakerless now works for ALL clients via a persistent render hook
-//  Change: AE badges rendered from payload.meta.activeEffects (on_attack/ on_hit filtered)
 // ──────────────────────────────────────────────────────────
 
 (function initFUCreateDamageCard() {
@@ -27,53 +26,6 @@
   async function guessAttackerByName(name) {
     const t = canvas?.tokens?.placeables?.find(t => (t.actor?.name || t.name) === name);
     return t?.document?.uuid ?? "";
-  }
-
-  // --- NEW: build AE badges from the payload’s meta.activeEffects ---------------
-  function buildAEBadgesHTML(P, { isMiss } = {}) {
-    const list = Array.isArray(P?.meta?.activeEffects) ? P.meta.activeEffects : [];
-    if (!list.length) return "";
-
-    // Only show the ones that should visually “apply” for this instance:
-    // - on_attack: always show
-    // - on_hit:    only when the card is not a miss
-    const usable = list.filter(d => {
-      const trig = String(d?.trigger || "on_hit").toLowerCase();
-      if (trig === "on_attack") return true;
-      if (trig === "on_hit")    return !isMiss;
-      return false;
-    });
-
-    if (!usable.length) return "";
-
-    const itemsHTML = usable.map(d => {
-      const fx  = d?.effect || {};
-      const img = fx.img || fx.icon || "icons/svg/aura.svg";
-      const nm  = fx.name || d?.name || "Effect";
-      const tip = encodeURIComponent(`<b>${nm}</b>`);
-      return `
-        <span class="fu-tip-host" data-tip="${tip}"
-              style="display:inline-flex;align-items:center;justify-content:center;">
-          <img src="${img}" alt="${nm}"
-               style="width:20px;height:20px;object-fit:contain;border:0;outline:0;
-                      box-shadow:none;background:transparent;">
-        </span>
-      `;
-    }).join("");
-
-    // Positioned to hug the bottom-right of the 72px target portrait.
-    return `
-      <div class="fu-ae-badges" style="
-        position:absolute;
-        left:38px;                 /* tweak if you want tighter/looser */
-        top:calc(50% + 16px);      /* lower edge of portrait */
-        display:flex;
-        gap:2px;
-        z-index:3;
-        pointer-events:auto;">
-        ${itemsHTML}
-      </div>
-    `;
   }
 
   // ------------------ PERSISTENT RENDER HOOK ------------------
@@ -205,9 +157,6 @@
     const attackerId  = attackerUuid || await guessAttackerByName(attackerName);
     const attackerImg = await tokenImgFromUuid(attackerId);
 
-    // --- NEW: AE badges from payload
-    const aeBadgesHTML = buildAEBadgesHTML(P, { isMiss });
-
     // Colors
     const COLOR = {
       physical:"#111111", fire:"#e25822", ice:"#5ab3d4", air:"#48c774",
@@ -263,7 +212,6 @@
       <div class="fu-compact" style="position:relative;display:grid;grid-template-columns:1fr auto;align-items:center;gap:.6rem;min-height:56px;">
         <img src="${targetImg}" alt=""
              style="position:absolute;left:-14px;top:50%;transform:translateY(-55%);width:72px;height:72px;object-fit:contain;border:none;box-shadow:none;pointer-events:none;z-index:1;opacity:.98;">
-        ${aeBadgesHTML}  <!-- NEW: AE badges overlay -->
         <div class="fu-right" style="margin-left:58px;display:flex;align-items:baseline;justify-content:flex-end;gap:.6rem;position:relative;z-index:2;">
           ${shieldBreak ? `<span style="color:#ff3838;font-weight:900;">BREAK!</span>` : ``}
           ${numberHTML}
