@@ -52,22 +52,32 @@ if (!game.user?.isGM) {
     try { args = btn.dataset.fuArgs ? JSON.parse(btn.dataset.fuArgs) : {}; }
     catch { args = {}; }
 
-    const {
-      advMacroName     = "AdvanceDamage",
-      missMacroName    = "Miss",
-      advPayload       = {},
-      elementType      = "physical",
-      isSpellish       = false,
-      accuracyTotal    = 0,
-      weaponType       = "",
-      attackRange      = "Melee",
-      attackerName     = "Unknown",
-      aeMacroName      = "ApplyActiveEffect",
-      aeDirectives     = [],
-      attackerUuid     = null,
-      originalTargetUUIDs = [],
-      chatMsgId        = msgId // fallback to DOM id if not injected
-    } = args;
+    // Fill missing fields (like attackerUuid) from the card’s stored payload
+const flagged = chatMsg?.getFlag("fabula-ultima-companion", "actionCard")?.payload ?? null;
+if (flagged) {
+  // If the dataset JSON is missing these fields, borrow from the flag payload
+  if (!args.attackerUuid && flagged.meta?.attackerUuid) args.attackerUuid = flagged.meta.attackerUuid;
+  if ((!args.aeDirectives || !args.aeDirectives.length) && Array.isArray(flagged.meta?.activeEffects)) {
+    args.aeDirectives = flagged.meta.activeEffects;
+  }
+}
+
+const {
+  advMacroName     = "AdvanceDamage",
+  missMacroName    = "Miss",
+  advPayload       = {},
+  elementType      = "physical",
+  isSpellish       = false,
+  accuracyTotal    = 0,
+  weaponType       = "",
+  attackRange      = "Melee",
+  attackerName     = "Unknown",
+  aeMacroName      = "ApplyActiveEffect",
+  aeDirectives     = [],
+  attackerUuid     = null,
+  originalTargetUUIDs = [],
+  chatMsgId        = msgId
+} = args;
 
     try {
       // UI feedback
