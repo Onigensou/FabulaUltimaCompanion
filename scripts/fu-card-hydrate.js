@@ -134,15 +134,23 @@
       for (const e of ents) if (e.isIntersecting) { animateRollNumber(e.target); obs.unobserve(e.target); }
     }, { threshold: 0.1 }) : null;
 
-    // Kick existing nodes now (only within chat)
-    (chatRoot ?? document).querySelectorAll?.("#chat-log .fu-rollnum, .chat-popout .fu-rollnum, .app.chat-popout .fu-rollnum")
-      ?.forEach?.(n => io ? io.observe(n) : animateRollNumber(n));
+    // Kick existing nodes now (fixed scoping)
+    if (chatRoot) {
+      // When querying *inside* chatRoot, do NOT prefix with #chat-log
+      chatRoot.querySelectorAll(".fu-rollnum").forEach(n => io ? io.observe(n) : animateRollNumber(n));
+    } else {
+      // Fallback: scan typical chat containers from the document
+      document.querySelectorAll("#chat-log .fu-rollnum, .chat-popout .fu-rollnum, .app.chat-popout .fu-rollnum")
+        .forEach(n => io ? io.observe(n) : animateRollNumber(n));
+    }
 
+    // Mutation observer (chat-scoped) — also handle nodes that ARE .fu-rollnum
     if (chatRoot) {
       const mo = new MutationObserver((muts)=>{
         for (const m of muts) {
           m.addedNodes?.forEach?.(node => {
             if (!(node instanceof HTMLElement)) return;
+            if (node.matches?.(".fu-rollnum")) { io ? io.observe(node) : animateRollNumber(node); }
             node.querySelectorAll?.(".fu-rollnum").forEach(n => io ? io.observe(n) : animateRollNumber(n));
           });
         }
