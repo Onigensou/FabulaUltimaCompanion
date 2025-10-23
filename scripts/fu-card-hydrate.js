@@ -109,7 +109,9 @@
 
     // Roll-up numbers animation for any .fu-rollnum that appears
     const reduceMotion = matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
-    const clamp=(n,a,b)=>Math.min(Math.max(n,a),b), fmt=(n)=>n.toLocaleString?.() ?? String(n), easeOutCubic=t=>1-Math.pow(1-t,3);
+    const clamp=(n,a,b)=>Math.min(Math.max(n,a),b);
+    const fmt=(n)=>n.toLocaleString?.() ?? String(n);
+    const easeOutCubic=t=>1-Math.pow(1-t,3);
     function animateRollNumber(el) {
       if (!el || el.__rolled) return;
       el.__rolled = true;
@@ -128,37 +130,44 @@
       requestAnimationFrame(frame);
     }
 
-    // Observe chat for new .fu-rollnum (only chat roots)
-    const chatRoot = document.getElementById("chat-log") || document.querySelector(".app.chat-popout") || null;
-    const io = "IntersectionObserver" in window ? new IntersectionObserver((ents, obs) => {
-      for (const e of ents) if (e.isIntersecting) { animateRollNumber(e.target); obs.unobserve(e.target); }
-    }, { threshold: 0.1 }) : null;
+    // ---- Observe chat for new .fu-rollnum (support main chat + any popouts) ----
+    const io = "IntersectionObserver" in window
+      ? new IntersectionObserver((ents, obs) => {
+          for (const e of ents) if (e.isIntersecting) { animateRollNumber(e.target); obs.unobserve(e.target); }
+        }, { threshold: 0.1 })
+      : null;
 
-    // Kick existing nodes now (fixed scoping)
-    if (chatRoot) {
-      // When querying *inside* chatRoot, do NOT prefix with #chat-log
-      chatRoot.querySelectorAll(".fu-rollnum").forEach(n => io ? io.observe(n) : animateRollNumber(n));
-    } else {
-      // Fallback: scan typical chat containers from the document
-      document.querySelectorAll("#chat-log .fu-rollnum, .chat-popout .fu-rollnum, .app.chat-popout .fu-rollnum")
-        .forEach(n => io ? io.observe(n) : animateRollNumber(n));
-    }
+    // FIX #1: Kick existing nodes now — query .fu-rollnum directly (not "#chat-log .fu-rollnum")
+    document.querySelectorAll(".fu-rollnum")
+      .forEach(n => io ? io.observe(n) : animateRollNumber(n));
 
-    // Mutation observer (chat-scoped) — also handle nodes that ARE .fu-rollnum
-    if (chatRoot) {
+    // Attach MutationObservers to all chat roots available now
+    const roots = [
+      document.getElementById("chat-log"),
+      ...Array.from(document.querySelectorAll(".chat-popout, .app.chat-popout"))
+    ].filter(Boolean);
+
+    // FIX #2: If no root found (edge cases), fall back to document.body
+    if (!roots.length) roots.push(document.body);
+
+    for (const chatRoot of roots) {
       const mo = new MutationObserver((muts)=>{
         for (const m of muts) {
           m.addedNodes?.forEach?.(node => {
             if (!(node instanceof HTMLElement)) return;
-            if (node.matches?.(".fu-rollnum")) { io ? io.observe(node) : animateRollNumber(node); }
-            node.querySelectorAll?.(".fu-rollnum").forEach(n => io ? io.observe(n) : animateRollNumber(n));
+            node.querySelectorAll?.(".fu-rollnum")
+              .forEach(n => io ? io.observe(n) : animateRollNumber(n));
           });
         }
       });
       mo.observe(chatRoot, { childList:true, subtree:true });
-      // Clean tooltip when a message closes
-      Hooks.on("closeChatMessage", () => { const t=document.getElementById(TT_ID); if (t) t.style.display="none"; });
     }
+
+    // Clean tooltip when a message closes (works for main & popouts)
+    Hooks.on("closeChatMessage", () => {
+      const t=document.getElementById(TT_ID);
+      if (t) t.style.display="none";
+    });
   }
 
   // ---------- 2) Per-message hydration & per-client visibility ----------
