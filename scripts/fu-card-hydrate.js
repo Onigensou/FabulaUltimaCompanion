@@ -1,12 +1,12 @@
 // scripts/fu-card-hydrate.js — Foundry VTT v12
-// Runs on every client. Hydrates fu-cards so tooltips, collapses, and per-user
-// button visibility work locally for everyone.
+// Hydrates FU chat cards so tooltips, collapses, roll-ups, and per-user
+// button visibility work locally for everyone — without touching other apps.
 
 (() => {
   const MODULE_NS = "fabula-ultima-companion";
   const TT_ID = "fu-global-tooltip";
 
-  // ---------- 1) One-time global delegated UI (idempotent) ----------
+  // ---------- 1) One-time global delegated UI (idempotent & chat-scoped) ----------
   function installGlobalUIOnce() {
     if (window.__fuCardUIBound) return;
     window.__fuCardUIBound = true;
@@ -26,10 +26,18 @@
       });
       document.body.appendChild(tipEl);
     }
+
     const TIP_MARGIN = 10, CURSOR_GAP = 12;
+
+    // Only react to events that happen inside chat (main log or chat popouts)
+    const inChatScope = (evOrEl) => {
+      const el = evOrEl?.target ?? evOrEl;
+      return !!el?.closest?.("#chat-log, .chat-popout, .app.chat-popout");
+    };
+
     const placeTipAt = (x,y) => {
-      const vw=innerWidth, vh=innerHeight, r=tipEl.getBoundingClientRect();
-      let tx=x+CURSOR_GAP, ty=y+CURSOR_GAP;
+      const vw = innerWidth, vh = innerHeight, r = tipEl.getBoundingClientRect();
+      let tx = x + CURSOR_GAP, ty = y + CURSOR_GAP;
       if (tx + r.width + TIP_MARGIN > vw) tx = x - r.width - CURSOR_GAP;
       if (tx < TIP_MARGIN) tx = TIP_MARGIN;
       if (ty + r.height + TIP_MARGIN > vh) ty = y - r.height - CURSOR_GAP;
@@ -39,8 +47,9 @@
     const showTip = (html,x,y)=>{ tipEl.style.visibility="hidden"; tipEl.style.display="block"; tipEl.innerHTML=html; placeTipAt(x,y); tipEl.style.visibility="visible"; };
     const hideTip = ()=>{ tipEl.style.display="none"; };
 
-    // Delegated tooltip (mouseover/mouseout so it bubbles)
+    // Delegated tooltip — chat-scoped
     document.addEventListener("mouseover", (ev) => {
+      if (!inChatScope(ev)) return;
       const host = ev.target.closest?.(".fu-tip-host");
       if (!host) return;
       const html = decodeURIComponent(host.getAttribute("data-tip") || "");
@@ -54,22 +63,30 @@
       }, { once:true });
     });
 
-    // Delegated content-link opening (so your element/weapon links open for everyone)
+    // Delegated content-link opening — chat-scoped
     document.addEventListener("click", async (ev) => {
+      if (!inChatScope(ev)) return; // only hijack content-link clicks inside chat
       const a = ev.target.closest?.("a.content-link[data-doc-uuid],a.content-link[data-uuid]");
       if (!a) return;
       ev.preventDefault(); ev.stopPropagation();
       const uuid = a.dataset.docUuid || a.dataset.uuid;
       if (!uuid) return;
-      try { await Hotbar.toggleDocumentSheet(uuid); }
-      catch {
+      try {
+        if (globalThis.Hotbar?.toggleDocumentSheet) {
+          await Hotbar.toggleDocumentSheet(uuid);
+        } else {
+          const doc = await fromUuid(uuid);
+          doc?.sheet?.render(true);
+        }
+      } catch {
         try { const doc = await fromUuid(uuid); doc?.sheet?.render(true); }
         catch { ui.notifications?.error("Could not open linked document."); }
       }
     });
 
-    // Delegated collapsible Effect section
+    // Delegated collapsible Effect section — chat-scoped
     document.addEventListener("click", (ev) => {
+      if (!inChatScope(ev)) return; // only toggle inside chat messages
       const eff = ev.target.closest?.(".fu-effect");
       if (!eff) return;
       if (ev.target.closest("a")) return; // allow clicking links inside
@@ -111,27 +128,29 @@
       requestAnimationFrame(frame);
     }
 
-    // Observe chat for new .fu-rollnum
-    const chatRoot = document.getElementById("chat-log") || document.body;
+    // Observe chat for new .fu-rollnum (only chat roots)
+    const chatRoot = document.getElementById("chat-log") || document.querySelector(".app.chat-popout") || null;
     const io = "IntersectionObserver" in window ? new IntersectionObserver((ents, obs) => {
       for (const e of ents) if (e.isIntersecting) { animateRollNumber(e.target); obs.unobserve(e.target); }
     }, { threshold: 0.1 }) : null;
 
-    // Kick existing nodes now
-    document.querySelectorAll(".fu-rollnum").forEach(n => io ? io.observe(n) : animateRollNumber(n));
+    // Kick existing nodes now (only within chat)
+    (chatRoot ?? document).querySelectorAll?.("#chat-log .fu-rollnum, .chat-popout .fu-rollnum, .app.chat-popout .fu-rollnum")
+      ?.forEach?.(n => io ? io.observe(n) : animateRollNumber(n));
 
-    const mo = new MutationObserver((muts)=>{
-      for (const m of muts) {
-        m.addedNodes?.forEach?.(node => {
-          if (!(node instanceof HTMLElement)) return;
-          node.querySelectorAll?.(".fu-rollnum").forEach(n => io ? io.observe(n) : animateRollNumber(n));
-        });
-      }
-    });
-    mo.observe(chatRoot, { childList:true, subtree:true });
-
-    // Clean tooltip when a message closes
-    Hooks.on("closeChatMessage", () => { const t=document.getElementById(TT_ID); if (t) t.style.display="none"; });
+    if (chatRoot) {
+      const mo = new MutationObserver((muts)=>{
+        for (const m of muts) {
+          m.addedNodes?.forEach?.(node => {
+            if (!(node instanceof HTMLElement)) return;
+            node.querySelectorAll?.(".fu-rollnum").forEach(n => io ? io.observe(n) : animateRollNumber(n));
+          });
+        }
+      });
+      mo.observe(chatRoot, { childList:true, subtree:true });
+      // Clean tooltip when a message closes
+      Hooks.on("closeChatMessage", () => { const t=document.getElementById(TT_ID); if (t) t.style.display="none"; });
+    }
   }
 
   // ---------- 2) Per-message hydration & per-client visibility ----------
@@ -171,7 +190,7 @@
     installGlobalUIOnce();
   });
 
-  Hooks.on("renderChatMessage", async (chatMsg, html, data) => {
+  Hooks.on("renderChatMessage", async (chatMsg, html /*, data */) => {
     // Ensure global UI is present (covers late loads or popouts)
     installGlobalUIOnce();
     hydratePerClient(chatMsg, html);
