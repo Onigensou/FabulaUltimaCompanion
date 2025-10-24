@@ -77,7 +77,6 @@ const {
   attackerUuid     = null,
   originalTargetUUIDs = [],
   chatMsgId        = msgId
-  autoHit          = false
 } = args;
 
     try {
@@ -143,20 +142,17 @@ const {
       const accTotal  = Number(accuracyTotal ?? 0);
 
       const missUUIDs = [];
-const hitUUIDs  = [];
+      const hitUUIDs  = [];
 
-// NEW: No-check (auto-hit) bypass
-if (autoHit === true) {
-  hitUUIDs.push(...savedUUIDs);
-} else if (!isHealing && Number.isFinite(accTotal)) {
-  for (const u of savedUUIDs) {
-    const usedDefense = await defenseForUuid(u, !!isSpellish);
-    const willMiss    = Number.isFinite(usedDefense) && accTotal < usedDefense;
-    if (willMiss) missUUIDs.push(u); else hitUUIDs.push(u);
-  }
-} else {
-  hitUUIDs.push(...savedUUIDs);
-}
+      if (!isHealing && Number.isFinite(accTotal)) {
+        for (const u of savedUUIDs) {
+          const usedDefense = await defenseForUuid(u, !!isSpellish);
+          const willMiss    = Number.isFinite(usedDefense) && accTotal < usedDefense;
+          if (willMiss) missUUIDs.push(u); else hitUUIDs.push(u);
+        }
+      } else {
+        hitUUIDs.push(...savedUUIDs);
+      }
 
       const prevTargets = Array.from(game.user?.targets ?? []).map(t => t.id);
 
