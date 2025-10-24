@@ -68,7 +68,11 @@ const {
   advPayload       = {},
   elementType      = "physical",
   isSpellish       = false,
-  accuracyTotal    = 0,
+
+  // NEW:
+  hasAccuracy      = true,          // default true to preserve old cards’ behavior
+  accuracyTotal    = null,          // null means “no check/auto-hit”
+
   weaponType       = "",
   attackRange      = "Melee",
   attackerName     = "Unknown",
