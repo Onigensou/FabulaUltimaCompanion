@@ -36,28 +36,37 @@
   }
 
   // Resolve actor from uuid or current selection
-  async function resolveActor(actorUuid) {
-    if (actorUuid) {
-      try { return await fromUuid(actorUuid); } catch (e) {}
-    }
-    // fallback: selected token's actor
-    const sel = canvas?.tokens?.controlled?.[0];
-    return sel?.actor ?? game.user?.character ?? null;
+async function resolveActor(actorUuid) {
+  if (actorUuid) {
+    try {
+      const doc = await fromUuid(actorUuid);
+      // If it's a TokenDocument, use its actor
+      if (doc?.actor) return doc.actor;
+      // If it's an Actor, use it directly
+      if (doc?.documentName === "Actor" || doc?.type) return doc;
+    } catch (e) {}
   }
+  // fallback: selected token's actor, then user's assigned character
+  const sel = canvas?.tokens?.controlled?.[0];
+  return sel?.actor ?? game.user?.character ?? null;
+}
 
-  // Pull cut-in URL from your PC sheet fields
-  function pickCutInUrl(actor, type, overrideUrl) {
-    if (overrideUrl && String(overrideUrl).trim()) return String(overrideUrl).trim();
+  // Pull cut-in URL from your PC sheet fields (under system.props.*)
+function pickCutInUrl(actor, type, overrideUrl) {
+  if (overrideUrl && String(overrideUrl).trim()) return String(overrideUrl).trim();
+  const sys   = actor?.system ?? {};
+  const props = sys.props ?? {}; // your sheet stores them under system.props.*
 
-    const sys = actor?.system ?? {};
-    const map = {
-      zero:     sys.cut_in_zero_power,
-      critical: sys.cut_in_critical,
-      fumble:   sys.cut_in_fumble
-    };
-    const url = map[type] ?? "";
-    return (typeof url === "string" && url.trim().length) ? url.trim() : "";
-  }
+  const map = {
+    zero:     props.cut_in_zero_power,
+    critical: props.cut_in_critical,
+    fumble:   props.cut_in_fumble
+  };
+
+  const raw = map[type];
+  const url = (typeof raw === "string") ? raw.trim() : "";
+  return url.length ? url : "";
+}
 
   // Public API: Broadcast
   async function broadcastCutIn({ actorUuid=null, type="critical", imgUrl=null, opts={} } = {}) {
