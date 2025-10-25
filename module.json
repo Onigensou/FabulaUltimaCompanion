@@ -20,8 +20,7 @@
   "scripts/invokeButtons.js",
   "scripts/fu-card-hydrate.js",
   "scripts/create-damage-card.js",
-  "scripts/cutin-manager.js",
-  "scripts/cutin-receiver.js",
+  "scripts/cutin-client.js",
   "scripts/cutin-broadcast.js"
   ],
   "styles": ["styles/style.css"],
