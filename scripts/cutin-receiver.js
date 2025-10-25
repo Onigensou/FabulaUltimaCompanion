@@ -13,6 +13,9 @@
   const FLAG       = "__FU_CUTIN_READY_v3";
   const TAG_ID     = "fu-portrait-cutin-layer";
   const NS         = "FUCompanion";
+  let __FU_LAST_SFX_AT = 0;
+  const __FU_SFX_GUARD_MS = 900; // play SFX at most once per 0.9s per client
+
 
   if (window[FLAG]) return; // idempotent guard
 
@@ -216,12 +219,19 @@
       // If payload has no imgUrl (fail-safe), just return quietly.
       if (!payload?.imgUrl) return;
 
-      // SFX (per-client at t0)
-      if (payload.sfxUrl) {
-        try {
-          await (foundry?.audio?.AudioHelper ?? AudioHelper).play({ src: payload.sfxUrl, volume: payload.sfxVol ?? 0.9, loop: false }, true);
-        } catch (err) { console.warn("[FU Cut-In] SFX failed:", err); }
-      }
+      // SFX (per-client at t0) with cool-down to avoid bursts
+const now = Date.now();
+if (payload.sfxUrl && (now - __FU_LAST_SFX_AT) >= __FU_SFX_GUARD_MS) {
+  try {
+    await (foundry?.audio?.AudioHelper ?? AudioHelper).play(
+      { src: payload.sfxUrl, volume: payload.sfxVol ?? 0.9, loop: false },
+      true
+    );
+    __FU_LAST_SFX_AT = now;
+  } catch (err) {
+    console.warn("[FU Cut-In] SFX failed:", err);
+  }
+} // else: skip SFX but still render the visual
 
       await manager.play(payload);
     } finally {
