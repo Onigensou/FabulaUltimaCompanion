@@ -1,10 +1,5 @@
 // ─────────────────────────────────────────────────────────────
 //  FU Portrait Cut-In • Broadcaster (Foundry VTT v12)
-//  Module: fabula-ultima-companion · Socketlib executeForEveryone
-//  - Resolve image & sfx based on token + cut-in type
-//  - Build deterministic payload with shared t0
-//  - Debounce; local fallback to receiver if present
-//  Public API: window.FUCompanion.api.cutinBroadcast(opts)
 // ─────────────────────────────────────────────────────────────
 (() => {
   const MODULE_ID    = "fabula-ultima-companion";
@@ -27,7 +22,8 @@
     flashPeak: 0.9, flashInMs: 70, flashOutMs: 180, flashDelayMs: 60,
     slideInMs: 650, holdMs: 900, slideOutMs: 650,
     portraitHeightRatio: 0.9, portraitBottomMargin: 40, portraitInsetX: 220,
-    sfxVol: 0.9
+    sfxVol: 0.9,
+    ttlMs: 3000 // ⟵ NEW: expires window to avoid late-join floods
   };
 
   // Helpers
@@ -41,19 +37,18 @@
       default:           return null;
     }
   }
-  // Validate a number or fall back to default
   function num(v, d) { const n = Number(v); return Number.isFinite(n) ? n : d; }
 
   async function cutinBroadcast({
-    tokenUuid,        // string (required if imgUrl not provided)
-    type,             // "critical" | "zero_power" | "fumble"
-    imgUrl,           // optional override image
+    tokenUuid,
+    type, imgUrl,
     // optional visual overrides:
     delayMs, dimAlpha, dimFadeMs,
     flashPeak, flashInMs, flashOutMs, flashDelayMs,
     slideInMs, holdMs, slideOutMs,
     portraitHeightRatio, portraitBottomMargin, portraitInsetX,
-    sfxUrl, sfxVol
+    sfxUrl, sfxVol,
+    ttlMs
   } = {}) {
     // Debounce
     const now  = Date.now();
@@ -64,7 +59,7 @@
     }
     window[DEBOUNCE_KEY] = now;
 
-    // socketlib ready?
+    // socketlib
     const sockMod = game.modules.get("socketlib");
     if (!sockMod?.active || !window.socketlib) {
       ui.notifications.error("FU Cut-In: socketlib not found/active.");
@@ -80,7 +75,7 @@
     }
     const finalSfx = sfxUrl ?? (type ? SFX[type] : null);
 
-    // Validate all numbers and compute t0
+    // Validate all numbers
     const v = {
       delayMs:              num(delayMs,              DEFAULTS.delayMs),
       dimAlpha:             num(dimAlpha,             DEFAULTS.dimAlpha),
@@ -96,12 +91,19 @@
       portraitBottomMargin: num(portraitBottomMargin, DEFAULTS.portraitBottomMargin),
       portraitInsetX:       num(portraitInsetX,       DEFAULTS.portraitInsetX),
       sfxVol:               num(sfxVol,               DEFAULTS.sfxVol),
+      ttlMs:                num(ttlMs,                DEFAULTS.ttlMs)
     };
-    const t0 = Date.now() + v.delayMs;
+
+    // Shared start time & expiry
+    const t0       = Date.now() + v.delayMs;
+    const expireAt = t0 + v.ttlMs;
+
+    // Only target users who are currently active
+    const activeUsers = (game.users?.filter(u => u.active) ?? []).map(u => u.id);
 
     const payload = {
       imgUrl: url || null,
-      t0,
+      t0, expireAt,
       sfxUrl: finalSfx || null,
       sfxVol: v.sfxVol,
       dimAlpha: v.dimAlpha,
@@ -115,16 +117,21 @@
       slideOutMs: v.slideOutMs,
       portraitHeightRatio: v.portraitHeightRatio,
       portraitBottomMargin: v.portraitBottomMargin,
-      portraitInsetX: v.portraitInsetX
+      portraitInsetX: v.portraitInsetX,
+      allowedUserIds: activeUsers // ⟵ fallback guard (receiver will check)
     };
 
-    // Broadcast to everyone
-    await socket.executeForEveryone(ACTION_KEY, payload);
+    // Prefer executeForUsers if available
+    if (typeof socket.executeForUsers === "function" && activeUsers.length) {
+      await socket.executeForUsers(ACTION_KEY, activeUsers, payload);
+    } else {
+      await socket.executeForEveryone(ACTION_KEY, payload);
+    }
 
-    // Local fallback (fire on this client, too)
+    // Local fallback
     try { window.__FU_CUTIN_PLAY?.(payload); } catch {}
 
-    // Release debounce once the show should have started
+    // Release debounce
     setTimeout(() => {
       if (window[DEBOUNCE_KEY] === now) window[DEBOUNCE_KEY] = 0;
     }, v.delayMs + 200);
