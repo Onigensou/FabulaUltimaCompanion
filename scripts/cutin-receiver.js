@@ -236,23 +236,40 @@
   }
 
   socket.register(ACTION_KEY, async (payload) => {
-    const sigObj = { ...payload }; delete sigObj.t0;
-    const sig = JSON.stringify(sigObj);
-    const now = Date.now();
+  // 1) Optional whitelist check (from broadcaster fallback)
+  const myUserId = game.user?.id;
+  if (Array.isArray(payload?.allowedUserIds) && myUserId) {
+    if (!payload.allowedUserIds.includes(myUserId)) return; // not for me
+  }
 
-    if (sig === lastSig && (now - lastSigAt) < DUP_SUPPRESS_MS) {
-      // If duplicate and we’re busy, refresh or append to queue
-      if (BUSY) {
-        const idx = QUEUE.findIndex(q => JSON.stringify(({...q, t0:undefined})) === sig);
-        if (idx >= 0) QUEUE[idx] = payload; else QUEUE.push(payload);
-      }
-      return;
+  // 2) Expiry guard: if this client received it too late, ignore
+  const now = Date.now();
+  const expireAt = Number(payload?.expireAt) || (Number(payload?.t0) + 3000);
+  if (Number.isFinite(expireAt) && now > expireAt) {
+    // Too late—drop silently to avoid flooding late joiners
+    return;
+  }
+
+  // (existing duplicate suppression and queue follow)
+  const sigObj = { ...payload }; delete sigObj.t0; delete sigObj.expireAt; delete sigObj.allowedUserIds;
+  const sig = JSON.stringify(sigObj);
+  const now2 = Date.now();
+
+  if (sig === lastSig && (now2 - lastSigAt) < DUP_SUPPRESS_MS) {
+    if (BUSY) {
+      const idx = QUEUE.findIndex(q => {
+        const a = { ...q }; delete a.t0; delete a.expireAt; delete a.allowedUserIds;
+        return JSON.stringify(a) === sig;
+      });
+      if (idx >= 0) QUEUE[idx] = payload; else QUEUE.push(payload);
     }
-    lastSig = sig; lastSigAt = now;
+    return;
+  }
+  lastSig = sig; lastSigAt = now2;
 
-    if (BUSY) { QUEUE.push(payload); return; }
-    runCutIn(payload);
-  });
+  if (BUSY) { QUEUE.push(payload); return; }
+  runCutIn(payload);
+});
 
   // Expose public API & local fallback
   window[NS] = window[NS] || {};
