@@ -1,124 +1,143 @@
+// scripts/cutin-broadcast.js
 // ─────────────────────────────────────────────────────────────
-//  FU Cut-In • Broadcaster API (Foundry VTT v12 + socketlib)
-//  - Call this from ANY macro or script to play a cut-in
-//  - Chooses image from actor sheet (Zero Power / Critical / Fumble)
-//  - Debounced sender + socket executeForEveryone + local fallback
+//  Fabula Ultima Companion • Cut-in Broadcaster (Foundry VTT v12)
+//  • Exposes: game.modules.get('fabula-ultima-companion')?.api.cutin.broadcast(opts)
+//  • Looks up actor-specific art by type (critical / zeroPower / fumble)
+//  • Debounced; skips gracefully if actor has no cut-in configured
+//  • Plays type-specific SFX (Critical / Zero Power / Fumble)
+//  Requires: socketlib
 // ─────────────────────────────────────────────────────────────
 (() => {
   const MODULE_ID  = "fabula-ultima-companion";
-  const ACTION_KEY = "FU_CUTIN_PLAY";
-
-  // SFX by type (provided)
-  const SFX = {
-    critical: "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/BurstMax.ogg",
-    zero:     "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/ChargeAttack.ogg",
-    fumble:   "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/Down2.ogg"
-  };
-
-  // UI-friendly defaults per type
-  const PRESET = {
-    critical: { dimAlpha: 0.65, flashPeak: 1.0, flashInMs: 60,  flashOutMs: 180, flashDelayMs: 40, slideInMs: 380, holdMs: 950,  slideOutMs: 600 },
-    zero:     { dimAlpha: 0.7,  flashPeak: 0.9, flashInMs: 100, flashOutMs: 220, flashDelayMs: 80, slideInMs: 520, holdMs: 1200, slideOutMs: 700 },
-    fumble:   { dimAlpha: 0.5,  flashPeak: 0.6, flashInMs: 60,  flashOutMs: 180, flashDelayMs: 0,  slideInMs: 420, holdMs: 850,  slideOutMs: 600 }
-  };
-
-  // Debounce to block accidental double taps
+  const ACTION_KEY = "FU_CUTIN_PLAY_V1";
+  const EMIT_FLAG  = "__FU_CUTIN_LAST_EMIT_AT";
   const DEBOUNCE_MS = 600;
-  const LAST_KEY    = "__FU_CUTIN_LAST_EMIT";
-  function debounced() {
-    const now  = Date.now();
-    const last = window[LAST_KEY] ?? 0;
-    if (now - last < DEBOUNCE_MS) return false;
-    window[LAST_KEY] = now;
-    // auto-clear shortly after scheduled start
-    setTimeout(() => { if (window[LAST_KEY] === now) window[LAST_KEY] = 0; }, 1200);
-    return true;
-  }
 
-  // Resolve actor from uuid or current selection
-async function resolveActor(actorUuid) {
-  if (actorUuid) {
-    try {
-      const doc = await fromUuid(actorUuid);
-      // If it's a TokenDocument, use its actor
-      if (doc?.actor) return doc.actor;
-      // If it's an Actor, use it directly
-      if (doc?.documentName === "Actor" || doc?.type) return doc;
-    } catch (e) {}
-  }
-  // fallback: selected token's actor, then user's assigned character
-  const sel = canvas?.tokens?.controlled?.[0];
-  return sel?.actor ?? game.user?.character ?? null;
-}
-
-  // Pull cut-in URL from your PC sheet fields (under system.props.*)
-function pickCutInUrl(actor, type, overrideUrl) {
-  if (overrideUrl && String(overrideUrl).trim()) return String(overrideUrl).trim();
-  const sys   = actor?.system ?? {};
-  const props = sys.props ?? {}; // your sheet stores them under system.props.*
-
-  const map = {
-    zero:     props.cut_in_zero_power,
-    critical: props.cut_in_critical,
-    fumble:   props.cut_in_fumble
+  // SFX map (per your request)
+  const SFX = {
+    critical:  { url: "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/BurstMax.ogg",   vol: 0.9 },
+    zeroPower: { url: "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/ChargeAttack.ogg", vol: 0.9 },
+    fumble:    { url: "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/Down2.ogg",       vol: 0.9 }
   };
 
-  const raw = map[type];
-  const url = (typeof raw === "string") ? raw.trim() : "";
-  return url.length ? url : "";
-}
+  // Visual defaults (match your PoC feel)
+  const DEFAULTS = {
+    DELAY_MS: 900,                 // schedule slightly in the future for sync
+    DIM_ALPHA: 0.6,                // background dim amount
+    DIM_FADE_MS: 200,
+    SLIDE_IN_MS: 650,
+    HOLD_MS: 900,
+    SLIDE_OUT_MS: 650,
+    PORTRAIT_HEIGHT_RATIO: 0.90,   // 90% of screen height
+    PORTRAIT_BOTTOM_MARGIN: 40,
+    PORTRAIT_INSET_X: 220,
+    FLASH_COLOR: 0xFFFFFF,
+    FLASH_PEAK: 0.9,
+    FLASH_IN_MS: 70,
+    FLASH_OUT_MS: 180,
+    FLASH_DELAY_MS: 60
+  };
 
-  // Public API: Broadcast
-  async function broadcastCutIn({ actorUuid=null, type="critical", imgUrl=null, opts={} } = {}) {
-    const actor = await resolveActor(actorUuid);
-    // If no actor (or NPCs without those fields) skip gracefully
-    const img = pickCutInUrl(actor, type, imgUrl);
-    if (!img) {
-      // quietly skip (failsafe requirement)
-      console.log("[FU Cut-In] No cut-in image defined for this character; skipping.");
-      return false;
-    }
+  // Safe lookup helper for token/actor
+  async function resolveActorAndImage({ tokenUuid, type }) {
+    let tokenDoc = null;
+    try { tokenDoc = tokenUuid ? await fromUuid(tokenUuid) : canvas?.tokens?.controlled?.[0]?.document; } catch {}
+    const actor = tokenDoc?.actor ?? game?.actors?.get(tokenUuid); // fallback
 
-    // Socketlib
-    const sockMod = game.modules.get("socketlib");
-    const socketOk = !!(sockMod?.active && window.socketlib);
-    const socket   = socketOk ? socketlib.registerModule(MODULE_ID) : null;
+    if (!actor) return { imgUrl: null, actor: null };
 
-    // Compose payload
-    const t0 = Date.now() + 800; // small future start to sync everyone
-    const preset  = PRESET[type] ?? PRESET.critical;
-    const payload = {
-      imgUrl: img,
-      t0,
-      sfxUrl: SFX[type] ?? null,
-      sfxVol: 0.9,
-      dimAlpha: preset.dimAlpha, dimFadeMs: 200,
-      flashColor: 0xFFFFFF, flashPeak: preset.flashPeak, flashInMs: preset.flashInMs, flashOutMs: preset.flashOutMs, flashDelayMs: preset.flashDelayMs,
-      slideInMs: preset.slideInMs, holdMs: preset.holdMs, slideOutMs: preset.slideOutMs,
-      portraitHeightRatio: 0.9, portraitBottomMargin: 40, portraitInsetX: 220,
-      ...opts // allow caller overrides
+    // Sheet keys you specified
+    const props = actor?.system?.props ?? {};
+    const map = {
+      critical:  props?.cut_in_critical,
+      zeroPower: props?.cut_in_zero_power,
+      fumble:    props?.cut_in_fumble
     };
 
-    // Debounce accidental re-press
-    if (!debounced()) {
+    const imgUrl = (map[type] || "").toString().trim() || null;
+    return { imgUrl, actor };
+  }
+
+  // Broadcast core
+  async function broadcastCutIn(opts = {}) {
+    // Debounce accidental double-clicks
+    const now = Date.now();
+    const last = window[EMIT_FLAG] ?? 0;
+    if (now - last < DEBOUNCE_MS) {
       ui.notifications.warn("Cut-in already queued—please wait a moment.");
       return false;
     }
+    window[EMIT_FLAG] = now;
 
-    // Broadcast to all (and local fallback)
-    if (socketOk) await socket.executeForEveryone(ACTION_KEY, payload);
-    try { window.__FU_CUTIN_PLAY?.(payload); } catch (e) { /* ignore */ }
+    // Require socketlib
+    const sockMod = game.modules.get("socketlib");
+    if (!sockMod?.active || !window.socketlib) {
+      ui.notifications.error("Fabula Ultima Companion: socketlib is required for Cut-ins.");
+      return false;
+    }
+    const socket = socketlib.registerModule(MODULE_ID);
 
-    console.log("[FU Cut-In • Broadcast] emitted", { type, actor: actor?.name, payload });
+    // Required option: type
+    const type = String(opts.type || "").toLowerCase();
+    if (!["critical", "zeropower", "fumble"].includes(type)) {
+      ui.notifications.error("Cut-in broadcast: opts.type must be 'critical' | 'zeroPower' | 'fumble'.");
+      return false;
+    }
+    const normalizedType = (type === "zeropower") ? "zeroPower" : type;
+
+    // Resolve actor + art
+    const { imgUrl } = await resolveActorAndImage({ tokenUuid: opts.tokenUuid, type: normalizedType });
+
+    // If no art configured for this actor → skip gracefully (no errors)
+    if (!imgUrl) {
+      console.log("[FU Cut-in] No image set for", normalizedType, "—skipping.");
+      // Clear debounce sooner so user can try another cut-in quickly
+      setTimeout(() => { if (window[EMIT_FLAG] === now) window[EMIT_FLAG] = 0; }, 200);
+      return false;
+    }
+
+    // Type SFX
+    const sfx = SFX[normalizedType] || {};
+    const t0  = Date.now() + (opts.delayMs ?? DEFAULTS.DELAY_MS);
+
+    const payload = {
+      imgUrl,
+      t0,
+      sfxUrl: opts.sfxUrl ?? sfx.url ?? null,
+      sfxVol: opts.sfxVol ?? sfx.vol ?? 0.9,
+      dimAlpha: opts.dimAlpha ?? DEFAULTS.DIM_ALPHA,
+      dimFadeMs: opts.dimFadeMs ?? DEFAULTS.DIM_FADE_MS,
+      slideInMs: opts.slideInMs ?? DEFAULTS.SLIDE_IN_MS,
+      holdMs: opts.holdMs ?? DEFAULTS.HOLD_MS,
+      slideOutMs: opts.slideOutMs ?? DEFAULTS.SLIDE_OUT_MS,
+      portraitHeightRatio: opts.portraitHeightRatio ?? DEFAULTS.PORTRAIT_HEIGHT_RATIO,
+      portraitBottomMargin: opts.portraitBottomMargin ?? DEFAULTS.PORTRAIT_BOTTOM_MARGIN,
+      portraitInsetX: opts.portraitInsetX ?? DEFAULTS.PORTRAIT_INSET_X,
+      flashColor: opts.flashColor ?? DEFAULTS.FLASH_COLOR,
+      flashPeak: opts.flashPeak ?? DEFAULTS.FLASH_PEAK,
+      flashInMs: opts.flashInMs ?? DEFAULTS.FLASH_IN_MS,
+      flashOutMs: opts.flashOutMs ?? DEFAULTS.FLASH_OUT_MS,
+      flashDelayMs: opts.flashDelayMs ?? DEFAULTS.FLASH_DELAY_MS
+    };
+
+    // Broadcast to all clients (sync via t0).
+    await socket.executeForEveryone(ACTION_KEY, payload);
+
+    // Local fallback (if receiver is already loaded on this client)
+    try { window.FUCompanion?.cutin?.playLocal?.(payload); } catch (_) {}
+
+    // Release debounce after scheduled start window so further clicks work
+    setTimeout(() => { if (window[EMIT_FLAG] === now) window[EMIT_FLAG] = 0; }, (opts.delayMs ?? DEFAULTS.DELAY_MS) + 200);
+
+    console.log("[FU Cut-in] Broadcast", normalizedType, payload);
     return true;
   }
 
-  // Export into FUCompanion namespace without clobbering the renderer object
-  window.FUCompanion = window.FUCompanion || {};
-  window.FUCompanion.cutin = window.FUCompanion.cutin || {};
-  // Attach a .broadcast method alongside .play/.preload from the client script
-  window.FUCompanion.cutin.broadcast = broadcastCutIn;
+  // Expose API on the module for easy macro calls
+  const mod = game.modules.get(MODULE_ID);
+  mod.api = mod.api || {};
+  mod.api.cutin = mod.api.cutin || {};
+  mod.api.cutin.broadcast = broadcastCutIn;
 
-  // Convenience short alias for macros
-  window.FU_CUTIN_BROADCAST = broadcastCutIn;
+  console.log("[FU Cut-in] Broadcaster API ready at modules.get('%s').api.cutin.broadcast(opts)", MODULE_ID);
 })();
