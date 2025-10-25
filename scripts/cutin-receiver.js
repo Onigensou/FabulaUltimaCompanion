@@ -14,15 +14,18 @@
   const TAG_ID     = "fu-portrait-cutin-layer";
   const NS         = "FUCompanion";
 
-  if (window[FLAG]) return; // idempotent install
+  if (window[FLAG]) return; // idempotent guard
 
-  // ————————————————— Dependencies: socketlib
-  const sockMod = game.modules.get("socketlib");
-  if (!sockMod?.active || !window.socketlib) {
-    ui.notifications.error("FU Cut-In: socketlib not found/active.");
-    return;
-  }
-  const socket = socketlib.registerModule(MODULE_ID);
+  // Defer full install until Foundry 'ready'
+  Hooks.once("ready", () => {
+    try {
+      // ——— socketlib check
+      const sockMod = game.modules.get("socketlib");
+      if (!sockMod?.active || !window.socketlib) {
+        ui.notifications.error("FU Cut-In: socketlib not found/active.");
+        return;
+      }
+      const socket = socketlib.registerModule(MODULE_ID);
 
   // ————————————————— Small easing/tween helpers (scoped, unique names)
   const easeOutCubic = t => 1 - Math.pow(1 - t, 3);
@@ -265,6 +268,10 @@
     } catch (e) { console.warn("[FU Cut-In] Warm-up failed:", e); }
   });
 
-  window[FLAG] = true;
-  console.log("[FU Cut-In] Receiver installed.");
+   window[FLAG] = true;
+      console.log("[FU Cut-In] Receiver installed.");
+    } catch (err) {
+      console.error("[FU Cut-In] Receiver failed to install:", err);
+    }
+  });
 })();
