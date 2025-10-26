@@ -212,20 +212,6 @@ const dieInfo = `
   <p>Choose which die to reroll (once per action):</p>
 `;
 
-    // Local-only audio helper (no global overlap or cutoffs)
-async function playLocal(url, volume = 0.65) {
-  try {
-    if (globalThis.AudioHelper?.play) {
-      await AudioHelper.play({ src: url, volume, loop: false }, true); // true = local-only
-    } else {
-      const a = new Audio(url); a.volume = volume; a.play().catch(()=>{});
-    }
-  } catch {}
-}
-const SFX_MOVE    = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/CursorMove.mp3";
-const SFX_CONFIRM = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/Dice.wav";
-const SFX_CANCEL  = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/Cursor_Cancel.mp3";
-
 // Sepia card UI with icons + keyboard nav (visual-only)
 const ATTR_ICONS = {
   DEX: "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Item%20Icon/boot.png",
@@ -316,22 +302,16 @@ const choice = await new Promise((resolve) => new Dialog({
   </form>`,
   buttons: {
     ok: {
-  label: "Reroll",
-  callback: async (html) => {
-    await playLocal(SFX_CONFIRM, 0.9);
-    const root = html[0];
-    const aOn = root.querySelector('[data-which="A"]')?.dataset.sel === "1";
-    const bOn = root.querySelector('[data-which="B"]')?.dataset.sel === "1";
-    return resolve(aOn && bOn ? "AB" : aOn ? "A" : bOn ? "B" : null);
-  }
-},
-cancel: { 
-  label: "Cancel", 
-  callback: async () => {                 
-    await playLocal(SFX_CANCEL, 0.8);        
-    return resolve(null);
-  } 
-},
+      label: "Reroll",
+      callback: (html) => {
+        const root = html[0];
+        const aOn = root.querySelector('[data-which="A"]')?.dataset.sel === "1";
+        const bOn = root.querySelector('[data-which="B"]')?.dataset.sel === "1";
+        return resolve(aOn && bOn ? "AB" : aOn ? "A" : bOn ? "B" : null);
+      }
+    },
+    cancel: { label: "Cancel", callback: () => resolve(null) }
+  },
   default: "ok",
   close: () => resolve(null),
   render: (html) => {
@@ -339,15 +319,6 @@ cancel: {
     const btnA  = root.querySelector('[data-which="A"]');
     const btnB  = root.querySelector('[data-which="B"]');
     const okBtn = root.closest('.app')?.querySelector('.dialog-buttons button[data-button="ok"]');
-
-    let lastMove = 0; 
-const MOVE_COOLDOWN = 80;
-const tryMove = () => {
-  const now = Date.now();
-  if (now - lastMove < MOVE_COOLDOWN) return;
-  lastMove = now;
-  playLocal(SFX_MOVE, 0.65);
-};
 
     const toggle = (btn) => {
       btn.dataset.sel = btn.dataset.sel === "1" ? "0" : "1";
@@ -357,8 +328,6 @@ const tryMove = () => {
 
     [btnA, btnB].forEach((b) => {
       b.setAttribute("tabindex", "0");
-      b.addEventListener("mouseenter", tryMove);
-      b.addEventListener("focus", tryMove);
       b.addEventListener("click", (ev) => { ev.preventDefault(); toggle(b); });
       b.addEventListener("keydown", (ev) => {
         if (ev.key === "ArrowLeft" || ev.key === "ArrowRight") { (b === btnA ? btnB : btnA).focus(); }
