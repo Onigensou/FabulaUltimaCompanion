@@ -86,6 +86,45 @@
     if (btn) btn.dataset.fuLock = "0";
   }
 
+  // ---------- Fabula / Ultima helpers ----------
+function isVillainOrBoss(actor) {
+  const P = actor?.system?.props ?? {};
+  return !!(P.isVillain || P.isBoss); // sheet checkboxes on villain/boss sheets
+}
+
+function resourceKeyAndLabel(actor) {
+  const useUltima = isVillainOrBoss(actor);
+  return {
+    key: useUltima ? "ultima_point" : "fabula_point",
+    label: useUltima ? "Ultima Point" : "Fabula Point"
+  };
+}
+
+function currentPoints(actor, key) {
+  const P = actor?.system?.props ?? {};
+  const n = Number(P?.[key] ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function canPayInvoke(actor) {
+  const { key, label } = resourceKeyAndLabel(actor);
+  const cur = currentPoints(actor, key);
+  return { ok: cur >= 1, key, label, cur };
+}
+
+async function payInvoke(actor) {
+  const { key, label } = resourceKeyAndLabel(actor);
+  const cur = currentPoints(actor, key);
+  if (cur < 1) return { ok: false, key, label, cur };
+  try {
+    await actor.update({ [`system.props.${key}`]: cur - 1 });
+    return { ok: true, key, label, cur: cur - 1 };
+  } catch (e) {
+    console.warn("[fu-invokeButtons] payInvoke failed:", e);
+    return { ok: false, key, label, cur };
+  }
+}
+
   // Actor → die size for attribute label (e.g., "DEX"→d?)
   function dieSizeFor(actor, attr) {
     const k = String(attr || "").toLowerCase();
@@ -153,6 +192,15 @@
     const attacker = await getActorFromUuid(atkUuid);
     if (!ensureOwner(attacker, payload, "Invoke Trait")) return;
 
+    // 1) Pre-check resources (block immediately if none)
+{
+  const chk = canPayInvoke(attacker);
+  if (!chk.ok) {
+    ui.notifications?.warn(`Not enough ${chk.label}s (need 1).`);
+    return;
+  }
+}
+
     const A = payload.accuracy;
     if (!A) return ui.notifications?.warn("No Accuracy check to reroll.");
 
@@ -186,6 +234,15 @@
       ui.notifications.info("Trait invoke cancelled.");
       return "CANCELLED";
     }
+
+    // Spend 1 point now that the player confirmed the reroll
+{
+  const spend = await payInvoke(attacker);
+  if (!spend.ok) {
+    ui.notifications?.error(`Could not spend 1 ${spend.label}.`);
+    return;
+  }
+}
 
     // Reroll
     const dA = dieSizeFor(attacker, A.A1);
@@ -266,6 +323,15 @@
     const attacker = await getActorFromUuid(atkUuid);
     if (!ensureOwner(attacker, payload, "Invoke Bond")) return;
 
+    // 1) Pre-check resources (block immediately if none)
+{
+  const chk = canPayInvoke(attacker);
+  if (!chk.ok) {
+    ui.notifications?.warn(`Not enough ${chk.label}s (need 1).`);
+    return;
+  }
+}
+
     const A = payload.accuracy;
     if (!A) return ui.notifications?.warn("No Accuracy check to modify.");
 
@@ -300,6 +366,14 @@
       if (pick == null) { ui.notifications.info("Bond invoke cancelled."); return "CANCELLED"; }
       chosen = viable.find(b => Number(b.index) === Number(pick)) ?? chosen;
     }
+
+    {
+  const spend = await payInvoke(attacker);
+  if (!spend.ok) {
+    ui.notifications?.error(`Could not spend 1 ${spend.label}.`);
+    return;
+  }
+}
 
     const addBonus = Number(chosen.bonus || 0);
     if (!(addBonus > 0)) return ui.notifications?.warn("Chosen Bond gives no bonus.");
