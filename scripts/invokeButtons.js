@@ -204,48 +204,115 @@ async function payInvoke(actor) {
     const A = payload.accuracy;
     if (!A) return ui.notifications?.warn("No Accuracy check to reroll.");
 
-    // Dialog to choose which die(s) to reroll — now with two toggle buttons
-const dieInfo = `
-  <p><b>Current:</b><br>
-  ${A.A1} → d${A.dA} = ${A.rA.total}<br>
-  ${A.A2} → d${A.dB} = ${A.rB.total}</p>
-  <p>Choose which die to reroll (once per action):</p>
-`;
+    // Dialog to choose which die(s) to reroll — JRPG UI + local SFX
+const ATTR_ICONS = {
+  DEX: "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Item%20Icon/boot.png",
+  MIG: "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Item%20Icon/asan.png",
+  INS: "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Item%20Icon/book.png",
+  WLP: "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Item%20Icon/stat.png"
+};
+const FALLBACK_ICON = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Item%20Icon/dice.png";
+const iconFor = (attr) => ATTR_ICONS[(attr || "").toUpperCase()] ?? FALLBACK_ICON;
+
+// SFX (local-only)
+const SFX_MOVE    = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/CursorMove.mp3";
+const SFX_CONFIRM = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/Dice.wav";
+const SFX_CANCEL  = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/Cursor_Cancel.mp3";
+async function playLocal(url, volume = 0.65) {
+  try {
+    if (globalThis.AudioHelper?.play) {
+      await AudioHelper.play({ src: url, volume, loop: false }, true); // local-only
+    } else {
+      const a = new Audio(url); a.volume = volume; a.play().catch(()=>{});
+    }
+  } catch {}
+}
 
 const choice = await new Promise((resolve) => new Dialog({
   title: "Invoke Trait — Reroll",
   content: `<form>
-    ${dieInfo}
     <style>
-      .fu-die-grid{display:flex;gap:.5rem;margin:.25rem 0 .5rem;}
-      .fu-die-toggle{
-        display:flex;align-items:center;gap:.5rem;
-        padding:.5rem .6rem;border:1px solid #bcbcbc;border-radius:6px;
-        cursor:pointer;user-select:none;background:#f4f4f4;
+      .fu-root{ --parch-1:#f6ebd3; --parch-2:#efdfc3; --parch-3:#e7d3b1; --ink:#3b2a19; --shadow:rgba(0,0,0,.22); --accent:#e35151; }
+      .fu-title{font-weight:700;margin:.25rem 0 .35rem;color:var(--ink);}
+      .fu-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:.6rem;margin:.2rem 0 .6rem;}
+      .fu-card{
+        position:relative; display:flex; align-items:center; gap:.6rem;
+        padding:.6rem .75rem; border-radius:12px; cursor:pointer; user-select:none;
+        color:var(--ink); border:3px solid rgba(87,58,33,.95);
+        background:
+          radial-gradient(120% 80% at 50% 0%, rgba(255,255,255,.45) 0%, rgba(255,255,255,.15) 22%, transparent 40%),
+          linear-gradient(180deg, var(--parch-1) 0%, var(--parch-2) 55%, var(--parch-3) 100%);
+        box-shadow:
+          inset 0 1px 0 rgba(255,255,255,.55),
+          inset 0 0 0 2px rgba(255,255,255,.06),
+          0 6px 14px var(--shadow);
+        transition: filter .12s ease, box-shadow .12s ease, border-color .12s ease, transform .06s ease;
       }
-      .fu-die-toggle img{width:22px;height:22px;opacity:.9}
-      .fu-die-toggle.on{outline:2px solid #3b82f6;background:#eaf2ff;border-color:#3b82f6}
-      .fu-hint{font-size:12px;opacity:.75;margin:.25rem 0 0;}
+      .fu-card:hover{ filter:brightness(1.04) saturate(1.03); }
+      .fu-card:active{ transform:translateY(1px); }
+      .fu-card.on{
+        border-color: var(--accent);
+        outline: 2px solid rgba(227,81,81,.35); outline-offset: 0;
+        box-shadow:
+          inset 0 1px 0 rgba(255,255,255,.7),
+          inset 0 0 0 2px rgba(255,255,255,.12),
+          0 6px 14px var(--shadow),
+          0 0 14px rgba(227,81,81,.55),
+          0 0 28px rgba(227,81,81,.35);
+        background:
+          radial-gradient(120% 80% at 50% 0%, rgba(255,255,255,.65) 0%, rgba(255,255,255,.28) 22%, transparent 40%),
+          linear-gradient(180deg, #fff3dc 0%, #f3e2bd 55%, #e8cea0 100%);
+      }
+      .fu-icon{width:40px;height:40px;object-fit:contain;border:none;background:transparent;border-radius:8px;}
+      .fu-left{display:flex;align-items:center;gap:.5rem;min-width:0;}
+      .fu-die{font-weight:800;white-space:nowrap;}
+      .fu-spacer{flex:1 1 auto;}
+      .fu-result{font-weight:900;font-size:22px;letter-spacing:.3px;}
+      .fu-hint{font-size:12px;opacity:.75;margin:.25rem 0 0;color:var(--ink);}
+      .fu-card[data-tip]::after{
+        content: attr(data-tip); position:absolute; left:50%; bottom:100%; transform:translate(-50%,-6px);
+        background:rgba(20,20,20,.92); color:#fff; padding:.3rem .5rem; border-radius:6px;
+        font-size:12px; white-space:nowrap; box-shadow:0 2px 6px rgba(0,0,0,.35);
+        opacity:0; pointer-events:none; transition:opacity .12s ease; z-index:1000;
+      }
+      .fu-card[data-tip]::before{
+        content:""; position:absolute; left:50%; bottom:100%; transform:translate(-50%,2px);
+        border:6px solid transparent; border-top-color:rgba(20,20,20,.92); opacity:0; transition:opacity .12s ease;
+      }
+      .fu-card[data-tip]:hover::after, .fu-card[data-tip]:hover::before{ opacity:1; }
     </style>
 
-    <div class="fu-die-grid">
-      <button type="button" class="fu-die-toggle" data-which="A" data-sel="0">
-        <img src="https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Item%20Icon/dice.png" alt="">
-        <span>${A.A1} (die A)</span>
-      </button>
+    <div class="fu-root">
+      <div class="fu-title">Choose which die to reroll</div>
 
-      <button type="button" class="fu-die-toggle" data-which="B" data-sel="0">
-        <img src="https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Item%20Icon/dice.png" alt="">
-        <span>${A.A2} (die B)</span>
-      </button>
+      <div class="fu-grid">
+        <button type="button" class="fu-card" data-which="A" data-sel="0" data-tip="${A.A1}" title="${A.A1}">
+          <div class="fu-left">
+            <img class="fu-icon" src="${iconFor(A.A1)}" alt="">
+            <div class="fu-die">d${A.dA}</div>
+          </div>
+          <div class="fu-spacer"></div>
+          <div class="fu-result">${A.rA.total}</div>
+        </button>
+
+        <button type="button" class="fu-card" data-which="B" data-sel="0" data-tip="${A.A2}" title="${A.A2}">
+          <div class="fu-left">
+            <img class="fu-icon" src="${iconFor(A.A2)}" alt="">
+            <div class="fu-die">d${A.dB}</div>
+          </div>
+          <div class="fu-spacer"></div>
+          <div class="fu-result">${A.rB.total}</div>
+        </button>
+      </div>
+
+      <p class="fu-hint">Click one or both to select. Click again to unselect.</p>
     </div>
-
-    <p class="fu-hint">Click one or both dice to select. Click again to unselect.</p>
   </form>`,
   buttons: {
     ok: {
       label: "Reroll",
-      callback: (html) => {
+      callback: async (html) => {
+        await playLocal(SFX_CONFIRM, 0.9); // confirm sound (local)
         const root = html[0];
         const aOn = root.querySelector('[data-which="A"]')?.dataset.sel === "1";
         const bOn = root.querySelector('[data-which="B"]')?.dataset.sel === "1";
@@ -253,7 +320,10 @@ const choice = await new Promise((resolve) => new Dialog({
         resolve(val);
       }
     },
-    cancel: { label: "Cancel", callback: () => resolve(null) }
+    cancel: {
+      label: "Cancel",
+      callback: async () => { await playLocal(SFX_CANCEL, 0.8); resolve(null); }
+    }
   },
   default: "ok",
   close: () => resolve(null),
@@ -263,16 +333,33 @@ const choice = await new Promise((resolve) => new Dialog({
     const btnB = root.querySelector('[data-which="B"]');
     const okBtn = root.closest('.app')?.querySelector('.dialog-buttons button[data-button="ok"]');
 
+    // move SFX with throttle; new Audio each time so quick moves won't cut off
+    let lastMove = 0;
+    const MOVE_COOLDOWN = 80;
+    const tryMove = () => {
+      const now = Date.now();
+      if (now - lastMove < MOVE_COOLDOWN) return;
+      lastMove = now;
+      playLocal(SFX_MOVE, 0.65);
+    };
+
     const toggle = (btn) => {
       btn.dataset.sel = btn.dataset.sel === "1" ? "0" : "1";
-      btn.classList.toggle('on', btn.dataset.sel === "1");
+      btn.classList.toggle("on", btn.dataset.sel === "1");
       if (okBtn) okBtn.disabled = (btnA.dataset.sel !== "1" && btnB.dataset.sel !== "1");
     };
 
-    btnA.addEventListener('click', ev => { ev.preventDefault(); toggle(btnA); });
-    btnB.addEventListener('click', ev => { ev.preventDefault(); toggle(btnB); });
+    [btnA, btnB].forEach((b) => {
+      b.setAttribute("tabindex", "0");
+      b.addEventListener("mouseenter", tryMove);
+      b.addEventListener("focus", tryMove);
+      b.addEventListener("click", (ev) => { ev.preventDefault(); toggle(b); });
+      b.addEventListener("keydown", (ev) => {
+        if (ev.key === "ArrowLeft" || ev.key === "ArrowRight") { (b === btnA ? btnB : btnA).focus(); tryMove(); }
+        if (ev.key === " " || ev.key === "Enter") { ev.preventDefault(); toggle(b); }
+      });
+    });
 
-    // Start disabled until at least one die is selected
     if (okBtn) okBtn.disabled = true;
   }
 }).render(true));
