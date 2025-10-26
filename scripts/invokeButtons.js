@@ -204,31 +204,78 @@ async function payInvoke(actor) {
     const A = payload.accuracy;
     if (!A) return ui.notifications?.warn("No Accuracy check to reroll.");
 
-    // Dialog to choose which die(s) to reroll
-    const dieInfo = `
-      <p><b>Current:</b><br>
-      ${A.A1} → d${A.dA} = ${A.rA.total}<br>
-      ${A.A2} → d${A.dB} = ${A.rB.total}</p>
-      <p>Choose which die to reroll (once per action):</p>
-    `;
-    const choice = await new Promise((resolve) => new Dialog({
-      title: "Invoke Trait — Reroll",
-      content: `<form>${dieInfo}
-        <div class="form-group">
-          <label>Reroll</label>
-          <select name="which" style="width:100%">
-            <option value="A">${A.A1} (die A)</option>
-            <option value="B">${A.A2} (die B)</option>
-            <option value="AB">${A.A1} and ${A.A2} (both dice)</option>
-          </select>
-        </div></form>`,
-      buttons: {
-        ok:     { label: "Reroll", callback: (html) => resolve(html[0].querySelector('[name="which"]').value) },
-        cancel: { label: "Cancel", callback: () => resolve(null) }
-      },
-      default: "ok",
-      close: () => resolve(null)
-    }).render(true));
+    // Dialog to choose which die(s) to reroll — now with two toggle buttons
+const dieInfo = `
+  <p><b>Current:</b><br>
+  ${A.A1} → d${A.dA} = ${A.rA.total}<br>
+  ${A.A2} → d${A.dB} = ${A.rB.total}</p>
+  <p>Choose which die to reroll (once per action):</p>
+`;
+
+const choice = await new Promise((resolve) => new Dialog({
+  title: "Invoke Trait — Reroll",
+  content: `<form>
+    ${dieInfo}
+    <style>
+      .fu-die-grid{display:flex;gap:.5rem;margin:.25rem 0 .5rem;}
+      .fu-die-toggle{
+        display:flex;align-items:center;gap:.5rem;
+        padding:.5rem .6rem;border:1px solid #bcbcbc;border-radius:6px;
+        cursor:pointer;user-select:none;background:#f4f4f4;
+      }
+      .fu-die-toggle img{width:22px;height:22px;opacity:.9}
+      .fu-die-toggle.on{outline:2px solid #3b82f6;background:#eaf2ff;border-color:#3b82f6}
+      .fu-hint{font-size:12px;opacity:.75;margin:.25rem 0 0;}
+    </style>
+
+    <div class="fu-die-grid">
+      <button type="button" class="fu-die-toggle" data-which="A" data-sel="0">
+        <img src="https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Item%20Icon/dice.png" alt="">
+        <span>${A.A1} (die A)</span>
+      </button>
+
+      <button type="button" class="fu-die-toggle" data-which="B" data-sel="0">
+        <img src="https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Item%20Icon/dice.png" alt="">
+        <span>${A.A2} (die B)</span>
+      </button>
+    </div>
+
+    <p class="fu-hint">Click one or both dice to select. Click again to unselect.</p>
+  </form>`,
+  buttons: {
+    ok: {
+      label: "Reroll",
+      callback: (html) => {
+        const root = html[0];
+        const aOn = root.querySelector('[data-which="A"]')?.dataset.sel === "1";
+        const bOn = root.querySelector('[data-which="B"]')?.dataset.sel === "1";
+        const val = aOn && bOn ? "AB" : aOn ? "A" : bOn ? "B" : null;
+        resolve(val);
+      }
+    },
+    cancel: { label: "Cancel", callback: () => resolve(null) }
+  },
+  default: "ok",
+  close: () => resolve(null),
+  render: (html) => {
+    const root = html[0];
+    const btnA = root.querySelector('[data-which="A"]');
+    const btnB = root.querySelector('[data-which="B"]');
+    const okBtn = root.closest('.app')?.querySelector('.dialog-buttons button[data-button="ok"]');
+
+    const toggle = (btn) => {
+      btn.dataset.sel = btn.dataset.sel === "1" ? "0" : "1";
+      btn.classList.toggle('on', btn.dataset.sel === "1");
+      if (okBtn) okBtn.disabled = (btnA.dataset.sel !== "1" && btnB.dataset.sel !== "1");
+    };
+
+    btnA.addEventListener('click', ev => { ev.preventDefault(); toggle(btnA); });
+    btnB.addEventListener('click', ev => { ev.preventDefault(); toggle(btnB); });
+
+    // Start disabled until at least one die is selected
+    if (okBtn) okBtn.disabled = true;
+  }
+}).render(true));
 
     if (!choice) {
       ui.notifications.info("Trait invoke cancelled.");
