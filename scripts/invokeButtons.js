@@ -52,18 +52,25 @@
     try { await oldMsg.delete(); } catch {}
   }
 
-  async function getActorFromUuid(uuid) {
-    if (!uuid) return null;
-    try {
-      const doc = await fromUuid(uuid);
-      if (!doc) return null;
-      if (doc?.actor) return doc.actor;                 // TokenDocument or embedded context
-      if (doc?.type === "Actor") return doc;            // Actor doc
-      return doc?.document?.actor ?? null;              // Fallback from embedded docs
-    } catch {
-      return null;
-    }
+  // Resolves either a Token UUID or an Actor UUID to a live Actor
+async function getActorFromAnyUuid(uuid) {
+  if (!uuid) return null;
+  const doc = await fromUuid(uuid).catch(()=>null);
+  if (!doc) return null;
+
+  // TokenDocument → token.actor (preferred, uses placed data)
+  if (doc?.documentName === "Token") {
+    const actor = doc?.actor ?? null;
+    if (actor) return actor;
   }
+
+  // Actor document
+  if (doc?.documentName === "Actor") return doc;
+
+  // ChatMessage or something else that stores actorUuid in flags: try best-effort
+  const actor = doc?.actor ?? doc?.parent?.actor ?? null;
+  return actor ?? null;
+}
 
   function ensureOwner(actor, payload, what = "this action") {
   const initUid = payload?.meta?.ownerUserId || null;     // user who built the card
@@ -89,41 +96,54 @@
   // ---------- Fabula / Ultima helpers ----------
 function isVillainOrBoss(actor) {
   const P = actor?.system?.props ?? {};
-  return !!(P.isVillain || P.isBoss); // sheet checkboxes on villain/boss sheets
+  const v = !!P?.isVillain;
+  const b = !!P?.isBoss;
+  dlog("isVillain/isBoss?", { name: actor?.name, isVillain: v, isBoss: b, props: P });
+  return v || b;
 }
 
 function resourceKeyAndLabel(actor) {
   const useUltima = isVillainOrBoss(actor);
-  return {
-    key: useUltima ? "ultima_point" : "fabula_point",
-    label: useUltima ? "Ultima Point" : "Fabula Point"
-  };
+  const key   = useUltima ? "ultima_point"  : "fabula_point";
+  const label = useUltima ? "Ultima Point"  : "Fabula Point";
+  dlog("resourceKeyAndLabel", { name: actor?.name, key, label });
+  return { key, label };
 }
 
 function currentPoints(actor, key) {
-  const P = actor?.system?.props ?? {};
-  const n = Number(P?.[key] ?? 0);
-  return Number.isFinite(n) ? n : 0;
+  const raw = actor?.system?.props?.[key];
+  const cur = Number(raw ?? 0);
+  dlog("currentPoints", { name: actor?.name, key, raw, coerced: cur, type: typeof raw });
+  return Number.isFinite(cur) ? cur : 0;
 }
 
 function canPayInvoke(actor) {
   const { key, label } = resourceKeyAndLabel(actor);
   const cur = currentPoints(actor, key);
+  dlog("canPayInvoke", { name: actor?.name, key, label, cur, ok: cur >= 1 });
   return { ok: cur >= 1, key, label, cur };
 }
 
 async function payInvoke(actor) {
   const { key, label } = resourceKeyAndLabel(actor);
   const cur = currentPoints(actor, key);
+  dlog("payInvoke(before)", { name: actor?.name, key, label, cur });
+
   if (cur < 1) return { ok: false, key, label, cur };
+
   try {
     await actor.update({ [`system.props.${key}`]: cur - 1 });
+    dlog("payInvoke(after)", { name: actor?.name, key, label, newValue: cur - 1 });
     return { ok: true, key, label, cur: cur - 1 };
   } catch (e) {
-    console.warn("[fu-invokeButtons] payInvoke failed:", e);
+    console.warn("[Invoke] payInvoke failed:", e);
     return { ok: false, key, label, cur };
   }
 }
+
+  // ---------- Debug helper ----------
+const DEBUG_INVOKE = true;
+function dlog(...args) { if (DEBUG_INVOKE) console.log("[InvokeDebug]", ...args); }
 
   // Actor → die size for attribute label (e.g., "DEX"→d?)
   function dieSizeFor(actor, attr) {
@@ -182,28 +202,39 @@ async function payInvoke(actor) {
 
   // ---------- actions ----------
   async function handleInvokeTrait(btn, chatMsg) {
-    const payload = await getPayload(chatMsg);
-    if (!payload) return ui.notifications?.error("Invoke Trait: Missing payload on the card.");
+  const payload = await getPayload(chatMsg);
+  if (!payload) return ui.notifications?.error("Invoke Trait: Missing payload on the card.");
 
-    const invoked = payload?.meta?.invoked ?? { trait:false, bond:false };
-    if (invoked.trait) return ui.notifications?.warn("Trait already invoked for this action.");
+  const invoked = payload?.meta?.invoked ?? { trait:false, bond:false };
+  if (invoked.trait) return ui.notifications?.warn("Trait already invoked for this action.");
 
-    const atkUuid  = payload?.meta?.attackerUuid ?? payload?.meta?.attacker_uuid ?? null;
-    const attacker = await getActorFromUuid(atkUuid);
-    if (!ensureOwner(attacker, payload, "Invoke Trait")) return;
+  const atkUuid = payload?.meta?.attackerUuid ?? payload?.meta?.attacker_uuid ?? null;
 
-    // 1) Pre-check resources (block immediately if none)
-{
-  const chk = canPayInvoke(attacker);
-  if (!chk.ok) {
-    ui.notifications?.warn(`Not enough ${chk.label}s (need 1).`);
-    return;
+  // Always resolve from the payload UUID (token-safe)
+  const actorFromPayload = await getActorFromAnyUuid(atkUuid);
+  if (!actorFromPayload) return ui.notifications?.error("Invoke Trait: Could not resolve attacker from UUID.");
+
+  dlog("Trait invoke — attacker resolved", {
+    atkUuid,
+    actorId: actorFromPayload?.id,
+    actorName: actorFromPayload?.name,
+    isVillain: !!actorFromPayload?.system?.props?.isVillain,
+    isBoss: !!actorFromPayload?.system?.props?.isBoss,
+    fabula_point: actorFromPayload?.system?.props?.fabula_point,
+    ultima_point: actorFromPayload?.system?.props?.ultima_point
+  });
+
+  if (!ensureOwner(actorFromPayload, payload, "Invoke Trait")) return;
+
+  // Pre-check (uses the same actor we’ll spend from)
+  {
+    const chk = canPayInvoke(actorFromPayload);
+    if (!chk.ok) { ui.notifications?.warn(`Not enough ${chk.label}s (need 1).`); return; }
   }
-}
 
-    const A = payload.accuracy;
-    if (!A) return ui.notifications?.warn("No Accuracy check to reroll.");
-
+  const A = payload.accuracy;
+  if (!A) return ui.notifications?.warn("No Accuracy check to reroll.");
+    
     // Dialog to choose which die(s) to reroll
     const dieInfo = `
       <p><b>Current:</b><br>
@@ -319,9 +350,21 @@ async function payInvoke(actor) {
 
     const atkUuid  = payload?.meta?.attackerUuid ?? payload?.meta?.attacker_uuid ?? null;
 
-    // We still gate by ownership, but we no longer read bonds from the actor.
-    const attacker = await getActorFromUuid(atkUuid);
-    if (!ensureOwner(attacker, payload, "Invoke Bond")) return;
+// Always resolve from payload UUID (token-safe)
+const attacker = await getActorFromAnyUuid(atkUuid);
+if (!attacker) return ui.notifications?.error("Invoke Bond: Could not resolve attacker from UUID.");
+
+dlog("Bond invoke — attacker resolved", {
+  atkUuid,
+  actorId: attacker?.id,
+  actorName: attacker?.name,
+  isVillain: !!attacker?.system?.props?.isVillain,
+  isBoss: !!attacker?.system?.props?.isBoss,
+  fabula_point: attacker?.system?.props?.fabula_point,
+  ultima_point: attacker?.system?.props?.ultima_point
+});
+
+if (!ensureOwner(attacker, payload, "Invoke Bond")) return;
 
     // 1) Pre-check resources (block immediately if none)
 {
