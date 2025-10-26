@@ -1,9 +1,9 @@
 // scripts/invokeButtons.js — Foundry VTT v12
-// Invoke Trait + Invoke Bond (merged) + Fabula/Ultima point spend (1 per invoke)
-// - [data-fu-trait]: reroll up to two accuracy dice ONCE per action (cost 1 point)
-// - [data-fu-bond] : add a flat +1..+3 to accuracy.total ONCE per action (cost 1 point)
-// If actor has <1 point in the correct pool, click silently does nothing.
-// Buttons are also greyed at card render-time by CreateActionCard.js.
+// Invoke Trait + Invoke Bond (merged)
+// - [data-fu-trait]: reroll up to two accuracy dice ONCE per action
+// - [data-fu-bond] : add a flat +1..+3 to accuracy.total ONCE per action
+// Requires your CreateActionCard macro to persist payload on the message flag:
+//   await posted.setFlag("fabula-ultima-companion", "actionCard", { payload: PAYLOAD });
 
 (() => {
   const MODULE_NS = "fabula-ultima-companion";
@@ -26,8 +26,9 @@
 
   async function getPayload(chatMsg) {
     try {
+      // getFlag is sync in V12; awaiting is harmless and keeps a uniform signature
       const f = await chatMsg.getFlag(MODULE_NS, CARD_FLAG);
-      return f?.payload ?? f ?? null;
+      return f?.payload ?? f ?? null; // support {payload:{...}} and legacy {...}
     } catch (e) {
       console.warn("[fu-invokeButtons] getPayload failed:", e);
       return null;
@@ -37,14 +38,17 @@
   async function rebuildCard(nextPayload, oldMsg) {
     const cardMacro = game.macros.getName("CreateActionCard");
     if (!cardMacro) return ui.notifications.error('Macro "CreateActionCard" not found.');
+
+    // Your CreateActionCard reads globals (__AUTO/__PAYLOAD)
     try {
       window.__AUTO = true;
       window.__PAYLOAD = nextPayload;
-      await cardMacro.execute();
+      await cardMacro.execute(); // no args: it uses the globals
     } finally {
       try { delete window.__AUTO; } catch {}
       try { delete window.__PAYLOAD; } catch {}
     }
+
     try { await oldMsg.delete(); } catch {}
   }
 
@@ -53,23 +57,24 @@
     try {
       const doc = await fromUuid(uuid);
       if (!doc) return null;
-      if (doc?.actor) return doc.actor;
-      if (doc?.type === "Actor") return doc;
-      return doc?.document?.actor ?? null;
+      if (doc?.actor) return doc.actor;                 // TokenDocument or embedded context
+      if (doc?.type === "Actor") return doc;            // Actor doc
+      return doc?.document?.actor ?? null;              // Fallback from embedded docs
     } catch {
       return null;
     }
   }
 
   function ensureOwner(actor, payload, what = "this action") {
-    const initUid = payload?.meta?.ownerUserId || null;
-    const allow =
-      game.user?.isGM ||
-      actor?.isOwner === true ||
-      (initUid && game.user?.id === initUid);
-    if (!allow) ui.notifications?.warn(`Only the attacker’s owner (or GM) can ${what}.`);
-    return allow;
-  }
+  const initUid = payload?.meta?.ownerUserId || null;     // user who built the card
+  const allow =
+    game.user?.isGM ||
+    actor?.isOwner === true ||
+    (initUid && game.user?.id === initUid);
+
+  if (!allow) ui.notifications?.warn(`Only the attacker’s owner (or GM) can ${what}.`);
+  return allow;
+}
 
   function lock(btn) {
     if (!btn) return true;
@@ -77,27 +82,8 @@
     btn.dataset.fuLock = "1";
     return false;
   }
-  function unlock(btn) { if (btn) btn.dataset.fuLock = "0"; }
-
-  // ---------- NEW: point helpers ----------
-  function getPointKeyAndValue(actor) {
-    const P = actor?.system?.props ?? {};
-    const isVillain = !!P.isVillain || !!P.isBoss;
-    const key = isVillain ? "ultima_point" : "fabula_point";
-    const cur = Number(P[key] ?? 0) || 0;
-    return { key, cur, isVillain };
-  }
-
-  async function trySpendOnePoint(actor) {
-    const { key, cur } = getPointKeyAndValue(actor);
-    if (cur < 1) return false;                             // not enough → silent block
-    const path = `system.props.${key}`;
-    try { await actor.update({ [path]: cur - 1 }); }
-    catch (e) {
-      console.warn("[fu-invokeButtons] point spend failed:", e);
-      return false; // if update fails, don't proceed
-    }
-    return true;
+  function unlock(btn) {
+    if (btn) btn.dataset.fuLock = "0";
   }
 
   // Actor → die size for attribute label (e.g., "DEX"→d?)
@@ -110,7 +96,7 @@
     return [4, 6, 8, 10, 12, 20].includes(n) ? n : 6;
   }
 
-  // (kept for legacy, we now use payload.meta.bonds, but leaving this helper here doesn’t hurt)
+  // Extract bonds in expected shape: { index, name, bonus, filled }
   function collectBonds(actor) {
     const P = actor?.system?.props ?? {};
     const bonds = [];
@@ -127,22 +113,48 @@
     return bonds;
   }
 
+  async function chooseBondDialog(bonds) {
+    const viable = bonds.filter(b => b.bonus > 0);
+    if (!viable.length) return null;
+    const opts = viable
+      .map(b => `<option value="${b.index}">${esc(b.name)} — +${b.bonus}</option>`)
+      .join("");
+    const content = `<form>
+      <div class="form-group">
+        <label>Choose a Bond to Invoke</label>
+        <select name="bondIndex" style="width:100%;">${opts}</select>
+      </div>
+      <p style="margin:.4rem 0 0; font-size:12px; opacity:.75;">
+        Bond bonus is +1 per filled emotion (max +3).
+      </p>
+    </form>`;
+    return await new Promise(resolve => new Dialog({
+      title: "Invoke Bond — Choose Bond",
+      content,
+      buttons: {
+        ok:     { label: "Invoke", callback: html => resolve(Number(html[0].querySelector('[name="bondIndex"]').value)) },
+        cancel: { label: "Cancel", callback: () => resolve(null) }
+      },
+      default: "ok",
+      // ✅ Close with window “X” acts like Cancel
+      close: () => resolve(null)
+    }).render(true));
+  }
+
+  // ---------- actions ----------
   async function handleInvokeTrait(btn, chatMsg) {
     const payload = await getPayload(chatMsg);
     if (!payload) return ui.notifications?.error("Invoke Trait: Missing payload on the card.");
+
     const invoked = payload?.meta?.invoked ?? { trait:false, bond:false };
-    if (invoked.trait) return; // already used on this action → silently ignore
+    if (invoked.trait) return ui.notifications?.warn("Trait already invoked for this action.");
 
     const atkUuid  = payload?.meta?.attackerUuid ?? payload?.meta?.attacker_uuid ?? null;
     const attacker = await getActorFromUuid(atkUuid);
     if (!ensureOwner(attacker, payload, "Invoke Trait")) return;
 
-    // NEW: must pay 1 point first; if cannot pay, silent block
-    const paid = await trySpendOnePoint(attacker);
-    if (!paid) return;
-
     const A = payload.accuracy;
-    if (!A) return; // no accuracy section → nothing to reroll
+    if (!A) return ui.notifications?.warn("No Accuracy check to reroll.");
 
     // Dialog to choose which die(s) to reroll
     const dieInfo = `
@@ -170,7 +182,10 @@
       close: () => resolve(null)
     }).render(true));
 
-    if (!choice) return; // cancelled → we already spent a point; if you want refunds on cancel, move spend after this block.
+    if (!choice) {
+      ui.notifications.info("Trait invoke cancelled.");
+      return "CANCELLED";
+    }
 
     // Reroll
     const dA = dieSizeFor(attacker, A.A1);
@@ -186,12 +201,14 @@
     const total = rA + rB + bonus;
     const hr    = Math.max(rA, rB);
 
+    // Crit/Fumble (keep your props)
     const critRange = Number(attacker?.system?.props?.critical_dice_range ?? 0);
     const minCrit   = Number(attacker?.system?.props?.minimum_critical_dice ?? 999);
     const isCrit    = (Math.abs(rA - rB) <= critRange) && (rA >= minCrit || rB >= minCrit);
     const fumbleTH  = Number(attacker?.system?.props?.fumble_threshold ?? -1);
     const isFumble  = (fumbleTH >= 0) ? (rA <= fumbleTH && rB <= fumbleTH) : false;
 
+    // Build next payload
     const next = foundry.utils.deepClone(payload);
     next.meta = next.meta || {};
     next.meta.invoked = next.meta.invoked || { trait:false, bond:false };
@@ -208,7 +225,7 @@
       hrUsed: next.meta?.ignoreHR ? null : hr
     };
 
-    // Recompute preview damage
+    // Recompute preview damage (base-without-HR + new HR)
     const elem   = String(next?.meta?.elementType || "physical").toLowerCase();
     const healRx = /^(heal|healing|recovery|restore|restoration)$/i;
     const declaresHealing = healRx.test(elem);
@@ -239,27 +256,28 @@
   async function handleInvokeBond(btn, chatMsg) {
     const payload = await getPayload(chatMsg);
     if (!payload) return ui.notifications?.error("Invoke Bond: Missing payload on the card.");
+
     const invoked = payload?.meta?.invoked ?? { trait:false, bond:false };
-    if (invoked.bond) return; // already used on this action → silently ignore
+    if (invoked.bond) return ui.notifications?.warn("Bond already invoked for this action.");
 
     const atkUuid  = payload?.meta?.attackerUuid ?? payload?.meta?.attacker_uuid ?? null;
+
+    // We still gate by ownership, but we no longer read bonds from the actor.
     const attacker = await getActorFromUuid(atkUuid);
     if (!ensureOwner(attacker, payload, "Invoke Bond")) return;
 
-    // NEW: must pay 1 point first; if cannot pay, silent block
-    const paid = await trySpendOnePoint(attacker);
-    if (!paid) return;
-
     const A = payload.accuracy;
-    if (!A) return;
+    if (!A) return ui.notifications?.warn("No Accuracy check to modify.");
 
+    // Prefer bonds from payload.meta (snapshot made by ActionDataFetch)
     const bondSnap = payload?.meta?.bonds || { list:[], viable:[] };
     const viable = Array.isArray(bondSnap.viable) ? bondSnap.viable
                  : Array.isArray(bondSnap.list)   ? bondSnap.list.filter(b => (b?.bonus||0) > 0)
                  : [];
-    if (!viable.length) return;
 
-    // If multiple, ask the user; otherwise auto-pick first viable
+    if (!viable.length) return ui.notifications?.warn("No eligible Bonds on this action.");
+
+    // If multiple, ask the user; otherwise auto-pick
     let chosen = viable[0];
     if (viable.length > 1) {
       const opts = viable.map(b => `<option value="${b.index}">${esc(b.name)} — +${b.bonus}</option>`).join("");
@@ -278,12 +296,13 @@
         default: "ok",
         close: () => res(null)
       }).render(true));
-      if (pick == null) return; // cancelled (point has already been spent by design)
+
+      if (pick == null) { ui.notifications.info("Bond invoke cancelled."); return "CANCELLED"; }
       chosen = viable.find(b => Number(b.index) === Number(pick)) ?? chosen;
     }
 
     const addBonus = Number(chosen.bonus || 0);
-    if (!(addBonus > 0)) return;
+    if (!(addBonus > 0)) return ui.notifications?.warn("Chosen Bond gives no bonus.");
 
     const next = foundry.utils.deepClone(payload);
     next.meta = next.meta || {};
@@ -308,21 +327,24 @@
     await rebuildCard(next, chatMsg);
   }
 
-  // ---------- binder ----------
+  // ---------- binder (single listener handles both buttons) ----------
   function bindInvokeButtons() {
     const root = document.querySelector("#chat-log") || document.body;
     if (!root || root.__fuInvokeButtonsBound) return;
     root.__fuInvokeButtonsBound = true;
 
     root.addEventListener("click", async (ev) => {
+      // NOTE: keep selectors EXACTLY as used in your chat card HTML
       const btnTrait = ev.target.closest?.("[data-fu-trait]");
-      const btnBond  = btnTrait ? null : ev.target.closest?.("[data-fu-bond]");
+      const btnBond  = btnTrait ? null : ev.target.closest?.("[data-fu-bond]"); // avoid double hits
+
       if (!btnTrait && !btnBond) return;
 
       const btn = btnTrait || btnBond;
       if (lock(btn)) return;
 
       try {
+        // Locate message (both buttons share same lookup)
         const msgEl   = btn.closest?.(".message");
         const msgId   = msgEl?.dataset?.messageId;
         const chatMsg = msgId ? game.messages.get(msgId) : null;
@@ -341,6 +363,7 @@
     console.log("[fu-invokeButtons] ready — installed chat listener");
   }
 
+  // Bind even if loaded after 'ready'
   if (window.game?.ready) bindInvokeButtons();
   else Hooks.once("ready", bindInvokeButtons);
 })();
