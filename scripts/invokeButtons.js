@@ -86,6 +86,61 @@
     if (btn) btn.dataset.fuLock = "0";
   }
 
+  // ---------- Fabula/Ultima helpers ----------
+function pointsInfoFor(actor) {
+  // Players have no isVillain/isBoss; NPC Villain/Boss use Ultima
+  const P = actor?.system?.props ?? {};
+  const isVilOrBoss = !!(P.isVillain || P.isBoss);
+  const key  = isVilOrBoss ? "ultima_point" : "fabula_point";
+  const val  = Number(P[key] ?? 0);
+  return { isVilOrBoss, key, val };
+}
+
+async function chargeOnePoint(actor) {
+  const P = actor?.system?.props ?? {};
+  const { key, val } = pointsInfoFor(actor);
+  if (!(val >= 1)) return false;
+  const path = `system.props.${key}`;
+  await actor.update({ [path]: val - 1 });
+  return true;
+}
+
+// Gray-out buttons in a specific chat message if not enough points
+async function decorateInvokeButtonsDisabledIfNoPoints(msgEl, chatMsg) {
+  try {
+    const payload = await getPayload(chatMsg);
+    const atkUuid = payload?.meta?.attackerUuid ?? payload?.meta?.attacker_uuid ?? null;
+    const actor   = await getActorFromUuid(atkUuid);
+    if (!actor) return;
+    const { val } = pointsInfoFor(actor);
+
+    // Find both buttons on this card
+    const btnTrait = msgEl.querySelector?.("[data-fu-trait]");
+    const btnBond  = msgEl.querySelector?.("[data-fu-bond]");
+
+    const disable = !(val >= 1);
+
+    for (const btn of [btnTrait, btnBond]) {
+      if (!btn) continue;
+      if (disable) {
+        btn.setAttribute("disabled", "true");
+        btn.style.opacity = "0.45";
+        btn.style.pointerEvents = "none";
+        btn.style.filter = "grayscale(100%)";
+        btn.title = "Not enough points to Invoke.";
+      } else {
+        btn.removeAttribute?.("disabled");
+        btn.style.opacity = "";
+        btn.style.pointerEvents = "";
+        btn.style.filter = "";
+        btn.title = "";
+      }
+    }
+  } catch (e) {
+    console.warn("[fu-invokeButtons] decorate failed:", e);
+  }
+}
+
   // Actor → die size for attribute label (e.g., "DEX"→d?)
   function dieSizeFor(actor, attr) {
     const k = String(attr || "").toLowerCase();
@@ -186,6 +241,18 @@
       ui.notifications.info("Trait invoke cancelled.");
       return "CANCELLED";
     }
+    
+    const attacker = attacker ?? await getActorFromUuid(
+  payload?.meta?.attackerUuid ?? payload?.meta?.attacker_uuid ?? null
+);
+if (!attacker) {
+  ui.notifications?.error("Invoke Trait: Cannot find attacker to spend points.");
+  return "CANCELLED";
+}
+if (!(await chargeOnePoint(attacker))) {
+  ui.notifications?.warn("Not enough points to Invoke Trait.");
+  return "CANCELLED";
+}
 
     // Reroll
     const dA = dieSizeFor(attacker, A.A1);
@@ -304,6 +371,11 @@
     const addBonus = Number(chosen.bonus || 0);
     if (!(addBonus > 0)) return ui.notifications?.warn("Chosen Bond gives no bonus.");
 
+     if (!(await chargeOnePoint(attacker))) {
+    ui.notifications?.warn("Not enough points to Invoke Bond.");
+    return "CANCELLED";
+  }
+    
     const next = foundry.utils.deepClone(payload);
     next.meta = next.meta || {};
     next.meta.invoked = next.meta.invoked || { trait:false, bond:false };
@@ -328,40 +400,75 @@
   }
 
   // ---------- binder (single listener handles both buttons) ----------
-  function bindInvokeButtons() {
-    const root = document.querySelector("#chat-log") || document.body;
-    if (!root || root.__fuInvokeButtonsBound) return;
-    root.__fuInvokeButtonsBound = true;
+ function bindInvokeButtons() {
+  const root = document.querySelector("#chat-log") || document.body;
+  if (!root || root.__fuInvokeButtonsBound) return;
+  root.__fuInvokeButtonsBound = true;
 
-    root.addEventListener("click", async (ev) => {
-      // NOTE: keep selectors EXACTLY as used in your chat card HTML
-      const btnTrait = ev.target.closest?.("[data-fu-trait]");
-      const btnBond  = btnTrait ? null : ev.target.closest?.("[data-fu-bond]"); // avoid double hits
+  // 1) Click handler (unchanged)
+  root.addEventListener("click", async (ev) => {
+    const btnTrait = ev.target.closest?.("[data-fu-trait]");
+    const btnBond  = btnTrait ? null : ev.target.closest?.("[data-fu-bond]");
+    if (!btnTrait && !btnBond) return;
 
-      if (!btnTrait && !btnBond) return;
+    // If grayed/disabled, just ignore
+    const btn = btnTrait || btnBond;
+    if (btn.hasAttribute("disabled")) return;
 
-      const btn = btnTrait || btnBond;
-      if (lock(btn)) return;
+    if (lock(btn)) return;
+    try {
+      const msgEl   = btn.closest?.(".message");
+      const msgId   = msgEl?.dataset?.messageId;
+      const chatMsg = msgId ? game.messages.get(msgId) : null;
+      if (!chatMsg) return;
 
-      try {
-        // Locate message (both buttons share same lookup)
-        const msgEl   = btn.closest?.(".message");
-        const msgId   = msgEl?.dataset?.messageId;
-        const chatMsg = msgId ? game.messages.get(msgId) : null;
-        if (!chatMsg) return;
+      if (btnTrait) await handleInvokeTrait(btnTrait, chatMsg);
+      else          await handleInvokeBond(btnBond,  chatMsg);
+    } catch (err) {
+      console.error(err);
+      ui.notifications?.error("Invoke failed (see console).");
+    } finally {
+      unlock(btn);
+    }
+  }, { capture: false });
 
-        if (btnTrait) await handleInvokeTrait(btnTrait, chatMsg);
-        else          await handleInvokeBond(btnBond,  chatMsg);
-      } catch (err) {
-        console.error(err);
-        ui.notifications?.error("Invoke failed (see console).");
-      } finally {
-        unlock(btn);
+  // 2) Mutation observer to decorate new cards (gray-out if no points)
+  const mo = new MutationObserver(async (muts) => {
+    for (const m of muts) {
+      for (const node of m.addedNodes ?? []) {
+        if (!(node instanceof HTMLElement)) continue;
+        // Any new chat message with invoke buttons?
+        const msgEls = node.matches?.(".message") ? [node] : node.querySelectorAll?.(".message");
+        for (const msgEl of msgEls ?? []) {
+          const id = msgEl?.dataset?.messageId;
+          if (!id) continue;
+          const chatMsg = game.messages.get(id);
+          if (!chatMsg) continue;
+
+          // Only decorate cards that actually have the invoke buttons in them
+          const hasInvoke = msgEl.querySelector?.("[data-fu-trait], [data-fu-bond]");
+          if (!hasInvoke) continue;
+
+          await decorateInvokeButtonsDisabledIfNoPoints(msgEl, chatMsg);
+        }
       }
-    }, { capture: false });
+    }
+  });
+  mo.observe(root, { childList: true, subtree: true });
 
-    console.log("[fu-invokeButtons] ready — installed chat listener");
+  // 3) First pass on already-rendered messages (if any)
+  for (const msgEl of root.querySelectorAll?.(".message") ?? []) {
+    const id = msgEl?.dataset?.messageId;
+    if (!id) continue;
+    const chatMsg = game.messages.get(id);
+    if (!chatMsg) continue;
+    const hasInvoke = msgEl.querySelector?.("[data-fu-trait], [data-fu-bond]");
+    if (!hasInvoke) continue;
+    decorateInvokeButtonsDisabledIfNoPoints(msgEl, chatMsg);
   }
+
+  console.log("[fu-invokeButtons] ready — installed chat listener + decorator");
+}
 
   // Bind even if loaded after 'ready'
   if (window.game?.ready) bindInvokeButtons();
