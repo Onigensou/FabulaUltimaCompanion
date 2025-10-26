@@ -204,7 +204,29 @@ async function payInvoke(actor) {
     const A = payload.accuracy;
     if (!A) return ui.notifications?.warn("No Accuracy check to reroll.");
 
-    // Dialog to choose which die(s) to reroll — JRPG UI + local SFX
+    // Dialog to choose which die(s) to reroll — now with two toggle buttons
+const dieInfo = `
+  <p><b>Current:</b><br>
+  ${A.A1} → d${A.dA} = ${A.rA.total}<br>
+  ${A.A2} → d${A.dB} = ${A.rB.total}</p>
+  <p>Choose which die to reroll (once per action):</p>
+`;
+
+    // Local-only audio helper (no global overlap or cutoffs)
+async function playLocal(url, volume = 0.65) {
+  try {
+    if (globalThis.AudioHelper?.play) {
+      await AudioHelper.play({ src: url, volume, loop: false }, true); // true = local-only
+    } else {
+      const a = new Audio(url); a.volume = volume; a.play().catch(()=>{});
+    }
+  } catch {}
+}
+const SFX_MOVE    = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/CursorMove.mp3";
+const SFX_CONFIRM = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/Dice.wav";
+const SFX_CANCEL  = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/Cursor_Cancel.mp3";
+
+// Sepia card UI with icons + keyboard nav (visual-only)
 const ATTR_ICONS = {
   DEX: "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Item%20Icon/boot.png",
   MIG: "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Item%20Icon/asan.png",
@@ -213,20 +235,6 @@ const ATTR_ICONS = {
 };
 const FALLBACK_ICON = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Item%20Icon/dice.png";
 const iconFor = (attr) => ATTR_ICONS[(attr || "").toUpperCase()] ?? FALLBACK_ICON;
-
-// SFX (local-only)
-const SFX_MOVE    = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/CursorMove.mp3";
-const SFX_CONFIRM = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/Dice.wav";
-const SFX_CANCEL  = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/Cursor_Cancel.mp3";
-async function playLocal(url, volume = 0.65) {
-  try {
-    if (globalThis.AudioHelper?.play) {
-      await AudioHelper.play({ src: url, volume, loop: false }, true); // local-only
-    } else {
-      const a = new Audio(url); a.volume = volume; a.play().catch(()=>{});
-    }
-  } catch {}
-}
 
 const choice = await new Promise((resolve) => new Dialog({
   title: "Invoke Trait — Reroll",
@@ -284,7 +292,6 @@ const choice = await new Promise((resolve) => new Dialog({
 
     <div class="fu-root">
       <div class="fu-title">Choose which die to reroll</div>
-
       <div class="fu-grid">
         <button type="button" class="fu-card" data-which="A" data-sel="0" data-tip="${A.A1}" title="${A.A1}">
           <div class="fu-left">
@@ -304,44 +311,43 @@ const choice = await new Promise((resolve) => new Dialog({
           <div class="fu-result">${A.rB.total}</div>
         </button>
       </div>
-
       <p class="fu-hint">Click one or both to select. Click again to unselect.</p>
     </div>
   </form>`,
   buttons: {
     ok: {
-      label: "Reroll",
-      callback: async (html) => {
-        await playLocal(SFX_CONFIRM, 0.9); // confirm sound (local)
-        const root = html[0];
-        const aOn = root.querySelector('[data-which="A"]')?.dataset.sel === "1";
-        const bOn = root.querySelector('[data-which="B"]')?.dataset.sel === "1";
-        const val = aOn && bOn ? "AB" : aOn ? "A" : bOn ? "B" : null;
-        resolve(val);
-      }
-    },
-    cancel: {
-      label: "Cancel",
-      callback: async () => { await playLocal(SFX_CANCEL, 0.8); resolve(null); }
-    }
-  },
+  label: "Reroll",
+  callback: async (html) => {
+    await playLocal(SFX_CONFIRM, 0.9);
+    const root = html[0];
+    const aOn = root.querySelector('[data-which="A"]')?.dataset.sel === "1";
+    const bOn = root.querySelector('[data-which="B"]')?.dataset.sel === "1";
+    return resolve(aOn && bOn ? "AB" : aOn ? "A" : bOn ? "B" : null);
+  }
+},
+cancel: { 
+  label: "Cancel", 
+  callback: async () => {                 
+    await playLocal(SFX_CANCEL, 0.8);        
+    return resolve(null);
+  } 
+},
   default: "ok",
   close: () => resolve(null),
   render: (html) => {
-    const root = html[0];
-    const btnA = root.querySelector('[data-which="A"]');
-    const btnB = root.querySelector('[data-which="B"]');
+    const root  = html[0];
+    const btnA  = root.querySelector('[data-which="A"]');
+    const btnB  = root.querySelector('[data-which="B"]');
     const okBtn = root.closest('.app')?.querySelector('.dialog-buttons button[data-button="ok"]');
 
-    // move SFX with throttle; new Audio each time so quick moves won't cut off
-    let lastMove = 0;
-    const MOVE_COOLDOWN = 80;
-    const tryMove = () => {
-      const now = Date.now();
-      if (now - lastMove < MOVE_COOLDOWN) return;
-      lastMove = now;
-      playLocal(SFX_MOVE, 0.65);
-    };
+    let lastMove = 0; 
+const MOVE_COOLDOWN = 80;
+const tryMove = () => {
+  const now = Date.now();
+  if (now - lastMove < MOVE_COOLDOWN) return;
+  lastMove = now;
+  playLocal(SFX_MOVE, 0.65);
+};
 
     const toggle = (btn) => {
       btn.dataset.sel = btn.dataset.sel === "1" ? "0" : "1";
@@ -355,7 +361,7 @@ const choice = await new Promise((resolve) => new Dialog({
       b.addEventListener("focus", tryMove);
       b.addEventListener("click", (ev) => { ev.preventDefault(); toggle(b); });
       b.addEventListener("keydown", (ev) => {
-        if (ev.key === "ArrowLeft" || ev.key === "ArrowRight") { (b === btnA ? btnB : btnA).focus(); tryMove(); }
+        if (ev.key === "ArrowLeft" || ev.key === "ArrowRight") { (b === btnA ? btnB : btnA).focus(); }
         if (ev.key === " " || ev.key === "Enter") { ev.preventDefault(); toggle(b); }
       });
     });
