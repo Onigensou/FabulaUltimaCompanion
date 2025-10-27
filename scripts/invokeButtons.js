@@ -576,29 +576,16 @@ const choice = await new Promise((resolve) => new Dialog({
 
     if (!viable.length) return ui.notifications?.warn("No eligible Bonds on this action.");
 
-    // If multiple, ask the user; otherwise auto-pick
-    let chosen = viable[0];
-    if (viable.length > 1) {
-      const opts = viable.map(b => `<option value="${b.index}">${esc(b.name)} — +${b.bonus}</option>`).join("");
-      const content = `<form>
-        <div class="form-group">
-          <label>Choose a Bond to Invoke</label>
-          <select name="bondIndex" style="width:100%;">${opts}</select>
-        </div></form>`;
-      const pick = await new Promise(res => new Dialog({
-        title: "Invoke Bond — Choose Bond",
-        content,
-        buttons: {
-          ok:     { label: "Invoke", callback: html => res(Number(html[0].querySelector('[name="bondIndex"]').value)) },
-          cancel: { label: "Cancel", callback: () => res(null) }
-        },
-        default: "ok",
-        close: () => res(null)
-      }).render(true));
-
-      if (pick == null) { ui.notifications.info("Bond invoke cancelled."); return "CANCELLED"; }
-      chosen = viable.find(b => Number(b.index) === Number(pick)) ?? chosen;
-    }
+   // If multiple, show the pretty picker; otherwise auto-pick
+let chosen = viable[0];
+if (viable.length > 1) {
+  const pick = await chooseBondDialog(viable);  // returns chosen bond.index or null
+  if (pick == null) {
+    ui.notifications.info("Bond invoke cancelled.");
+    return "CANCELLED";
+  }
+  chosen = viable.find(b => Number(b.index) === Number(pick)) ?? chosen;
+}
 
     {
   const spend = await payInvoke(attacker);
