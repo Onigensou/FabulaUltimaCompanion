@@ -135,22 +135,33 @@ async function payInvoke(actor) {
     return [4, 6, 8, 10, 12, 20].includes(n) ? n : 6;
   }
 
-  // Extract bonds in expected shape: { index, name, bonus, filled }
-  function collectBonds(actor) {
-    const P = actor?.system?.props ?? {};
-    const bonds = [];
-    for (let i = 1; i <= 6; i++) {
-      const name = String(P[`bond_${i}`] ?? "").trim();
-      if (!name) continue;
-      const e1 = !!P[`emotion_${i}_1`];
-      const e2 = !!P[`emotion_${i}_2`];
-      const e3 = !!P[`emotion_${i}_3`];
-      const filled = (e1 ? 1 : 0) + (e2 ? 1 : 0) + (e3 ? 1 : 0);
-      const bonus = Math.min(3, Math.max(0, filled));
-      bonds.push({ index: i, name, bonus, filled });
-    }
-    return bonds;
+ // Extract bonds in expected shape: { index, name, bonus, filled, emotions:{admiration|inferiority|loyalty|mistrust|affection|hatred} }
+function collectBonds(actor) {
+  const P = actor?.system?.props ?? {};
+  const bonds = [];
+  for (let i = 1; i <= 6; i++) {
+    const name = String(P[`bond_${i}`] ?? "").trim();
+    if (!name) continue;
+
+    const v1 = String(P[`emotion_${i}_1`] ?? ""); // "1"=Admiration, "2"=Inferiority, ""=empty
+    const v2 = String(P[`emotion_${i}_2`] ?? ""); // "1"=Loyalty,    "2"=Mistrust
+    const v3 = String(P[`emotion_${i}_3`] ?? ""); // "1"=Affection,  "2"=Hatred
+
+    const emotions = {
+      admiration : v1 === "1",
+      inferiority: v1 === "2",
+      loyalty    : v2 === "1",
+      mistrust   : v2 === "2",
+      affection  : v3 === "1",
+      hatred     : v3 === "2"
+    };
+
+    const filled = (v1 ? 1 : 0) + (v2 ? 1 : 0) + (v3 ? 1 : 0);
+    const bonus  = Math.min(3, Math.max(0, filled));
+    bonds.push({ index: i, name, bonus, filled, emotions });
   }
+  return bonds;
+}
 
   // Pretty "choose bond" dialog (list with hearts + tooltips)
 async function chooseBondDialog(bonds) {
@@ -575,6 +586,33 @@ const choice = await new Promise((resolve) => new Dialog({
                  : [];
 
     if (!viable.length) return ui.notifications?.warn("No eligible Bonds on this action.");
+
+    // Enrich any bond that’s missing `emotions` using the attacker’s sheet (emotion_<i>_<slot> = "1"|"2")
+function hydrateFromActor(b) {
+  if (b && b.emotions) return b;  // already has polarity
+  const P = attacker?.system?.props ?? {};
+  const i = Number(b?.index || 0);
+  if (!i) return b;
+
+  const v1 = String(P[`emotion_${i}_1`] ?? "");
+  const v2 = String(P[`emotion_${i}_2`] ?? "");
+  const v3 = String(P[`emotion_${i}_3`] ?? "");
+
+  const emotions = {
+    admiration : v1 === "1",
+    inferiority: v1 === "2",
+    loyalty    : v2 === "1",
+    mistrust   : v2 === "2",
+    affection  : v3 === "1",
+    hatred     : v3 === "2"
+  };
+
+  const filled = (v1 ? 1 : 0) + (v2 ? 1 : 0) + (v3 ? 1 : 0);
+  const bonus  = Math.min(3, Math.max(0, Number(b?.bonus ?? filled)));
+  return { ...b, emotions, bonus, filled };
+}
+
+const viableUi = viable.map(hydrateFromActor);
 
    // If multiple, show the pretty picker; otherwise auto-pick
 let chosen = viable[0];
