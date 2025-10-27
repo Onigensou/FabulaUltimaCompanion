@@ -572,95 +572,81 @@ const choice = await new Promise((resolve) => new Dialog({
   }
 
   async function handleInvokeBond(btn, chatMsg) {
-    const payload = await getPayload(chatMsg);
-    if (!payload) return ui.notifications?.error("Invoke Bond: Missing payload on the card.");
+  const payload = await getPayload(chatMsg);
+  if (!payload) return ui.notifications?.error("Invoke Bond: Missing payload on the card.");
 
-    const invoked = payload?.meta?.invoked ?? { trait:false, bond:false };
-    if (invoked.bond) return ui.notifications?.warn("Bond already invoked for this action.");
+  const invoked = payload?.meta?.invoked ?? { trait:false, bond:false };
+  if (invoked.bond) return ui.notifications?.warn("Bond already invoked for this action.");
 
-    const atkUuid  = payload?.meta?.attackerUuid ?? payload?.meta?.attacker_uuid ?? null;
+  const atkUuid  = payload?.meta?.attackerUuid ?? payload?.meta?.attacker_uuid ?? null;
 
-    // We still gate by ownership, but we no longer read bonds from the actor.
-    const attacker = await getActorFromUuid(atkUuid);
-    if (!ensureOwner(attacker, payload, "Invoke Bond")) return;
+  // Use the attacker from the payload UUID (not selected token)
+  const attacker = await getActorFromUuid(atkUuid);
+  if (!ensureOwner(attacker, payload, "Invoke Bond")) return;
 
-    // 1) Pre-check resources (block immediately if none)
-{
-  const chk = canPayInvoke(attacker);
-  if (!chk.ok) {
-    ui.notifications?.warn(`Not enough ${chk.label}s (need 1).`);
-    return;
-  }
-}
-
-    const A = payload.accuracy;
-    if (!A) return ui.notifications?.warn("No Accuracy check to modify.");
-
-    // Prefer bonds from payload.meta (snapshot made by ActionDataFetch)
-    const bondSnap = payload?.meta?.bonds || { list:[], viable:[] };
-    const viable = Array.isArray(bondSnap.viable) ? bondSnap.viable
-                 : Array.isArray(bondSnap.list)   ? bondSnap.list.filter(b => (b?.bonus||0) > 0)
-                 : [];
-
-    if (!viable.length) return ui.notifications?.warn("No eligible Bonds on this action.");
-
-    // If multiple, ask the user; otherwise auto-pick
-    let chosen = viable[0];
-    if (viable.length > 1) {
-      const opts = viable.map(b => `<option value="${b.index}">${esc(b.name)} — +${b.bonus}</option>`).join("");
-      const content = `<form>
-        <div class="form-group">
-          <label>Choose a Bond to Invoke</label>
-          <select name="bondIndex" style="width:100%;">${opts}</select>
-        </div></form>`;
-      const pick = await new Promise(res => new Dialog({
-        title: "Invoke Bond — Choose Bond",
-        content,
-        buttons: {
-          ok:     { label: "Invoke", callback: html => res(Number(html[0].querySelector('[name="bondIndex"]').value)) },
-          cancel: { label: "Cancel", callback: () => res(null) }
-        },
-        default: "ok",
-        close: () => res(null)
-      }).render(true));
-
-      if (pick == null) { ui.notifications.info("Bond invoke cancelled."); return "CANCELLED"; }
-      chosen = viable.find(b => Number(b.index) === Number(pick)) ?? chosen;
+  // 1) Pre-check resources (block immediately if none)
+  {
+    const chk = canPayInvoke(attacker);
+    if (!chk.ok) {
+      ui.notifications?.warn(`Not enough ${chk.label}s (need 1).`);
+      return;
     }
-
-    {
-  const spend = await payInvoke(attacker);
-  if (!spend.ok) {
-    ui.notifications?.error(`Could not spend 1 ${spend.label}.`);
-    return;
   }
+
+  const A = payload.accuracy;
+  if (!A) return ui.notifications?.warn("No Accuracy check to modify.");
+
+  // Prefer bonds from payload.meta (snapshot made by ActionDataFetch)
+  const bondSnap = payload?.meta?.bonds || { list:[], viable:[] };
+  const viable = Array.isArray(bondSnap.viable) ? bondSnap.viable
+               : Array.isArray(bondSnap.list)   ? bondSnap.list.filter(b => (b?.bonus||0) > 0)
+               : [];
+
+  if (!viable.length) return ui.notifications?.warn("No eligible Bonds on this action.");
+
+  // If multiple, ask with HM-style dialog (hearts colored from actor.emotion_X_Y)
+  let chosen = viable[0];
+  if (viable.length > 1) {
+    const pick = await chooseBondDialog(viable, attacker); // <— NEW UI
+    if (pick == null) { ui.notifications.info("Bond invoke cancelled."); return "CANCELLED"; }
+    chosen = viable.find(b => Number(b.index) === Number(pick)) ?? chosen;
+  }
+
+  // Spend 1 point (Fabula for PCs / Ultima for Villains/Boss)
+  {
+    const spend = await payInvoke(attacker);
+    if (!spend.ok) {
+      ui.notifications?.error(`Could not spend 1 ${spend.label}.`);
+      return;
+    }
+  }
+
+  const addBonus = Number(chosen.bonus || 0);
+  if (!(addBonus > 0)) return ui.notifications?.warn("Chosen Bond gives no bonus.");
+
+  // Build the next payload (mark invoked + adjust accuracy totals)
+  const next = foundry.utils.deepClone(payload);
+  next.meta = next.meta || {};
+  next.meta.invoked = next.meta.invoked || { trait:false, bond:false };
+  next.meta.invoked.bond = true;
+  next.meta.bondInfo = { index: chosen.index, name: chosen.name, bonus: addBonus };
+
+  const oldBonus = Number(A.checkBonus || 0);
+  const newBonus = oldBonus + addBonus;
+  const rA = Number(A.rA?.total ?? 0);
+  const rB = Number(A.rB?.total ?? 0);
+  const newTotal = rA + rB + newBonus;
+
+  next.accuracy = {
+    ...A,
+    rA: { total: rA, result: A.rA?.result ?? rA },
+    rB: { total: rB, result: A.rB?.result ?? rB },
+    checkBonus: newBonus,
+    total: newTotal
+  };
+
+  await rebuildCard(next, chatMsg);
 }
-
-    const addBonus = Number(chosen.bonus || 0);
-    if (!(addBonus > 0)) return ui.notifications?.warn("Chosen Bond gives no bonus.");
-
-    const next = foundry.utils.deepClone(payload);
-    next.meta = next.meta || {};
-    next.meta.invoked = next.meta.invoked || { trait:false, bond:false };
-    next.meta.invoked.bond = true;
-    next.meta.bondInfo = { index: chosen.index, name: chosen.name, bonus: addBonus };
-
-    const oldBonus = Number(A.checkBonus || 0);
-    const newBonus = oldBonus + addBonus;
-    const rA = Number(A.rA?.total ?? 0);
-    const rB = Number(A.rB?.total ?? 0);
-    const newTotal = rA + rB + newBonus;
-
-    next.accuracy = {
-      ...A,
-      rA: { total: rA, result: A.rA?.result ?? rA },
-      rB: { total: rB, result: A.rB?.result ?? rB },
-      checkBonus: newBonus,
-      total: newTotal
-    };
-
-    await rebuildCard(next, chatMsg);
-  }
 
   // ---------- binder (single listener handles both buttons) ----------
   function bindInvokeButtons() {
