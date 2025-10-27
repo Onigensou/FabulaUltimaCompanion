@@ -86,171 +86,6 @@
     if (btn) btn.dataset.fuLock = "0";
   }
 
-  // Harvest-Moon style bond picker (compact, single-column with hearts)
-// Returns the chosen bond object from `viable` or null if cancelled.
-async function fuFancyBondDialog(attacker, viable) {
-  // Build per-row emotion flags from the live actor sheet so we can draw hearts.
-  const P = attacker?.system?.props ?? {};
-  // 3 emotion slots per row, each can be positive or negative.
-// We’ll detect explicit pos/neg keys first, then fall back to a generic boolean (treated as positive).
-const SLOTS = [
-  { pos:"admiration",  neg:"inferiority", labelPos:"Admiration",  labelNeg:"Inferiority",  idx:1 },
-  { pos:"loyalty",     neg:"mistrust",    labelPos:"Loyalty",     labelNeg:"Mistrust",     idx:2 },
-  { pos:"affection",   neg:"hatred",      labelPos:"Affection",   labelNeg:"Hatred",       idx:3 },
-];
-
-// Read a single bond-row’s emotions from the actor sheet
-function rowToEmotions(i) {
-  const P = attacker?.system?.props ?? {};
-
-  // Helper to read one slot (1..3) with pos/neg names (e.g., admiration/inferiority)
-  function slot(i, slotIdx, posKey, negKey) {
-    // Prefer explicit booleans like emotion_1_1_admiration / emotion_1_1_inferiority
-    const posExplicit = !!P[`emotion_${i}_${slotIdx}_${posKey}`];
-    const negExplicit = !!P[`emotion_${i}_${slotIdx}_${negKey}`];
-
-    // Or use a label discriminator if provided (e.g., emotion_1_1_label = "Inferiority")
-    const baseFlag  = !!P[`emotion_${i}_${slotIdx}`];
-    const labelText = String(P[`emotion_${i}_${slotIdx}_label`] ?? "").toLowerCase();
-
-    const posLabel = baseFlag && !!labelText && labelText.includes(posKey.slice(0, 4)); // e.g., "admi"
-    const negLabel = baseFlag && !!labelText && labelText.includes(negKey.slice(0, 4)); // e.g., "infe"/"mist"/"hatr"
-
-    // Final decision:
-    const pos = posExplicit || posLabel || (baseFlag && !negExplicit && !negLabel);
-    const neg = negExplicit || negLabel;
-
-    return { [posKey]: !!pos, [negKey]: !!neg };
-  }
-
-  const s1 = slot(i, 1, "admiration",  "inferiority");
-  const s2 = slot(i, 2, "loyalty",     "mistrust");
-  const s3 = slot(i, 3, "affection",   "hatred");
-
-  // Merge 3 slots
-  return { ...s1, ...s2, ...s3 };
-}
-
-  // Render helpers (minimal, pulled from your demo)
-  const escHM = (s) => String(s ?? "").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-
-  function svgHeart(state, title) {
-  // pos = red, neg = purple, empty = outline only
-  const fill   = state==="pos" ? "#E85A70" : state==="neg" ? "#7B62C0" : "none";
-  const stroke = state==="empty" ? "#B7AC9B" : "#5A4637";
-  const t = escHM(title);
-  return `
-    <span class="hm-heart-wrap" title="${t}">
-      <svg class="hm-heart" viewBox="0 0 16 16" width="16" height="16" role="img" aria-label="${t}">
-        <title>${t}</title>
-        <path d="M8 13.8s-4.8-3.3-6-5.3C1 5.7 2.1 3.4 4.1 3.2c1.2-.1 2.2.4 2.9 1.2.6-.8 1.6-1.3 2.9-1.2 2 .2 3 2.3 2.1 4.2-1.1 2-6 6.4-6 6.4z"
-              fill="${fill}" stroke="${stroke}" stroke-width="1.1" />
-      </svg>
-    </span>`;
-}
-
-  function heartsForIndex(i) {
-  const e = rowToEmotions(i);
-  const hearts = [];
-
-  // For each slot, prefer positive heart if both flags somehow exist.
-  for (const slot of SLOTS) {
-    if (e[slot.pos]) hearts.push({ state:"pos", title:slot.labelPos });
-    else if (e[slot.neg]) hearts.push({ state:"neg", title:slot.labelNeg });
-  }
-
-  // Show positives first, then negatives (matches the demo sort order)
-  hearts.sort((a,b) => (a.state==="pos" ? -1 : 1) - (b.state==="pos" ? -1 : 1));
-
-  return hearts.map(h => svgHeart(h.state, h.title)).join("");
-}
-
-  function cssBlock(){ return `
-    <style>
-      .hm{ --barW:60px; --badgeW:40px; --colGap:10px; --namePad:10px; --nameFS:13px; --heart:16px; --rowH:38px;
-           --bg1:#F8F2E3; --bg2:#FFF9EA; --paper:#FFF6E1; --edge:#B58A57; --ink:#2c241c; --muted:#6d6156; --sel:#FFBB55;
-           color:var(--ink); font-size:13px; }
-      .hm-wrap{ background:linear-gradient(180deg,var(--bg1),var(--bg2)); border:2px solid var(--edge); border-radius:12px; padding:.3rem .4rem; box-shadow:inset 0 1px 0 rgba(255,255,255,.6);}
-      .hm-list{ display:flex; flex-direction:column; gap:.35rem; max-height:360px; overflow:auto; padding-right:.25rem; }
-      .hm-row{ display:grid; grid-template-columns:minmax(0, calc(100% - var(--barW) - var(--badgeW) - (2*var(--colGap)) - var(--namePad))) var(--barW) var(--badgeW);
-               align-items:center; column-gap:var(--colGap); width:100%; background:var(--paper); border:2px solid #a88252; border-radius:11px;
-               padding:.28rem .5rem; min-height:var(--rowH); cursor:pointer; text-align:left;
-               box-shadow:0 3px 8px rgba(0,0,0,.10), inset 0 1px 0 rgba(255,255,255,.6);
-               transition: transform .04s, box-shadow .12s, border-color .12s, background .12s; }
-      .hm-row:hover{ background:#FFF1D1; box-shadow:0 6px 14px rgba(0,0,0,.14); }
-      .hm-row.selected{ border-color:var(--sel); box-shadow:0 0 0 3px rgba(255,187,85,.25), 0 8px 16px rgba(0,0,0,.18);}
-      .hm-name{ font-weight:800; letter-spacing:.2px; font-size:var(--nameFS); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding-right:var(--namePad); }
-      .hm-bar{ justify-self:center; display:flex; gap:.18rem; width:var(--barW); }
-      .hm-heart{ width:var(--heart); height:var(--heart); }
-      .hm-badge{ justify-self:end; color:#111; font-size:18px; font-weight:400; font-style:italic; letter-spacing:.2px; font-family:Impact, Haettenschweiler, "Arial Black", system-ui, sans-serif; }
-      .hm-empty{ padding:.5rem; border:2px dashed var(--edge); border-radius:10px; text-align:center; color:var(--muted); }
-      .dialog .dialog-buttons button{ min-width:110px; }
-    </style>`; }
-
-  // Build rows
-  const rows = viable.map(v => {
-    const hearts = heartsForIndex(Number(v.index));
-    return `
-      <button type="button" class="hm-row" data-idx="${v.index}">
-        <div class="hm-name" title="${escHM(v.name)}">${escHM(v.name)}</div>
-        <div class="hm-bar" aria-hidden="true">${hearts}</div>
-        <div class="hm-badge" title="Bond Strength">+${v.bonus}</div>
-      </button>`;
-  });
-
-  const content = `
-    <form class="hm">
-      ${cssBlock()}
-      <div class="hm-wrap">
-        <div class="hm-list" data-list>
-          ${rows.length ? rows.join("") : `<div class="hm-empty">No eligible bonds (need at least one filled emotion).</div>`}
-        </div>
-      </div>
-    </form>`;
-
-  let selected = rows.length ? Number(viable[0].index) : null;
-
-  return await new Promise((resolve) => new Dialog({
-    title: "Invoke Bond — Choose a Bond",
-    content,
-    buttons: {
-      ok: { label: "Invoke", callback: (html) => {
-        if (selected == null) return resolve(null);
-        const choice = viable.find(b => Number(b.index) === Number(selected)) ?? null;
-        resolve(choice);
-      }},
-      cancel: { label: "Cancel", callback: () => resolve(null) }
-    },
-    default: "ok",
-    render: (html) => {
-      const root = html[0];
-      const list = root.querySelector("[data-list]");
-      const ok   = root.closest(".app")?.querySelector('.dialog-buttons button[data-button="ok"]');
-      function refresh(){
-        list.querySelectorAll(".hm-row").forEach(el => {
-          el.classList.toggle("selected", Number(el.dataset.idx) === selected);
-          el.setAttribute("tabindex","0");
-          el.addEventListener("click", () => { selected = Number(el.dataset.idx); refresh(); });
-          el.addEventListener("keydown", (ev) => {
-            if (ev.key === " " || ev.key === "Enter") { ev.preventDefault(); el.click(); }
-            if (ev.key === "ArrowUp" || ev.key === "ArrowDown") {
-              ev.preventDefault();
-              const order = [...list.querySelectorAll(".hm-row")].map(e=>Number(e.dataset.idx));
-              const i = Math.max(0, order.indexOf(selected));
-              const ni = Math.max(0, Math.min(order.length-1, i + (ev.key==="ArrowUp"?-1:1)));
-              selected = order[ni]; refresh();
-              list.querySelector(`.hm-row[data-idx="${selected}"]`)?.focus();
-            }
-          });
-        });
-        if (ok) ok.disabled = (selected == null);
-      }
-      refresh();
-    },
-    close: () => resolve(null)
-  }).render(true));
-}
-
   // ---------- Fabula / Ultima helpers ----------
 function isVillainOrBoss(actor) {
   const P = actor?.system?.props ?? {};
@@ -317,33 +152,185 @@ async function payInvoke(actor) {
     return bonds;
   }
 
-  async function chooseBondDialog(bonds) {
-    const viable = bonds.filter(b => b.bonus > 0);
-    if (!viable.length) return null;
-    const opts = viable
-      .map(b => `<option value="${b.index}">${esc(b.name)} — +${b.bonus}</option>`)
-      .join("");
-    const content = `<form>
-      <div class="form-group">
-        <label>Choose a Bond to Invoke</label>
-        <select name="bondIndex" style="width:100%;">${opts}</select>
-      </div>
-      <p style="margin:.4rem 0 0; font-size:12px; opacity:.75;">
-        Bond bonus is +1 per filled emotion (max +3).
-      </p>
-    </form>`;
-    return await new Promise(resolve => new Dialog({
-      title: "Invoke Bond — Choose Bond",
-      content,
-      buttons: {
-        ok:     { label: "Invoke", callback: html => resolve(Number(html[0].querySelector('[name="bondIndex"]').value)) },
-        cancel: { label: "Cancel", callback: () => resolve(null) }
-      },
-      default: "ok",
-      // ✅ Close with window “X” acts like Cancel
-      close: () => resolve(null)
-    }).render(true));
+  // Fancy HM-style bond chooser (name | hearts | +N)
+async function chooseBondDialog(bondCandidates, attacker) {
+  // 1) Normalize the candidates (from payload snapshot) into our minimal shape
+  const viable = (Array.isArray(bondCandidates) ? bondCandidates : [])
+    .filter(b => (Number(b?.bonus || 0) > 0));
+
+  if (!viable.length) return null;
+
+  // 2) Read emotions from the ACTOR for heart colors (Adm/Loy/Aff vs Inf/Mis/Hat)
+  const P = attacker?.system?.props ?? {};
+  const norm = s => String(s ?? "").trim().toLowerCase();
+  const SLOTS = [
+    { pos:"admiration", neg:"inferiority", labelPos:"Admiration", labelNeg:"Inferiority" },
+    { pos:"loyalty",    neg:"mistrust",    labelPos:"Loyalty",    labelNeg:"Mistrust"    },
+    { pos:"affection",  neg:"hatred",      labelPos:"Affection",  labelNeg:"Hatred"      }
+  ];
+
+  function emotionsForIndex(i){
+    const v1 = norm(P[`emotion_${i}_1`]);
+    const v2 = norm(P[`emotion_${i}_2`]);
+    const v3 = norm(P[`emotion_${i}_3`]);
+    return {
+      admiration : v1 === "admiration",
+      inferiority: v1 === "inferiority",
+      loyalty    : v2 === "loyalty",
+      mistrust   : v2 === "mistrust",
+      affection  : v3 === "affection",
+      hatred     : v3 === "hatred"
+    };
   }
+
+  function filledHearts(emotions){
+    const items = [];
+    for (const s of SLOTS) {
+      if (emotions[s.pos]) items.push({state:"pos", title:s.labelPos});
+      else if (emotions[s.neg]) items.push({state:"neg", title:s.labelNeg});
+    }
+    items.sort((a,b)=> (a.state==="pos") ? -1 : (b.state==="pos") ? 1 : 0);
+    return items;
+  }
+
+  function svgHeart({state="pos", title=""}={}) {
+    const fill = state==="pos" ? "#E85A70" : "#7B62C0";
+    const t = String(title).replace(/"/g,'&quot;');
+    return `
+      <span class="hm-heart-wrap" title="${t}" data-tooltip="${t}">
+        <svg class="hm-heart" viewBox="0 0 16 16" width="16" height="16" role="img" aria-label="${t}">
+          <title>${t}</title>
+          <path d="M8 13.8s-4.8-3.3-6-5.3C1 5.7 2.1 3.4 4.1 3.2c1.2-.1 2.2.4 2.9 1.2.6-.8 1.6-1.3 2.9-1.2 2 .2 3 2.3 2.1 4.2-1.1 2-6 6.4-6 6.4z"
+                fill="${fill}" stroke="#5A4637" stroke-width="1.1"/>
+        </svg>
+      </span>`;
+  }
+
+  // 3) Render rows using your compact layout (name | hearts | +N)
+  function row(bond, idx, selectedIdx){
+    const emo = emotionsForIndex(Number(bond.index));
+    const hearts = filledHearts(emo).map(svgHeart).join("");
+    const sel = (idx === selectedIdx) ? " selected" : "";
+    const title = `+${bond.bonus} from ${bond.name}`;
+    return `
+      <div class="hm-row${sel}" data-idx="${idx}" data-index="${bond.index}" title="${title}">
+        <div class="hm-name">${esc(bond.name)}</div>
+        <div class="hm-bar">${hearts}</div>
+        <div class="hm-badge">+${bond.bonus}</div>
+      </div>`;
+  }
+
+  // 4) Inline CSS from the demo (trimmed to essentials)
+  function css(){
+    return `<style>
+      .hm{ --ink:#2b1f17; --edge:#b79a6a; --sel:#FFBB55;
+           --heart:16px; --nameFS:13px; --barW:156px; --namePad:10px; --barNudge:8px;
+           --muted:#6b5b4a; }
+      .hm-wrap{ padding:.4rem .25rem .2rem; }
+      .hm-list{ display:grid; gap:.35rem; max-height:420px; overflow:auto; }
+      .hm-row{
+        display:grid; grid-template-columns: 1fr auto auto; align-items:center;
+        gap:.55rem; padding:.45rem .6rem; border:2px solid var(--edge); border-radius:12px;
+        background:linear-gradient(180deg,#fff5e1,#f2e2c4); box-shadow: 0 8px 16px rgba(0,0,0,.08);
+        cursor:pointer; user-select:none;
+      }
+      .hm-row:hover{ filter:brightness(1.03) saturate(1.02); }
+      .hm-row.selected{ border-color: var(--sel);
+        box-shadow: 0 0 0 3px rgba(255,187,85,.25), 0 8px 16px rgba(0,0,0,.18); }
+      .hm-name{
+        justify-self:start; font-weight:800; letter-spacing:.2px; font-size: var(--nameFS);
+        white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding-right: var(--namePad);
+      }
+      .hm-bar{ grid-column: 2 / 3; justify-self:center; display:flex; gap:.18rem; width:var(--barW);
+               transform: translateX(var(--barNudge)); }
+      .hm-heart{ width: var(--heart); height: var(--heart); }
+      .hm-badge{
+        justify-self:end; color:#111; font-size:18px; font-weight:400; font-style:italic; letter-spacing:.2px;
+        background:transparent; padding:0; border-radius:0; box-shadow:none; text-shadow:0 1px 0 rgba(255,255,255,.7);
+      }
+      .hm-foot{ display:flex; justify-content:space-between; align-items:center; margin-top:.35rem; font-size:12px; color:var(--muted); }
+      .dialog .dialog-buttons button{ min-width:110px; }
+    </style>`;
+  }
+
+  // 5) Dialog shell + interactions (keyboard + click)
+  let selectedIdx = viable.length ? 0 : -1;
+  const legend = `
+    <div class="hm-legend" style="display:flex; gap:.75rem; align-items:center; margin:0 .25rem .35rem;">
+      <span class="hm-leg">${svgHeart({state:"pos", title:"positive"})} positive</span>
+      <span class="hm-leg">${svgHeart({state:"neg", title:"negative"})} negative</span>
+    </div>`;
+
+  const content = `
+    <form class="hm">
+      ${css()}
+      <div class="hm-wrap">
+        ${legend}
+        <div class="hm-list" data-list></div>
+        <div class="hm-foot">
+          <div>Bond bonus is +1 per filled emotion (max +3).</div>
+          <div>Loaded from actor</div>
+        </div>
+      </div>
+    </form>`;
+
+  function applyAutoFit(root){
+    const names = [...root.querySelectorAll(".hm-name")];
+    let fs = 13, heart = 16;
+    const overflows = () => names.some(n => n.scrollWidth > n.clientWidth);
+    for (let i=0; i<3 && overflows(); i++){
+      fs = Math.max(11, fs - 1);
+      heart = Math.max(14, heart - 1);
+      root.style.setProperty("--nameFS", `${fs}px`);
+      root.style.setProperty("--heart", `${heart}px`);
+    }
+  }
+
+  return await new Promise(resolve => new Dialog({
+    title: "Invoke Bond — Choose a Bond",
+    content,
+    buttons: {
+      ok: { label: "Invoke", callback: (html) => {
+        const el = html[0].querySelector(".hm-row.selected");
+        if (!el) return resolve(null);
+        const idx = Number(el.dataset.idx);
+        resolve(viable[idx]?.index ?? null); // return the bond.index
+      }},
+      cancel: { label: "Cancel", callback: () => resolve(null) }
+    },
+    default: "ok",
+    close: () => resolve(null),
+    render: (html) => {
+      const root = html[0];
+      const list = root.querySelector("[data-list]");
+      const okBtn = root.closest(".app")?.querySelector('.dialog-buttons button[data-button="ok"]');
+
+      function refresh(){
+        list.innerHTML = viable.map((b,i)=>row(b,i,selectedIdx)).join("");
+        if (okBtn) okBtn.disabled = (selectedIdx < 0);
+
+        for (const el of list.querySelectorAll(".hm-row")){
+          el.addEventListener("click", () => { selectedIdx = Number(el.dataset.idx); refresh(); });
+          el.addEventListener("keydown", (ev)=>{
+            if (ev.key==="ArrowUp"||ev.key==="ArrowDown"){
+              ev.preventDefault();
+              const d = ev.key==="ArrowUp" ? -1 : 1;
+              selectedIdx = Math.max(0, Math.min(viable.length-1, selectedIdx + d));
+              refresh();
+              list.querySelector(`.hm-row[data-idx="${selectedIdx}"]`)?.focus();
+            }
+            if (ev.key===" "||ev.key==="Enter"){ ev.preventDefault(); el.click(); }
+          });
+          el.setAttribute("tabindex","0");
+        }
+        applyAutoFit(root);
+      }
+      refresh();
+      const ro = new ResizeObserver(()=>applyAutoFit(root));
+      ro.observe(root.closest(".window-app"));
+    }
+  }).render(true));
+}
 
   // ---------- actions ----------
   async function handleInvokeTrait(btn, chatMsg) {
@@ -617,13 +604,29 @@ const choice = await new Promise((resolve) => new Dialog({
 
     if (!viable.length) return ui.notifications?.warn("No eligible Bonds on this action.");
 
-    // If multiple, show the hearts dialog; otherwise auto-pick
-let chosen = viable[0];
-if (viable.length > 1) {
-  const pickObj = await fuFancyBondDialog(attacker, viable);
-  if (!pickObj) { ui.notifications.info("Bond invoke cancelled."); return "CANCELLED"; }
-  chosen = pickObj;
-}
+    // If multiple, ask the user; otherwise auto-pick
+    let chosen = viable[0];
+    if (viable.length > 1) {
+      const opts = viable.map(b => `<option value="${b.index}">${esc(b.name)} — +${b.bonus}</option>`).join("");
+      const content = `<form>
+        <div class="form-group">
+          <label>Choose a Bond to Invoke</label>
+          <select name="bondIndex" style="width:100%;">${opts}</select>
+        </div></form>`;
+      const pick = await new Promise(res => new Dialog({
+        title: "Invoke Bond — Choose Bond",
+        content,
+        buttons: {
+          ok:     { label: "Invoke", callback: html => res(Number(html[0].querySelector('[name="bondIndex"]').value)) },
+          cancel: { label: "Cancel", callback: () => res(null) }
+        },
+        default: "ok",
+        close: () => res(null)
+      }).render(true));
+
+      if (pick == null) { ui.notifications.info("Bond invoke cancelled."); return "CANCELLED"; }
+      chosen = viable.find(b => Number(b.index) === Number(pick)) ?? chosen;
+    }
 
     {
   const spend = await payInvoke(attacker);
