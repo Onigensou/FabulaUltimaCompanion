@@ -91,46 +91,79 @@
 async function fuFancyBondDialog(attacker, viable) {
   // Build per-row emotion flags from the live actor sheet so we can draw hearts.
   const P = attacker?.system?.props ?? {};
-  const SLOTS = [
-    { pos:"Admiration",  neg:"Inferiority", key:1 },
-    { pos:"Loyalty",     neg:"Mistrust",    key:2 },
-    { pos:"Affection",   neg:"Hatred",      key:3 }
-  ];
+  // 3 emotion slots per row, each can be positive or negative.
+// We’ll detect explicit pos/neg keys first, then fall back to a generic boolean (treated as positive).
+const SLOTS = [
+  { pos:"admiration",  neg:"inferiority", labelPos:"Admiration",  labelNeg:"Inferiority",  idx:1 },
+  { pos:"loyalty",     neg:"mistrust",    labelPos:"Loyalty",     labelNeg:"Mistrust",     idx:2 },
+  { pos:"affection",   neg:"hatred",      labelPos:"Affection",   labelNeg:"Hatred",       idx:3 },
+];
 
-  function rowToEmotions(i) {
-    // Your sheet exposes only a boolean per slot (emotion_i_1..3). If you later
-    // add pos/neg flags, you can detect them here; for now, show “positive” hearts.
-    return {
-      [SLOTS[0].pos.toLowerCase()]: !!P[`emotion_${i}_1`],
-      [SLOTS[1].pos.toLowerCase()]: !!P[`emotion_${i}_2`],
-      [SLOTS[2].pos.toLowerCase()]: !!P[`emotion_${i}_3`]
-    };
+// Read a single bond-row’s emotions from the actor sheet
+function rowToEmotions(i) {
+  const P = attacker?.system?.props ?? {};
+
+  // Helper to read one slot (1..3) with pos/neg names (e.g., admiration/inferiority)
+  function slot(i, slotIdx, posKey, negKey) {
+    // Prefer explicit booleans like emotion_1_1_admiration / emotion_1_1_inferiority
+    const posExplicit = !!P[`emotion_${i}_${slotIdx}_${posKey}`];
+    const negExplicit = !!P[`emotion_${i}_${slotIdx}_${negKey}`];
+
+    // Or use a label discriminator if provided (e.g., emotion_1_1_label = "Inferiority")
+    const baseFlag  = !!P[`emotion_${i}_${slotIdx}`];
+    const labelText = String(P[`emotion_${i}_${slotIdx}_label`] ?? "").toLowerCase();
+
+    const posLabel = baseFlag && !!labelText && labelText.includes(posKey.slice(0, 4)); // e.g., "admi"
+    const negLabel = baseFlag && !!labelText && labelText.includes(negKey.slice(0, 4)); // e.g., "infe"/"mist"/"hatr"
+
+    // Final decision:
+    const pos = posExplicit || posLabel || (baseFlag && !negExplicit && !negLabel);
+    const neg = negExplicit || negLabel;
+
+    return { [posKey]: !!pos, [negKey]: !!neg };
   }
+
+  const s1 = slot(i, 1, "admiration",  "inferiority");
+  const s2 = slot(i, 2, "loyalty",     "mistrust");
+  const s3 = slot(i, 3, "affection",   "hatred");
+
+  // Merge 3 slots
+  return { ...s1, ...s2, ...s3 };
+}
 
   // Render helpers (minimal, pulled from your demo)
   const escHM = (s) => String(s ?? "").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 
   function svgHeart(state, title) {
-    const fill   = state==="pos" ? "#E85A70" : "none";
-    const stroke = state==="empty" ? "#B7AC9B" : "#5A4637";
-    const t = escHM(title);
-    return `
-      <span class="hm-heart-wrap" title="${t}">
-        <svg class="hm-heart" viewBox="0 0 16 16" width="16" height="16" role="img">
-          <title>${t}</title>
-          <path d="M8 13.8s-4.8-3.3-6-5.3C1 5.7 2.1 3.4 4.1 3.2c1.2-.1 2.2.4 2.9 1.2.6-.8 1.6-1.3 2.9-1.2 2 .2 3 2.3 2.1 4.2-1.1 2-6 6.4-6 6.4z"
-                fill="${fill}" stroke="${stroke}" stroke-width="1.1" />
-        </svg>
-      </span>`;
-  }
+  // pos = red, neg = purple, empty = outline only
+  const fill   = state==="pos" ? "#E85A70" : state==="neg" ? "#7B62C0" : "none";
+  const stroke = state==="empty" ? "#B7AC9B" : "#5A4637";
+  const t = escHM(title);
+  return `
+    <span class="hm-heart-wrap" title="${t}">
+      <svg class="hm-heart" viewBox="0 0 16 16" width="16" height="16" role="img" aria-label="${t}">
+        <title>${t}</title>
+        <path d="M8 13.8s-4.8-3.3-6-5.3C1 5.7 2.1 3.4 4.1 3.2c1.2-.1 2.2.4 2.9 1.2.6-.8 1.6-1.3 2.9-1.2 2 .2 3 2.3 2.1 4.2-1.1 2-6 6.4-6 6.4z"
+              fill="${fill}" stroke="${stroke}" stroke-width="1.1" />
+      </svg>
+    </span>`;
+}
 
   function heartsForIndex(i) {
-    const e = rowToEmotions(i);
-    const order = [SLOTS[0].pos, SLOTS[1].pos, SLOTS[2].pos].map(s => s.toLowerCase());
-    const hearts = [];
-    for (const key of order) if (e[key]) hearts.push(svgHeart("pos", key.replace(/^\w/, c=>c.toUpperCase())));
-    return hearts.join("");
+  const e = rowToEmotions(i);
+  const hearts = [];
+
+  // For each slot, prefer positive heart if both flags somehow exist.
+  for (const slot of SLOTS) {
+    if (e[slot.pos]) hearts.push({ state:"pos", title:slot.labelPos });
+    else if (e[slot.neg]) hearts.push({ state:"neg", title:slot.labelNeg });
   }
+
+  // Show positives first, then negatives (matches the demo sort order)
+  hearts.sort((a,b) => (a.state==="pos" ? -1 : 1) - (b.state==="pos" ? -1 : 1));
+
+  return hearts.map(h => svgHeart(h.state, h.title)).join("");
+}
 
   function cssBlock(){ return `
     <style>
