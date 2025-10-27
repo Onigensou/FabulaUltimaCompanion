@@ -24,37 +24,6 @@
     ));
   };
 
-  // Renders up to 3 hearts. Uses polarity if provided; otherwise fills neutrally.
-function renderHearts({pos=0, neg=0, total=0}) {
-  const filled = Math.min(3, total || (pos + neg));
-  const hearts = [];
-  const posCount = Math.min(3, pos);
-  const negCount = Math.min(3 - posCount, neg);
-  for (let i = 0; i < posCount; i++) hearts.push('<span class="fu-heart pos">♥</span>');
-  for (let i = 0; i < negCount; i++) hearts.push('<span class="fu-heart neg">♥</span>');
-  const neutral = filled - (posCount + negCount);
-  for (let i = 0; i < neutral; i++) hearts.push('<span class="fu-heart">♥</span>');
-  for (let i = hearts.length; i < 3; i++) hearts.push('<span class="fu-heart dim">♥</span>');
-  return `<div class="fu-hearts">${hearts.join("")}</div>`;
-}
-
-// Create one visual row for the list (works with your viable[] objects)
-function makeBondRowHTML(bond) {
-  const hearts = renderHearts({
-    pos: bond.pos ?? 0,
-    neg: bond.neg ?? 0,
-    total: bond.total ?? bond.bonus ?? 0
-  });
-  return `
-  <li class="fu-bond-item" data-index="${bond.index}">
-    <div class="fu-bond-left">
-      <div class="fu-bond-name">${foundry.utils.escapeHTML(bond.name ?? "Bond")}</div>
-      ${hearts}
-    </div>
-    <div class="fu-bonus">+${Math.min(3, Number(bond.bonus ?? 0))}</div>
-  </li>`;
-}
-
   async function getPayload(chatMsg) {
     try {
       // getFlag is sync in V12; awaiting is harmless and keeps a uniform signature
@@ -116,6 +85,138 @@ function makeBondRowHTML(bond) {
   function unlock(btn) {
     if (btn) btn.dataset.fuLock = "0";
   }
+
+  // Harvest-Moon style bond picker (compact, single-column with hearts)
+// Returns the chosen bond object from `viable` or null if cancelled.
+async function fuFancyBondDialog(attacker, viable) {
+  // Build per-row emotion flags from the live actor sheet so we can draw hearts.
+  const P = attacker?.system?.props ?? {};
+  const SLOTS = [
+    { pos:"Admiration",  neg:"Inferiority", key:1 },
+    { pos:"Loyalty",     neg:"Mistrust",    key:2 },
+    { pos:"Affection",   neg:"Hatred",      key:3 }
+  ];
+
+  function rowToEmotions(i) {
+    // Your sheet exposes only a boolean per slot (emotion_i_1..3). If you later
+    // add pos/neg flags, you can detect them here; for now, show “positive” hearts.
+    return {
+      [SLOTS[0].pos.toLowerCase()]: !!P[`emotion_${i}_1`],
+      [SLOTS[1].pos.toLowerCase()]: !!P[`emotion_${i}_2`],
+      [SLOTS[2].pos.toLowerCase()]: !!P[`emotion_${i}_3`]
+    };
+  }
+
+  // Render helpers (minimal, pulled from your demo)
+  const escHM = (s) => String(s ?? "").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+
+  function svgHeart(state, title) {
+    const fill   = state==="pos" ? "#E85A70" : "none";
+    const stroke = state==="empty" ? "#B7AC9B" : "#5A4637";
+    const t = escHM(title);
+    return `
+      <span class="hm-heart-wrap" title="${t}">
+        <svg class="hm-heart" viewBox="0 0 16 16" width="16" height="16" role="img">
+          <title>${t}</title>
+          <path d="M8 13.8s-4.8-3.3-6-5.3C1 5.7 2.1 3.4 4.1 3.2c1.2-.1 2.2.4 2.9 1.2.6-.8 1.6-1.3 2.9-1.2 2 .2 3 2.3 2.1 4.2-1.1 2-6 6.4-6 6.4z"
+                fill="${fill}" stroke="${stroke}" stroke-width="1.1" />
+        </svg>
+      </span>`;
+  }
+
+  function heartsForIndex(i) {
+    const e = rowToEmotions(i);
+    const order = [SLOTS[0].pos, SLOTS[1].pos, SLOTS[2].pos].map(s => s.toLowerCase());
+    const hearts = [];
+    for (const key of order) if (e[key]) hearts.push(svgHeart("pos", key.replace(/^\w/, c=>c.toUpperCase())));
+    return hearts.join("");
+  }
+
+  function cssBlock(){ return `
+    <style>
+      .hm{ --barW:60px; --badgeW:40px; --colGap:10px; --namePad:10px; --nameFS:13px; --heart:16px; --rowH:38px;
+           --bg1:#F8F2E3; --bg2:#FFF9EA; --paper:#FFF6E1; --edge:#B58A57; --ink:#2c241c; --muted:#6d6156; --sel:#FFBB55;
+           color:var(--ink); font-size:13px; }
+      .hm-wrap{ background:linear-gradient(180deg,var(--bg1),var(--bg2)); border:2px solid var(--edge); border-radius:12px; padding:.3rem .4rem; box-shadow:inset 0 1px 0 rgba(255,255,255,.6);}
+      .hm-list{ display:flex; flex-direction:column; gap:.35rem; max-height:360px; overflow:auto; padding-right:.25rem; }
+      .hm-row{ display:grid; grid-template-columns:minmax(0, calc(100% - var(--barW) - var(--badgeW) - (2*var(--colGap)) - var(--namePad))) var(--barW) var(--badgeW);
+               align-items:center; column-gap:var(--colGap); width:100%; background:var(--paper); border:2px solid #a88252; border-radius:11px;
+               padding:.28rem .5rem; min-height:var(--rowH); cursor:pointer; text-align:left;
+               box-shadow:0 3px 8px rgba(0,0,0,.10), inset 0 1px 0 rgba(255,255,255,.6);
+               transition: transform .04s, box-shadow .12s, border-color .12s, background .12s; }
+      .hm-row:hover{ background:#FFF1D1; box-shadow:0 6px 14px rgba(0,0,0,.14); }
+      .hm-row.selected{ border-color:var(--sel); box-shadow:0 0 0 3px rgba(255,187,85,.25), 0 8px 16px rgba(0,0,0,.18);}
+      .hm-name{ font-weight:800; letter-spacing:.2px; font-size:var(--nameFS); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding-right:var(--namePad); }
+      .hm-bar{ justify-self:center; display:flex; gap:.18rem; width:var(--barW); }
+      .hm-heart{ width:var(--heart); height:var(--heart); }
+      .hm-badge{ justify-self:end; color:#111; font-size:18px; font-weight:400; font-style:italic; letter-spacing:.2px; font-family:Impact, Haettenschweiler, "Arial Black", system-ui, sans-serif; }
+      .hm-empty{ padding:.5rem; border:2px dashed var(--edge); border-radius:10px; text-align:center; color:var(--muted); }
+      .dialog .dialog-buttons button{ min-width:110px; }
+    </style>`; }
+
+  // Build rows
+  const rows = viable.map(v => {
+    const hearts = heartsForIndex(Number(v.index));
+    return `
+      <button type="button" class="hm-row" data-idx="${v.index}">
+        <div class="hm-name" title="${escHM(v.name)}">${escHM(v.name)}</div>
+        <div class="hm-bar" aria-hidden="true">${hearts}</div>
+        <div class="hm-badge" title="Bond Strength">+${v.bonus}</div>
+      </button>`;
+  });
+
+  const content = `
+    <form class="hm">
+      ${cssBlock()}
+      <div class="hm-wrap">
+        <div class="hm-list" data-list>
+          ${rows.length ? rows.join("") : `<div class="hm-empty">No eligible bonds (need at least one filled emotion).</div>`}
+        </div>
+      </div>
+    </form>`;
+
+  let selected = rows.length ? Number(viable[0].index) : null;
+
+  return await new Promise((resolve) => new Dialog({
+    title: "Invoke Bond — Choose a Bond",
+    content,
+    buttons: {
+      ok: { label: "Invoke", callback: (html) => {
+        if (selected == null) return resolve(null);
+        const choice = viable.find(b => Number(b.index) === Number(selected)) ?? null;
+        resolve(choice);
+      }},
+      cancel: { label: "Cancel", callback: () => resolve(null) }
+    },
+    default: "ok",
+    render: (html) => {
+      const root = html[0];
+      const list = root.querySelector("[data-list]");
+      const ok   = root.closest(".app")?.querySelector('.dialog-buttons button[data-button="ok"]');
+      function refresh(){
+        list.querySelectorAll(".hm-row").forEach(el => {
+          el.classList.toggle("selected", Number(el.dataset.idx) === selected);
+          el.setAttribute("tabindex","0");
+          el.addEventListener("click", () => { selected = Number(el.dataset.idx); refresh(); });
+          el.addEventListener("keydown", (ev) => {
+            if (ev.key === " " || ev.key === "Enter") { ev.preventDefault(); el.click(); }
+            if (ev.key === "ArrowUp" || ev.key === "ArrowDown") {
+              ev.preventDefault();
+              const order = [...list.querySelectorAll(".hm-row")].map(e=>Number(e.dataset.idx));
+              const i = Math.max(0, order.indexOf(selected));
+              const ni = Math.max(0, Math.min(order.length-1, i + (ev.key==="ArrowUp"?-1:1)));
+              selected = order[ni]; refresh();
+              list.querySelector(`.hm-row[data-idx="${selected}"]`)?.focus();
+            }
+          });
+        });
+        if (ok) ok.disabled = (selected == null);
+      }
+      refresh();
+    },
+    close: () => resolve(null)
+  }).render(true));
+}
 
   // ---------- Fabula / Ultima helpers ----------
 function isVillainOrBoss(actor) {
@@ -483,66 +584,12 @@ const choice = await new Promise((resolve) => new Dialog({
 
     if (!viable.length) return ui.notifications?.warn("No eligible Bonds on this action.");
 
-   // If multiple, ask the user; otherwise auto-pick
+    // If multiple, show the hearts dialog; otherwise auto-pick
 let chosen = viable[0];
 if (viable.length > 1) {
-  const picked = await (async function chooseBondDialog(viable) {
-    return new Promise((resolve) => {
-      const items = viable.map(makeBondRowHTML).join("");
-      const content = `
-        <div class="fu-bond-dialog">
-          <div class="fu-bond-legend">
-            <span><span class="dot pos"></span>positive</span>
-            <span><span class="dot neg"></span>negative</span>
-          </div>
-          <ul class="fu-bond-list" data-ref="list">${items}</ul>
-          <div class="fu-bond-foot">
-            <span>Bond bonus is +1 per filled emotion (max +3).</span>
-            <span>Demo data</span>
-          </div>
-        </div>`;
-
-      let selectedIndex = viable[0]?.index ?? null;
-
-      const dlg = new Dialog({
-        title: "Invoke Bond — Choose a Bond",
-        content,
-        buttons: {
-          ok: { label: "Invoke", callback: () => {
-            const picked = viable.find(v => v.index === selectedIndex) ?? viable[0];
-            resolve(picked);
-          }},
-          cancel: { label: "Cancel", callback: () => resolve(null) }
-        },
-        default: "ok"
-      }, { jQuery: true });
-
-      dlg.render(true);
-
-      Hooks.once("renderDialog", (_app, html) => {
-        const $list = html.find('[data-ref="list"]');
-        const mark = (idx) => {
-          selectedIndex = idx;
-          $list.find(".fu-bond-item").removeClass("is-selected");
-          $list.find(`.fu-bond-item[data-index="${idx}"]`).addClass("is-selected");
-        };
-        if (selectedIndex !== null) mark(selectedIndex);
-
-        $list.on("click", ".fu-bond-item", ev => {
-          const idx = Number(ev.currentTarget.dataset.index);
-          mark(idx);
-        });
-        $list.on("dblclick", ".fu-bond-item", ev => {
-          const idx = Number(ev.currentTarget.dataset.index);
-          mark(idx);
-          dlg.submit({preventClose:false}); // triggers OK
-        });
-      });
-    });
-  })(viable);
-
-  if (!picked) { ui.notifications.info("Bond invoke cancelled."); return "CANCELLED"; }
-  chosen = picked;
+  const pickObj = await fuFancyBondDialog(attacker, viable);
+  if (!pickObj) { ui.notifications.info("Bond invoke cancelled."); return "CANCELLED"; }
+  chosen = pickObj;
 }
 
     {
