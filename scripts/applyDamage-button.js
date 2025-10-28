@@ -62,6 +62,33 @@ if (flagged) {
   }
 }
 
+    async function spendResourcesOnApply(flaggedPayload) {
+  try {
+    const meta = flaggedPayload?.meta ?? null;
+    const costs = meta?.costsNormalized;
+    const attackerUuid = meta?.attackerUuid;
+    if (!attackerUuid || !Array.isArray(costs) || !costs.length) return true; // nothing to spend
+
+    const doc = await fromUuid(attackerUuid).catch(()=>null);
+    const actor = doc?.actor ?? (doc?.documentName === "Actor" ? doc : null);
+    if (!actor) { ui.notifications?.error("Apply: cannot resolve attacker to spend resource."); return false; }
+
+    const patch = {};
+    for (const c of costs) {
+      const curPath = `system.props.${c.curKey}`;
+      const curVal = Number(getProperty(actor, curPath) ?? 0) || 0;
+      const next = Math.max(0, curVal - Number(c.req || 0));
+      patch[curPath] = next;
+    }
+    if (Object.keys(patch).length) await actor.update(patch);
+    return true;
+  } catch (e) {
+    console.error("[fu-chatbtn] Spend failed:", e);
+    ui.notifications?.error("Apply: resource spend failed (see console).");
+    return false;
+  }
+}
+
 const {
   advMacroName     = "AdvanceDamage",
   missMacroName    = "Miss",
@@ -83,6 +110,10 @@ const {
   chatMsgId        = msgId
 } = args;
 
+// Spend resources now (on confirm). If it fails, stop.
+const okToProceed = await spendResourcesOnApply(flagged ? flagged : null);
+if (!okToProceed) { btn.dataset.fuLock = "0"; return; }
+    
     try {
       // UI feedback
       btn.disabled = true;
