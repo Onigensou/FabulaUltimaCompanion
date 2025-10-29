@@ -1,5 +1,7 @@
 // ─────────────────────────────────────────────────────────────
-//  FU Portrait Cut-In • Broadcaster (Foundry VTT v12)
+//  FU Portrait Cut-In • Broadcaster (Cache-Keys Only) (V12)
+//  • Sends imgKey/sfxKey + shared t0/expiry + visual params
+//  • Assumes receiver has preloaded assets at combat start
 // ─────────────────────────────────────────────────────────────
 (() => {
   const MODULE_ID    = "fabula-ultima-companion";
@@ -8,14 +10,6 @@
   const DEBOUNCE_KEY = "__FU_CUTIN_LAST_EMIT";
   const DEBOUNCE_MS  = 600;
 
-  // SFX map by type
-  const SFX = {
-    critical:   "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/BurstMax.ogg",
-    zero_power: "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/ChargeAttack.ogg",
-    fumble:     "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/Down2.ogg"
-  };
-
-  // Default visuals
   const DEFAULTS = {
     delayMs: 900,
     dimAlpha: 0.6, dimFadeMs: 200,
@@ -23,31 +17,33 @@
     slideInMs: 650, holdMs: 900, slideOutMs: 650,
     portraitHeightRatio: 0.9, portraitBottomMargin: 40, portraitInsetX: 220,
     sfxVol: 0.9,
-    ttlMs: 3000 // ⟵ NEW: expires window to avoid late-join floods
+    ttlMs: 3000
   };
 
-  // Helpers
-  async function tokenFromUuid(uuid) { try { return await fromUuid(uuid); } catch { return null; } }
-  function imageFromActorByType(token, type) {
-    const props = token?.actor?.system?.props ?? {};
-    switch (type) {
-      case "critical":   return props.cut_in_critical || null;
-      case "zero_power": return props.cut_in_zero_power || null;
-      case "fumble":     return props.cut_in_fumble || null;
-      default:           return null;
-    }
+  // Build cache keys — must match receiver’s preloading scheme
+  function imgKeyFor(tokenUuid, type) {
+    // We derive actorId from the tokenUuid to keep keys stable
+    // If token cannot resolve, return null (strict policy: no play)
+    try {
+      const tok = fromUuidSync?.(tokenUuid);
+      const actorId = tok?.actor?.id ?? null;
+      return actorId ? `cutin:${actorId}:${type}` : null;
+    } catch { return null; }
+  }
+  function sfxKeyFor(type) {
+    return `sfx:${type}`;
   }
   function num(v, d) { const n = Number(v); return Number.isFinite(n) ? n : d; }
 
   async function cutinBroadcast({
     tokenUuid,
-    type, imgUrl,
+    type,                 // "critical" | "zero_power" | "fumble"
     // optional visual overrides:
     delayMs, dimAlpha, dimFadeMs,
     flashPeak, flashInMs, flashOutMs, flashDelayMs,
     slideInMs, holdMs, slideOutMs,
     portraitHeightRatio, portraitBottomMargin, portraitInsetX,
-    sfxUrl, sfxVol,
+    sfxVol,
     ttlMs
   } = {}) {
     // Debounce
@@ -67,15 +63,11 @@
     }
     const socket = socketlib.registerModule(MODULE_ID);
 
-    // Resolve image & sfx
-    let url = imgUrl ?? null;
-    if (!url && tokenUuid && type) {
-      const tok = await tokenFromUuid(tokenUuid);
-      url = imageFromActorByType(tok, type);
-    }
-    const finalSfx = sfxUrl ?? (type ? SFX[type] : null);
+    // Resolve cache keys (no URLs)
+    const imgKey = tokenUuid && type ? imgKeyFor(tokenUuid, type) : null;
+    const sfxKey = type ? sfxKeyFor(type) : null;
 
-    // Validate all numbers
+    // Validate numbers
     const v = {
       delayMs:              num(delayMs,              DEFAULTS.delayMs),
       dimAlpha:             num(dimAlpha,             DEFAULTS.dimAlpha),
@@ -94,17 +86,16 @@
       ttlMs:                num(ttlMs,                DEFAULTS.ttlMs)
     };
 
-    // Shared start time & expiry
+    // Shared start & expiry
     const t0       = Date.now() + v.delayMs;
     const expireAt = t0 + v.ttlMs;
 
-    // Only target users who are currently active
     const activeUsers = (game.users?.filter(u => u.active) ?? []).map(u => u.id);
 
     const payload = {
-      imgUrl: url || null,
       t0, expireAt,
-      sfxUrl: finalSfx || null,
+      imgKey,           // ← strictly a cache key; receiver will skip if missing
+      sfxKey,           // ← strictly a cache key; receiver will skip if missing
       sfxVol: v.sfxVol,
       dimAlpha: v.dimAlpha,
       dimFadeMs: v.dimFadeMs,
@@ -118,20 +109,20 @@
       portraitHeightRatio: v.portraitHeightRatio,
       portraitBottomMargin: v.portraitBottomMargin,
       portraitInsetX: v.portraitInsetX,
-      allowedUserIds: activeUsers // ⟵ fallback guard (receiver will check)
+      allowedUserIds: activeUsers
     };
 
-    // Prefer executeForUsers if available
+    // Dispatch
     if (typeof socket.executeForUsers === "function" && activeUsers.length) {
       await socket.executeForUsers(ACTION_KEY, activeUsers, payload);
     } else {
       await socket.executeForEveryone(ACTION_KEY, payload);
     }
 
-    // Local fallback
+    // Optional local run (helps testing a single client)
     try { window.__FU_CUTIN_PLAY?.(payload); } catch {}
 
-    // Release debounce
+    // Release debounce after the delay
     setTimeout(() => {
       if (window[DEBOUNCE_KEY] === now) window[DEBOUNCE_KEY] = 0;
     }, v.delayMs + 200);
@@ -139,7 +130,7 @@
     console.log("[FU Cut-In • Broadcast] payload:", payload);
   }
 
-  // Expose API
+  // Expose API (same name as before, but now cache-only)
   window[NS] = window[NS] || {};
   window[NS].api = window[NS].api || {};
   window[NS].api.cutinBroadcast = cutinBroadcast;
