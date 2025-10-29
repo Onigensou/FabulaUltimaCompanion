@@ -14,12 +14,6 @@
   const TAG_ID     = "fu-portrait-cutin-layer";
   const NS         = "FUCompanion";
 
-  // ───────────────── Performance knobs ─────────────────
-// Cap portrait height on PLAYERS to reduce fragment work (GM keeps full-res)
-const PLAYER_DOWNSCALE_MAX_H = 1080; // try 900–1200 if you want lighter/heavier
-// Run tweens at 30 FPS on players (GM uses full rAF)
-const PLAYER_TWEEN_30FPS = true;
-
   // ---- SFX sources used for preloading (only at preload time, never at showtime)
   // You may change these URLs; they are fetched only during combatStart preloading.
   const SFX_URLS = {
@@ -70,49 +64,14 @@ const PLAYER_TWEEN_30FPS = true;
 
   // Preload helpers (URLs are used here only; showtime never touches URLs)
   async function preloadTexture(key, url) {
-  const bag = cacheBag();
-  // If already cached and alive, return it
-  if (bag[key]?.texture && !bag[key].texture.destroyed) return bag[key].texture;
-
-  const fn = foundry?.utils?.preloadTexture ?? globalThis.loadTexture;
-  if (typeof fn !== "function") throw new Error("No texture loader available.");
-
-  // 1) Load original once (GPU upload happens here)
-  const origTexture = await fn(url);
-  const base = origTexture.baseTexture;
-  base.scaleMode = PIXI.SCALE_MODES.LINEAR;      // smoother scale
-  // Note: mipmaps are only used for power-of-two sizes; this line doesn't hurt.
-  base.mipmap = PIXI.MIPMAP_MODES.POW2;
-
-  let useTexture = origTexture;
-
-  // 2) Optional: downscale for players to lighten per-frame work
-  const isPlayer = !game.user?.isGM;
-  if (isPlayer && PLAYER_DOWNSCALE_MAX_H && Number.isFinite(PLAYER_DOWNSCALE_MAX_H)) {
-    const H = canvas?.app?.renderer?.screen?.height ?? window.innerHeight ?? 1080;
-    const maxH = Math.min(PLAYER_DOWNSCALE_MAX_H, Math.floor(H)); // never upscale beyond screen
-    const srcH = origTexture.height || base.realHeight || base.height || H;
-    if (srcH > maxH) {
-      const scale = maxH / srcH;
-      const targetW = Math.max(2, Math.round((origTexture.width || base.realWidth || base.width) * scale));
-      const targetH = Math.max(2, Math.round(srcH * scale));
-
-      // Draw original into a RenderTexture once, store that cheaper texture
-      const rt = PIXI.RenderTexture.create({ width: targetW, height: targetH });
-      const spr = new PIXI.Sprite(origTexture);
-      spr.scale.set(scale, scale);
-      const renderer = canvas?.app?.renderer;
-      if (renderer) {
-        renderer.render(spr, { renderTexture: rt, clear: true });
-        useTexture = new PIXI.Texture(rt);
-      }
-    }
+    const bag = cacheBag();
+    if (bag[key]?.texture && !bag[key].texture.destroyed) return bag[key].texture;
+    const fn = foundry?.utils?.preloadTexture ?? globalThis.loadTexture;
+    if (typeof fn !== "function") throw new Error("No texture loader available.");
+    const texture = await fn(url);
+    bag[key] = { ...(bag[key]||{}), texture, url, cachedAt: Date.now() };
+    return texture;
   }
-
-  bag[key] = { ...(bag[key]||{}), texture: useTexture, url, cachedAt: Date.now(), _origTexture: origTexture };
-  return useTexture;
-}
-  
   async function preloadAudio(key, url) {
     const bag = cacheBag();
     if (bag[key]?.buffer) return bag[key].buffer;
@@ -280,64 +239,46 @@ function buildPreloadManifestForCombat(combat) {
     __layer.visible = false;
   }
 
-  // --- Tween helpers (30 FPS option for players) ---
-const easeOutCubic = t => 1 - Math.pow(1 - t, 3);
-const easeInCubic  = t => t * t * t;
-const easeOutQuad  = t => 1 - (1 - t) * (1 - t);
-const easeInQuad   = t => t * t;
-
-function _rafTick(fn){ return requestAnimationFrame(fn); }
-function _stepTimer(fn, targetFps){
-  if (!targetFps || targetFps >= 60) return requestAnimationFrame(fn);
-  // 30 FPS timer: drive frames every ~33ms
-  return setTimeout(() => requestAnimationFrame(fn), Math.floor(1000/targetFps));
-}
-function _use30fps(){ return (!game.user?.isGM) && PLAYER_TWEEN_30FPS; }
-
-function tween(obj, prop, from, to, ms, ease=easeOutQuad){
-  const fps = _use30fps() ? 30 : 60;
-  return new Promise(resolve => {
-    const start = performance.now(); obj[prop] = from;
-    const step  = (now) => {
-      const t = Math.min(1, (now - start) / ms);
-      obj[prop] = from + (to - from) * ease(t);
-      if (t < 1) _stepTimer(step, fps); else resolve();
-    };
-    _rafTick(step);
-  });
-}
-
-function tweenXY(obj, xFrom, xTo, yFrom, yTo, ms, ease=easeOutQuad){
-  const fps = _use30fps() ? 30 : 60;
-  return new Promise(resolve => {
-    const start = performance.now(); obj.x = xFrom; obj.y = yFrom;
-    const step  = (now) => {
-      const t = Math.min(1, (now - start) / ms); const k = ease(t);
-      obj.x = xFrom + (xTo - xFrom) * k; obj.y = yFrom + (yTo - yFrom) * k;
-      if (t < 1) _stepTimer(step, fps); else resolve();
-    };
-    _rafTick(step);
-  });
-}
-
-function tweenCombo(items){
-  const fps = _use30fps() ? 30 : 60;
-  return new Promise(resolve => {
-    const start = performance.now();
-    for (const it of items) it.obj[it.prop] = it.from;
-    const step  = (now) => {
-      let done = true;
-      for (const it of items) {
-        const t = Math.min(1, (now - start) / it.ms);
-        const k = (it.ease || easeOutQuad)(t);
-        it.obj[it.prop] = it.from + (it.to - it.from) * k;
-        if (t < 1) done = false;
-      }
-      if (!done) _stepTimer(step, fps); else resolve();
-    };
-    _rafTick(step);
-  });
-}
+  // Tween helpers (keep them local)
+  function tween(obj, prop, from, to, ms, ease=easeOutQuad){
+    return new Promise(resolve => {
+      const start = performance.now(); obj[prop] = from;
+      const step  = (now) => {
+        const t = Math.min(1, (now - start) / ms);
+        obj[prop] = from + (to - from) * ease(t);
+        if (t < 1) requestAnimationFrame(step); else resolve();
+      };
+      requestAnimationFrame(step);
+    });
+  }
+  function tweenXY(obj, xFrom, xTo, yFrom, yTo, ms, ease=easeOutQuad){
+    return new Promise(resolve => {
+      const start = performance.now(); obj.x = xFrom; obj.y = yFrom;
+      const step  = (now) => {
+        const t = Math.min(1, (now - start) / ms); const k = ease(t);
+        obj.x = xFrom + (xTo - xFrom) * k; obj.y = yFrom + (yTo - yFrom) * k;
+        if (t < 1) requestAnimationFrame(step); else resolve();
+      };
+      requestAnimationFrame(step);
+    });
+  }
+  function tweenCombo(items){
+    return new Promise(resolve => {
+      const start = performance.now();
+      for (const it of items) it.obj[it.prop] = it.from;
+      const step  = (now) => {
+        let done = true;
+        for (const it of items) {
+          const t = Math.min(1, (now - start) / it.ms);
+          const k = (it.ease || easeOutQuad)(t);
+          it.obj[it.prop] = it.from + (it.to - it.from) * k;
+          if (t < 1) done = false;
+        }
+        if (!done) requestAnimationFrame(step); else resolve();
+      };
+      requestAnimationFrame(step);
+    });
+  }
 
   // ------------------------------ Socket receiver (cache-only) ------------------------------
   if (window[FLAG]) return; // idempotent
