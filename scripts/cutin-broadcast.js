@@ -21,15 +21,33 @@
   };
 
   // Build cache keys — must match receiver’s preloading scheme
-  function imgKeyFor(tokenUuid, type) {
-    // We derive actorId from the tokenUuid to keep keys stable
-    // If token cannot resolve, return null (strict policy: no play)
-    try {
-      const tok = fromUuidSync?.(tokenUuid);
-      const actorId = tok?.actor?.id ?? null;
+  function imgKeyFor(anyUuid, type) {
+  // Accept either a Token UUID or an Actor UUID.
+  // We will resolve to an Actor and return:  cutin:<actorId>:<type>
+  try {
+    const doc = fromUuidSync?.(anyUuid);
+    if (!doc) return null;
+
+    // Token → Actor
+    if (doc.documentName === "Token" || doc.isToken) {
+      const actor = doc.actor ?? doc.document?.actor ?? null;
+      const actorId = actor?.id ?? null;
       return actorId ? `cutin:${actorId}:${type}` : null;
-    } catch { return null; }
+    }
+
+    // Actor directly
+    if (doc.documentName === "Actor" || doc.constructor?.name === "Actor") {
+      const actorId = doc.id ?? null;
+      return actorId ? `cutin:${actorId}:${type}` : null;
+    }
+
+    // Some UUID variants still expose .actor
+    const actorId = doc.actor?.id ?? doc.document?.actor?.id ?? null;
+    return actorId ? `cutin:${actorId}:${type}` : null;
+  } catch {
+    return null;
   }
+}
   function sfxKeyFor(type) {
     return `sfx:${type}`;
   }
@@ -91,6 +109,8 @@
     const expireAt = t0 + v.ttlMs;
 
     const activeUsers = (game.users?.filter(u => u.active) ?? []).map(u => u.id);
+
+    console.log("[FU Cut-In • Broadcast] resolved keys:", { imgKey, sfxKey, type, tokenUuid });
 
     const payload = {
       t0, expireAt,
