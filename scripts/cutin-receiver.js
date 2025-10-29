@@ -13,43 +13,6 @@
   const FLAG       = "__FU_CUTIN_READY_v3";
   const TAG_ID     = "fu-portrait-cutin-layer";
   const NS         = "FUCompanion";
-
-  // ── FU Cache (per-tab) ─────────────────────────────────────────────────
-const FU_CACHE_NS = "FU_ASSET_CACHE";
-function fuCache() {
-  globalThis[FU_CACHE_NS] ??= { __createdAt: Date.now(), __audioCtx: null };
-  return globalThis[FU_CACHE_NS];
-}
-function fuAudioCtx() {
-  const cache = fuCache();
-  cache.__audioCtx ??= new (window.AudioContext || window.webkitAudioContext)();
-  return cache.__audioCtx;
-}
-async function fuPreloadTexture(key, url) {
-  const loader = foundry?.utils?.preloadTexture ?? globalThis.loadTexture;
-  if (typeof loader !== "function") throw new Error("No texture loader available.");
-  const tex = await loader(url);
-  fuCache()[key] = { ...(fuCache()[key]||{}), texture: tex, url, cachedAt: Date.now() };
-  return tex;
-}
-async function fuPreloadAudio(key, url) {
-  const ctx = fuAudioCtx();
-  if (ctx.state === "suspended") { try { await ctx.resume(); } catch {} }
-  const resp = await fetch(url, { cache: "force-cache" });
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-  const arr  = await resp.arrayBuffer();
-  const buff = await ctx.decodeAudioData(arr.slice(0));
-  fuCache()[key] = { ...(fuCache()[key]||{}), buffer: buff, url, cachedAt: Date.now() };
-  return buff;
-}
-function fuGetTexture(key) { return fuCache()?.[key]?.texture ?? null; }
-function fuGetBuffer(key)  { return fuCache()?.[key]?.buffer  ?? null; }
-function fuForget(key) {
-  const entry = fuCache()?.[key];
-  if (entry?.texture && !entry.texture.destroyed) entry.texture.destroy(false);
-  delete fuCache()[key];
-}
-  
   let __FU_LAST_SFX_AT = 0;
   const __FU_SFX_GUARD_MS = 900; // play SFX at most once per 0.9s per client
 
@@ -169,35 +132,34 @@ function fuForget(key) {
       this._portrait = portrait;
     },
 
-    // Replace manager.preload(url) with attachTexture(tex)
-async attachTexture(tex) {
-  this._ensureLayer();
-  this._tex = tex;
-  this._portrait.texture = tex;
-  this._layer.visible = true;
-  this._portrait.visible = false;
-  await nextFrame(); await nextFrame();     // warm GPU path
-  this._portrait.visible = true;
-  this._layer.visible = false;
-  this._warm = true;
-},
+    async preload(url) {
+      this._ensureLayer();
+      if (this._imgUrl === url && this._tex) return;
+      this._tex = await loadTexture(url);
+      this._imgUrl = url;
+
+      // Warm-up: attach, hide, yield frames (GPU upload), then hide whole layer again
+      this._portrait.texture = this._tex;
+      this._layer.visible = true;
+      this._portrait.visible = false;
+      await nextFrame(); await nextFrame();
+      this._portrait.visible = true;
+      this._layer.visible = false;
+      this._warm = true;
+    },
 
     async play({
-  imgKey,   // NEW: cache key for texture
-  dimAlpha = 0.6, dimFadeMs = 200,
-  flashPeak = 0.9, flashInMs = 70, flashOutMs = 180, flashDelayMs = 60,
-  slideInMs = 650, holdMs = 900, slideOutMs = 650,
-  portraitHeightRatio = 0.9, portraitBottomMargin = 40, portraitInsetX = 220
-} = {}) {
-  if (!canvas?.ready) return;
-  this._ensureLayer();
+      imgUrl,
+      dimAlpha = 0.6, dimFadeMs = 200,
+      flashPeak = 0.9, flashInMs = 70, flashOutMs = 180, flashDelayMs = 60,
+      slideInMs = 650, holdMs = 900, slideOutMs = 650,
+      portraitHeightRatio = 0.9, portraitBottomMargin = 40, portraitInsetX = 220
+    } = {}) {
+      if (!canvas?.ready) return;
 
-  const tex = fuGetTexture(imgKey);
-  if (!tex) {
-    console.warn("[FU Cut-In] Cached texture missing for key:", imgKey);
-    return; // hard rule: never fetch at playtime
-  }
-  await this.attachTexture(tex);
+      this._ensureLayer();
+      if (!this._warm || imgUrl !== this._imgUrl) {
+        await this.preload(imgUrl);
       }
 
       const { width: W, height: H } = canvas.app.renderer.screen;
@@ -251,33 +213,25 @@ async attachTexture(tex) {
     BUSY = true;
     try {
       // wait until shared t0 (synchronized start)  (pattern per your manifesto) :contentReference[oaicite:5]{index=5}
-     const wait = Math.max(0, (payload.t0 ?? Date.now()) - Date.now());
-await sleep(wait);
+      const wait = Math.max(0, (payload.t0 ?? Date.now()) - Date.now());
+      await sleep(wait);
 
-// Visual: require a cached texture key
-if (!payload?.imgKey) return;
+      // If payload has no imgUrl (fail-safe), just return quietly.
+      if (!payload?.imgUrl) return;
 
-// SFX: from cached buffer with per-client cooldown
+      // SFX (per-client at t0) with cool-down to avoid bursts
 const now = Date.now();
-if (payload.sfxKey && (now - __FU_LAST_SFX_AT) >= __FU_SFX_GUARD_MS) {
+if (payload.sfxUrl && (now - __FU_LAST_SFX_AT) >= __FU_SFX_GUARD_MS) {
   try {
-    const ctx   = fuAudioCtx();
-    if (ctx.state === "suspended") { try { await ctx.resume(); } catch {} }
-    const buff  = fuGetBuffer(payload.sfxKey);
-    if (buff) {
-      const src  = ctx.createBufferSource();
-      const gain = ctx.createGain();
-      gain.gain.value = payload.sfxVol ?? 0.9;
-      src.buffer = buff; src.connect(gain).connect(ctx.destination); src.start(0);
-    }
+    await (foundry?.audio?.AudioHelper ?? AudioHelper).play(
+      { src: payload.sfxUrl, volume: payload.sfxVol ?? 0.9, loop: false },
+      true
+    );
     __FU_LAST_SFX_AT = now;
   } catch (err) {
-    console.warn("[FU Cut-In] SFX (buffer) failed:", err);
+    console.warn("[FU Cut-In] SFX failed:", err);
   }
-}
-await manager.play(payload); // payload now carries imgKey, not URLs
-      
-      // else: skip SFX but still render the visual
+} // else: skip SFX but still render the visual
 
       await manager.play(payload);
     } finally {
@@ -332,106 +286,19 @@ await manager.play(payload); // payload now carries imgKey, not URLs
   window[NS].cutin = manager;
   window.__FU_CUTIN_PLAY = (payload) => runCutIn(payload); // optional local fallback
 
-  // Warm-up + combat lifecycle (drop-in replacement)
-Hooks.once("canvasReady", async () => {
-  try {
-    // Warm the GPU path without live URL usage
-    const BLANK = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8Xw8AAj0Bz3k0aHAAAAAASUVORK5CYII=";
+  // Warm-up once the canvas is ready
+  Hooks.once("canvasReady", async () => {
+    try {
+      // Optional: warm a tiny transparent 1px image to initialize GPU path
+      const BLANK = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8Xw8AAj0Bz3k0aHAAAAAASUVORK5CYII=";
+      await manager.preload(BLANK);
+    } catch (e) { console.warn("[FU Cut-In] Warm-up failed:", e); }
+  });
 
-    // 1) Put a tiny texture into our cache
-    await fuPreloadTexture("tmp:blank", BLANK);
-
-    // 2) Attach it once to the manager to warm layout/render pipeline
-    const tex = fuGetTexture("tmp:blank");
-    if (tex && manager?.attachTexture) {
-      await manager.attachTexture(tex);
+   window[FLAG] = true;
+      console.log("[FU Cut-In] Receiver installed.");
+    } catch (err) {
+      console.error("[FU Cut-In] Receiver failed to install:", err);
     }
-
-    // 3) Toss the throwaway texture
-    fuForget("tmp:blank");
-  } catch (e) {
-    console.warn("[FU Cut-In] Warm-up failed:", e);
-  }
-});
-
-// ── Combat lifecycle: preload on start, forget on end ─────────────────
-const CACHED_KEYS_BY_COMBAT = new Map(); // combatId -> Set(keys)
-
-// map type -> sfx URL (for preload only, never used at play time)
-const SFX_URLS = {
-  critical:   "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/BurstMax.ogg",
-  zero_power: "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/ChargeAttack.ogg",
-  fumble:     "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/Down2.ogg"
-};
-
-function imgKeyFor(actorId, type) { return `cutin:${actorId}:${type}`; }
-function sfxKeyFor(type)          { return `sfx:${type}`; }
-
-async function preloadCutinsForCombat(combat) {
-  const bag = new Set();
-  const list = (combat?.combatants?.contents ?? []);
-  for (const c of list) {
-    const actor = c?.actor;
-    const props = actor?.system?.props ?? {};
-    const aid   = actor?.id;
-    if (!aid) continue;
-
-    // three cut-in slots (optional)
-    const entries = [
-      ["critical",   props.cut_in_critical],
-      ["zero_power", props.cut_in_zero_power],
-      ["fumble",     props.cut_in_fumble]
-    ];
-    for (const [type, url] of entries) {
-      if (!url) continue;                      // actor has no image for this type
-      const key = imgKeyFor(aid, type);        // cache key per actor+type
-      try {
-        await fuPreloadTexture(key, url);
-        bag.add(key);
-      } catch (e) {
-        console.warn("cut-in tex preload failed", key, e);
-      }
-
-      // Preload SFX counterpart
-      const sfxUrl = SFX_URLS[type];
-      if (sfxUrl) {
-        const sk = sfxKeyFor(type);
-        try {
-          await fuPreloadAudio(sk, sfxUrl);
-          bag.add(sk);
-        } catch (e) {
-          console.warn("cut-in sfx preload failed", sk, e);
-        }
-      }
-    }
-  }
-  if (combat?.id) CACHED_KEYS_BY_COMBAT.set(combat.id, bag);
-}
-
-// When combat starts, each client preloads locally (no URLs at playtime)
-Hooks.on("combatStart", async (combat) => {
-  try {
-    await preloadCutinsForCombat(combat);
-  } catch (e) {
-    console.warn("combatStart preload error:", e);
-  }
-});
-
-// When combat ends or is deleted, forget that combat's cached entries
-function forgetCombatKeys(combat) {
-  const bag = combat ? CACHED_KEYS_BY_COMBAT.get(combat.id) : null;
-  if (bag) {
-    for (const k of bag) fuForget(k);
-    CACHED_KEYS_BY_COMBAT.delete(combat.id);
-  }
-}
-Hooks.on("combatEnd",    forgetCombatKeys);
-Hooks.on("deleteCombat", (_, combat) => { try { forgetCombatKeys(combat); } catch {} });
-
-window[FLAG] = true;
-console.log("[FU Cut-In] Receiver installed.");
-} catch (err) {
-  console.error("[FU Cut-In] Receiver failed to install:", err);
-}
   });
 })();
