@@ -9,7 +9,6 @@
   const MODULE_ID  = "fabula-ultima-companion";
   const ACTION_KEY = "FU_CUTIN_PLAY";
   const ACTION_PRELOAD = "FU_CUTIN_PRELOAD";
-  const ACTION_PRELOAD_REQUEST = "FU_CUTIN_PRELOAD_REQUEST";
   const FLAG       = "__FU_CUTIN_READY_v4";
   const TAG_ID     = "fu-portrait-cutin-layer";
   const NS         = "FUCompanion";
@@ -84,37 +83,6 @@
     bag[key] = { ...(bag[key]||{}), buffer: buff, url, cachedAt: Date.now() };
     return buff;
   }
-  // Build a manifest of assets for a given Combat (GM-only)
-function buildPreloadManifestForCombat(combat) {
-  const cId = combat?.id ?? null;
-  if (!cId) return null;
-
-  const list = combat?.combatants?.contents ?? [];
-  const items = [];
-
-  // SFX (GM is the source of truth for URLs)
-  for (const t of ["critical","zero_power","fumble"]) {
-    items.push({ type:"sfx", key:`sfx:${t}`, url:SFX_URLS[t] });
-  }
-
-  // Portraits per combatant (URLs may be null → receivers mark MISS)
-  for (const c of list) {
-    const actor = c?.actor; if (!actor) continue;
-    const aId = actor.id;
-    const props = actor?.system?.props ?? {};
-    const defs = {
-      critical:   props.cut_in_critical || null,
-      zero_power: props.cut_in_zero_power || null,
-      fumble:     props.cut_in_fumble || null
-    };
-    for (const [type, url] of Object.entries(defs)) {
-      const key = `cutin:${aId}:${type}`;
-      items.push({ type:"img", key, url });
-    }
-  }
-
-  return { combatId: cId, items };
-}
 
   // ------------------------------ PIXI renderer (reuses cached texture) ------------------------------
   const easeOutCubic = t => 1 - Math.pow(1 - t, 3);
@@ -308,89 +276,12 @@ function buildPreloadManifestForCombat(combat) {
         await playCutInFromCache(payload);
       });
 
-      // --- Reconnect support: On user signin and on scene ready, non-GM asks GM for a manifest if combat is active.
-async function _fuRequestManifestIfActiveOnThisScene() {
-  try {
-    if (game.user?.isGM) return; // GM is the source; players request
-    if (!canvas?.scene) return;
-
-    const sceneId = canvas.scene.id;
-    const combatsHere = (game.combats?.contents ?? []).filter(c => c.scene?.id === sceneId);
-    const primary = (game.combat && game.combat.scene?.id === sceneId) ? game.combat : (combatsHere[0] ?? null);
-
-    if (!primary?.started) return; // nothing to do
-
-    const sock = socketlib.registerModule(MODULE_ID);
-    // Ask the GM for the manifest of THIS combat
-    if (typeof sock.executeAsGM === "function") {
-      await sock.executeAsGM(ACTION_PRELOAD_REQUEST, {
-        requesterId: game.user.id,
-        combatId: primary.id
-      });
-      console.log("[FU Cut-In] Requested GM manifest for active combat on reconnect/sceneReady:", primary.id);
-    }
-  } catch (e) {
-    console.error("[FU Cut-In] Reconnect/sceneReady request failed:", e);
-  }
-}
-
-// When the game is ready, do an initial check (covers reconnect)
-Hooks.once("ready", () => { _fuRequestManifestIfActiveOnThisScene(); });
-
-// When the scene becomes ready (e.g., after a reload or scene swap), check again
-Hooks.on("canvasReady", () => { _fuRequestManifestIfActiveOnThisScene(); });
-
       // PRELOAD manifest handler: GM sends a list of {key,url,type:"img"|"sfx"} for a combat
 socket.register(ACTION_PRELOAD, async (manifest) => {
   try {
     const cId  = manifest?.combatId ?? null;
     const list = Array.isArray(manifest?.items) ? manifest.items : [];
     if (!cId || !list.length) return;
-
-    // PRELOAD request handler (GM side): a user asks the GM for the current scene's active combat manifest.
-socket.register(ACTION_PRELOAD_REQUEST, async (data) => {
-  try {
-    if (!game.user?.isGM) return; // only GM responds
-
-    const requesterId = data?.requesterId ?? null;
-    const combatId    = data?.combatId ?? null;
-    let combat        = null;
-
-    if (combatId) {
-      combat = game.combats?.get?.(combatId) ?? null;
-    }
-
-    // If not provided or not found, try the current scene's active combat.
-    if (!combat) {
-      const sceneId = canvas?.scene?.id ?? null;
-      if (sceneId) {
-        const combatsHere = (game.combats?.contents ?? []).filter(c => c.scene?.id === sceneId);
-        const primary = (game.combat && game.combat.scene?.id === sceneId) ? game.combat : (combatsHere[0] ?? null);
-        if (primary?.started) combat = primary;
-      }
-    }
-
-    if (!combat?.started) {
-      console.log("[FU Cut-In] GM request: no active combat to build manifest for.");
-      return;
-    }
-
-    const manifest = buildPreloadManifestForCombat(combat);
-    if (!manifest) return;
-
-    // Send the manifest only to the requester (apply handler will preload & record keys)
-    const sock = socketlib.registerModule(MODULE_ID);
-    if (requesterId && typeof sock.executeForUsers === "function") {
-      await sock.executeForUsers(ACTION_PRELOAD, [requesterId], manifest);
-    } else {
-      await sock.executeForEveryone(ACTION_PRELOAD, manifest);
-    }
-
-    console.log("[FU Cut-In] GM responded with preload manifest for", requesterId ?? "everyone", "combat:", combat.id);
-  } catch (e) {
-    console.error("[FU Cut-In] GM preload request error:", e);
-  }
-});
 
     // For each item, preload strictly from URL now (only during preload)
     for (const it of list) {
@@ -431,27 +322,51 @@ socket.register(ACTION_PRELOAD_REQUEST, async (data) => {
 //  • updateCombat(active) – when active flips to false (some modules/UIs do this)
 Hooks.on("combatStart", async (combat) => {
   try {
+    const cId = combat?.id ?? `combat:${Date.now()}`;
+    const list = combat?.combatants?.contents ?? [];
+
+    // Build a manifest only on the GM (players will receive it and preload)
     if (game.user?.isGM) {
-      const manifest = buildPreloadManifestForCombat(combat);
-      if (manifest) {
-        const sock  = socketlib.registerModule(MODULE_ID);
-        const users = (game.users?.filter(u => u.active) ?? []).map(u => u.id);
+      const items = [];
 
-        // Broadcast to all active users
-        if (typeof sock.executeForUsers === "function" && users.length) {
-          await sock.executeForUsers(ACTION_PRELOAD, users, manifest);
-        } else {
-          await sock.executeForEveryone(ACTION_PRELOAD, manifest);
-        }
-
-        // Also apply locally (GM)
-        await sock.executeForUsers?.call(null, ACTION_PRELOAD, [game.user.id], manifest);
-
-        ui.notifications.info("FU Cut-In: Assets cached for this combat.");
-        console.log("[FU Cut-In] GM broadcasted preload manifest for combat:", manifest.combatId, "items:", manifest.items.length);
+      // SFX entries (GM decides final URLs)
+      for (const t of ["critical","zero_power","fumble"]) {
+        items.push({ type:"sfx", key:`sfx:${t}`, url:SFX_URLS[t] });
       }
+
+      // Portraits per combatant
+      for (const c of list) {
+        const actor = c?.actor; if (!actor) continue;
+        const aId = actor.id;
+        const props = actor?.system?.props ?? {};
+        const defs = {
+          critical:   props.cut_in_critical || null,
+          zero_power: props.cut_in_zero_power || null,
+          fumble:     props.cut_in_fumble || null
+        };
+        for (const [type, url] of Object.entries(defs)) {
+          const key = `cutin:${aId}:${type}`;
+          if (url) items.push({ type:"img", key, url });
+          else     items.push({ type:"img", key, url:null }); // still create a slot; receivers will mark MISS
+        }
+      }
+
+      // Broadcast the manifest to every active user
+      const sock  = socketlib.registerModule(MODULE_ID);
+      const users = (game.users?.filter(u => u.active) ?? []).map(u => u.id);
+      await (typeof sock.executeForUsers === "function" && users.length
+        ? sock.executeForUsers(ACTION_PRELOAD, users, { combatId:cId, items })
+        : sock.executeForEveryone(ACTION_PRELOAD, { combatId:cId, items }));
+
+      // GM also preloads locally using the same path (call our own handler)
+      await socketlib.registerModule(MODULE_ID).executeForUser
+        ?.call(null, game.user.id, ACTION_PRELOAD, { combatId:cId, items });
+
+      ui.notifications.info("FU Cut-In: Assets cached for this combat.");
+      console.log("[FU Cut-In] GM broadcasted preload manifest for combat:", cId, "items:", items.length);
+    } else {
+      // Non-GM: do nothing here — we rely on the GM’s manifest handler above
     }
-    // Non-GM: nothing to do; GM will push us a manifest
   } catch (e) {
     console.error("[FU Cut-In] combatStart preload error:", e);
   }
