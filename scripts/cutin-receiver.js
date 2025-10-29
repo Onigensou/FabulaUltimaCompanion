@@ -280,49 +280,68 @@ function fuForgetCombatAssets(combat) {
     },
 
     async play({
-      imgUrl,
-      dimAlpha = 0.6, dimFadeMs = 200,
-      flashPeak = 0.9, flashInMs = 70, flashOutMs = 180, flashDelayMs = 60,
-      slideInMs = 650, holdMs = 900, slideOutMs = 650,
-      portraitHeightRatio = 0.9, portraitBottomMargin = 40, portraitInsetX = 220
-    } = {}) {
-      if (!canvas?.ready) return;
+  // STRICT: we ignore any imgUrl; we require __resolvedTexture
+  __resolvedTexture,
+  imgKey,
 
-      this._ensureLayer();
-       // Prefer a pre-resolved cached texture if provided (from runCutIn)
-       const args = arguments[0] || {};
-       const useCached = !!args.__resolvedTexture;
-       const isSentinel = (imgUrl === "__USE_CACHED_TEXTURE__");
+  dimAlpha = 0.6, dimFadeMs = 200,
+  flashPeak = 0.9, flashInMs = 70, flashOutMs = 180, flashDelayMs = 60,
+  slideInMs = 650, holdMs = 900, slideOutMs = 650,
+  portraitHeightRatio = 0.9, portraitBottomMargin = 40, portraitInsetX = 220
+} = {}) {
+  if (!canvas?.ready) return;
 
-       if (useCached) {
-         // We were handed a texture directly; never preload by URL
-         this._tex = args.__resolvedTexture;
-         this._imgUrl = "__USE_CACHED_TEXTURE__";
-         this._portrait.texture = this._tex;
-         this._warm = true;
-       } else if (!isSentinel && imgUrl) {
-         // Normal legacy path: only preload real URLs
-         if (!this._warm || imgUrl !== this._imgUrl) {
-           await this.preload(imgUrl);
-         }
-       } else if (isSentinel) {
-         // Sentinel path: try to grab cached texture by key if available
-         const key = args.imgKey;
-         try {
-           if (typeof fuGetTexture === "function" && key) {
-             const tex = fuGetTexture(key);
-             if (tex) {
-               this._tex = tex;
-               this._portrait.texture = tex;
-               this._imgUrl = "__USE_CACHED_TEXTURE__";
-               this._warm = true;
-             }
-           }
-         } catch (e) { console.warn("[FU Cut-In] Sentinel cache lookup failed:", e); }
-      }
-      if (!this._warm || imgUrl !== this._imgUrl) {
-        await this.preload(imgUrl);
-      }
+  this._ensureLayer();
+
+  // STRICT mode: must be provided with a pre-resolved texture
+  if (!__resolvedTexture) {
+    ui.notifications?.error("Cut-In: No cached texture provided (strict mode).");
+    console.error("[FU Cut-In] Strict mode: play() called without __resolvedTexture", { imgKey });
+    return;
+  }
+
+  // attach
+  this._tex = __resolvedTexture;
+  this._portrait.texture = this._tex;
+  this._imgUrl = "(cached)";
+  this._warm = true;
+
+  const { width: W, height: H } = canvas.app.renderer.screen;
+  const p = this._portrait;
+
+  // sizing & positioning
+  const fullH = H * portraitHeightRatio;
+  const aspect = (p.texture.baseTexture?.realWidth || p.texture.width) /
+                 (p.texture.baseTexture?.realHeight || p.texture.height) || 0.75;
+  const fullW = Math.round(fullH * aspect);
+
+  p.width = fullW;
+  p.height = fullH;
+  p.position.set(W - fullW + portraitInsetX, H - fullH - portraitBottomMargin);
+
+  // dim + flash layers
+  this._layer.visible = true;
+  this._dim.alpha = 0;
+  this._flash.alpha = 0;
+  this._layer.alpha = 1;
+
+  // simple timeline (slide in → hold → slide out)
+  p.x += fullW; // start off-screen
+  await gsap.to(p, { duration: slideInMs/1000, x: W - fullW + portraitInsetX, ease: "power3.out" });
+  // dim + flash
+  await gsap.to(this._dim, { duration: dimFadeMs/1000, alpha: dimAlpha, ease: "linear" });
+  await sleep(flashDelayMs);
+  await gsap.to(this._flash, { duration: flashInMs/1000, alpha: flashPeak, ease: "linear" });
+  await gsap.to(this._flash, { duration: flashOutMs/1000, alpha: 0, ease: "linear" });
+
+  await sleep(holdMs);
+
+  await gsap.to(p, { duration: slideOutMs/1000, x: W + 40, ease: "power3.in" });
+  await gsap.to(this._dim, { duration: 0.2, alpha: 0, ease: "linear" });
+
+  // hide layer after finish
+  this._layer.visible = false;
+}
 
       // Accept a pre-resolved texture (preferred path)
 if (arguments[0]?.__resolvedTexture) {
@@ -387,43 +406,35 @@ if (arguments[0]?.__resolvedTexture) {
   async function runCutIn(payload) {
   BUSY = true;
   try {
-    // 1) Align start time across clients
+    // 1) align start time
     const wait = Math.max(0, (payload.t0 ?? Date.now()) - Date.now());
     await sleep(wait);
 
-    // 2) Resolve image from cache first (preferred)
-    let tex = null;
-    if (payload.imgKey) {
-      tex = fuGetTexture(payload.imgKey);
+    // 2) STRICT cache resolve — image (required)
+    const imgKey = payload?.imgKey ?? null;
+    if (!imgKey) {
+      ui.notifications?.error("Cut-In: missing imgKey in payload (strict mode).");
+      console.error("[FU Cut-In] Strict mode: payload has no imgKey.", payload);
+      return;
+    }
+    const tex = (typeof fuGetTexture === "function") ? fuGetTexture(imgKey) : null;
+    if (!tex) {
+      ui.notifications?.error("Cut-In: image not cached. (Strict mode: aborting)");
+      console.error("[FU Cut-In] Strict mode: no cached texture for", imgKey);
+      return;
     }
 
-    // Legacy path (if no key given but URL present): quick cache-once
-    if (!tex && payload.imgUrl) {
-      const legacyKey = `legacy:${payload.imgUrl}`;
-      try {
-        await fuPreloadTexture(legacyKey, payload.imgUrl);
-        tex = fuGetTexture(legacyKey);
-      } catch (e) { console.warn("[FU Cut-In] Legacy image preload failed:", e); }
-    }
-
-    if (!tex) return; // nothing to show
-
-    // 3) Resolve audio from cache first
+    // 3) STRICT cache resolve — sfx (optional)
+    const sfxKey = payload?.sfxKey ?? null;
     let buff = null;
-    if (payload.sfxKey) {
-      buff = fuGetBuffer(payload.sfxKey);
+    if (sfxKey && typeof fuGetBuffer === "function") {
+      buff = fuGetBuffer(sfxKey);
+      if (!buff) {
+        console.warn("[FU Cut-In] Strict mode: SFX buffer missing for", sfxKey, "(skipping SFX)");
+      }
     }
 
-    // Legacy URL fallback
-    if (!buff && payload.sfxUrl) {
-      const legacySfxKey = `legacy-sfx:${payload.sfxUrl}`;
-      try {
-        await fuPreloadAudio(legacySfxKey, payload.sfxUrl);
-        buff = fuGetBuffer(legacySfxKey);
-      } catch (e) { console.warn("[FU Cut-In] Legacy SFX preload failed:", e); }
-    }
-
-    // 4) SFX play (AudioBuffer) with gentle cooldown to avoid bursts
+    // 4) play SFX if present (no URL fallback)
     const now = Date.now();
     if (buff && (now - __FU_LAST_SFX_AT) >= __FU_SFX_GUARD_MS) {
       try {
@@ -437,14 +448,16 @@ if (arguments[0]?.__resolvedTexture) {
         src.start(0);
         __FU_LAST_SFX_AT = now;
       } catch (err) {
-        console.warn("[FU Cut-In] SFX (buffer) failed:", err);
+        console.warn("[FU Cut-In] SFX failed:", err);
       }
     }
 
-    // 5) Render using preloaded texture (no URL fetch here)
+    // 5) hand the texture directly to the manager; no URL; no preload
     await manager.play({
-      // pass a sentinel for the manager so it doesn’t try to load by URL
-      imgUrl: "__USE_CACHED_TEXTURE__",
+      // NOTE: we do not pass any imgUrl in strict mode
+      __resolvedTexture: tex,
+      imgKey,
+
       dimAlpha:              payload.dimAlpha,
       dimFadeMs:             payload.dimFadeMs,
       flashPeak:             payload.flashPeak,
@@ -456,9 +469,7 @@ if (arguments[0]?.__resolvedTexture) {
       slideOutMs:            payload.slideOutMs,
       portraitHeightRatio:   payload.portraitHeightRatio,
       portraitBottomMargin:  payload.portraitBottomMargin,
-      portraitInsetX:        payload.portraitInsetX,
-      // Hand off the resolved texture object to the manager via symbol on instance
-      __resolvedTexture: tex
+      portraitInsetX:        payload.portraitInsetX
     });
 
   } finally {
