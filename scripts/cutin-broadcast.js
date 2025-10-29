@@ -8,16 +8,12 @@
   const DEBOUNCE_KEY = "__FU_CUTIN_LAST_EMIT";
   const DEBOUNCE_MS  = 600;
 
- function imgKeyForActorType(tokenUuid, type) {
-  // Resolve actorId once to make a stable key
-  // (We keep it inside broadcaster so payload is only the key, not URL)
-  // IMPORTANT: this still performs a single UUID lookup here; no network fetch.
-  // The receiver will not fetch any URL at playtime.
-  const tok = (game?.scenes && tokenUuid) ? (fromUuidSync?.(tokenUuid) ?? null) : null;
-  const actorId = tok?.actor?.id ?? tok?.actorId ?? null;
-  return actorId ? `cutin:${actorId}:${type}` : null;
-}
-function sfxKeyFor(type) { return `sfx:${type}`; }
+  // SFX map by type
+  const SFX = {
+    critical:   "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/BurstMax.ogg",
+    zero_power: "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/ChargeAttack.ogg",
+    fumble:     "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/Down2.ogg"
+  };
 
   // Default visuals
   const DEFAULTS = {
@@ -105,30 +101,25 @@ function sfxKeyFor(type) { return `sfx:${type}`; }
     // Only target users who are currently active
     const activeUsers = (game.users?.filter(u => u.active) ?? []).map(u => u.id);
 
-    // Resolve cache keys (no URLs!)
-let imgKey = null;
-if (tokenUuid && type) imgKey = imgKeyForActorType(tokenUuid, type);
-const sfxKey = type ? sfxKeyFor(type) : null;
-
-const payload = {
-  imgKey,                 // NEW: play from cache
-  t0, expireAt,
-  sfxKey,                 // NEW: play from cache
-  sfxVol: v.sfxVol,
-  dimAlpha: v.dimAlpha,
-  dimFadeMs: v.dimFadeMs,
-  flashPeak: v.flashPeak,
-  flashInMs: v.flashInMs,
-  flashOutMs: v.flashOutMs,
-  flashDelayMs: v.flashDelayMs,
-  slideInMs: v.slideInMs,
-  holdMs: v.holdMs,
-  slideOutMs: v.slideOutMs,
-  portraitHeightRatio: v.portraitHeightRatio,
-  portraitBottomMargin: v.portraitBottomMargin,
-  portraitInsetX: v.portraitInsetX,
-  allowedUserIds: activeUsers
-};
+    const payload = {
+      imgUrl: url || null,
+      t0, expireAt,
+      sfxUrl: finalSfx || null,
+      sfxVol: v.sfxVol,
+      dimAlpha: v.dimAlpha,
+      dimFadeMs: v.dimFadeMs,
+      flashPeak: v.flashPeak,
+      flashInMs: v.flashInMs,
+      flashOutMs: v.flashOutMs,
+      flashDelayMs: v.flashDelayMs,
+      slideInMs: v.slideInMs,
+      holdMs: v.holdMs,
+      slideOutMs: v.slideOutMs,
+      portraitHeightRatio: v.portraitHeightRatio,
+      portraitBottomMargin: v.portraitBottomMargin,
+      portraitInsetX: v.portraitInsetX,
+      allowedUserIds: activeUsers // ⟵ fallback guard (receiver will check)
+    };
 
     // Prefer executeForUsers if available
     if (typeof socket.executeForUsers === "function" && activeUsers.length) {
