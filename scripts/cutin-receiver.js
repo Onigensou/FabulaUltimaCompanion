@@ -1,44 +1,212 @@
 // ─────────────────────────────────────────────────────────────
-//  FU Portrait Cut-In • Receiver & Renderer (Foundry VTT v12)
-//  Module: fabula-ultima-companion  ·  Socketlib required
-//  - Installs executeForEveryone receiver: ACTION_KEY = "FU_CUTIN_PLAY"
-//  - Optimized PIXI renderer with preload/warm-up
-//  - Queue, duplicate suppression, and safe cleanup
-//  - Public API exposed at: window.FUCompanion.cutin.{preload,play}
-//  - Local fallback renderer: window.__FU_CUTIN_PLAY(payload)
+//  FU Portrait Cut-In • Receiver + Cache + Combat Hooks (V12)
+//  • Cache at combat start  → textures + audio buffers
+//  • Strict cache-only playback at showtime (no URL fetches)
+//  • Forget per-combat cache entries on combat end
+//  • Public API: window.FUCompanion.cutin.{preload,play,cacheInfo}
 // ─────────────────────────────────────────────────────────────
 (() => {
   const MODULE_ID  = "fabula-ultima-companion";
   const ACTION_KEY = "FU_CUTIN_PLAY";
-  const FLAG       = "__FU_CUTIN_READY_v3";
+  const FLAG       = "__FU_CUTIN_READY_v4";
   const TAG_ID     = "fu-portrait-cutin-layer";
   const NS         = "FUCompanion";
-  let __FU_LAST_SFX_AT = 0;
-  const __FU_SFX_GUARD_MS = 900; // play SFX at most once per 0.9s per client
 
+  // ---- SFX sources used for preloading (only at preload time, never at showtime)
+  // You may change these URLs; they are fetched only during combatStart preloading.
+  const SFX_URLS = {
+    critical:   "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/BurstMax.ogg",
+    zero_power: "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/ChargeAttack.ogg",
+    fumble:     "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/Down2.ogg"
+  };
 
-  if (window[FLAG]) return; // idempotent guard
-
-  // Defer full install until Foundry 'ready'
-  Hooks.once("ready", () => {
-    try {
-      // ——— socketlib check
-      const sockMod = game.modules.get("socketlib");
-      if (!sockMod?.active || !window.socketlib) {
-        ui.notifications.error("FU Cut-In: socketlib not found/active.");
-        return;
+  // ------------------------------ Tiny cache (per-tab, in-memory) ------------------------------
+  const CACHE_NS = "FU_ASSET_CACHE";
+  function cacheBag() {
+    globalThis[CACHE_NS] ??= {
+      __createdAt: Date.now(),
+      __audioCtx: null,               // single AudioContext
+      __combatKeySet: new Map(),      // combatId -> Set(cacheKeys) for cleanup
+      get size() { return Object.keys(this).filter(k => !k.startsWith("__")).length; }
+    };
+    return globalThis[CACHE_NS];
+  }
+  function audioCtx() {
+    const bag = cacheBag();
+    bag.__audioCtx ??= new (window.AudioContext || window.webkitAudioContext)();
+    return bag.__audioCtx;
+  }
+  function setCombatKey(combatId, key) {
+    const bag = cacheBag();
+    if (!bag.__combatKeySet.has(combatId)) bag.__combatKeySet.set(combatId, new Set());
+    bag.__combatKeySet.get(combatId).add(key);
+  }
+  function forgetCombat(combatId) {
+    const bag = cacheBag();
+    const set = bag.__combatKeySet.get(combatId);
+    if (!set) return;
+    for (const key of set) {
+      const entry = bag[key];
+      if (entry?.texture && !entry.texture.destroyed) {
+        entry.texture.destroy(false);
       }
-      const socket = socketlib.registerModule(MODULE_ID);
+      delete bag[key];
+    }
+    bag.__combatKeySet.delete(combatId);
+  }
 
-  // ————————————————— Small easing/tween helpers (scoped, unique names)
+  // Accessors
+  const cacheHas   = (key) => !!cacheBag()[key];
+  const cacheGetTx = (key) => cacheBag()[key]?.texture ?? null;
+  const cacheGetAB = (key) => cacheBag()[key]?.buffer  ?? null;
+
+  // Preload helpers (URLs are used here only; showtime never touches URLs)
+  async function preloadTexture(key, url) {
+    const bag = cacheBag();
+    if (bag[key]?.texture && !bag[key].texture.destroyed) return bag[key].texture;
+    const fn = foundry?.utils?.preloadTexture ?? globalThis.loadTexture;
+    if (typeof fn !== "function") throw new Error("No texture loader available.");
+    const texture = await fn(url);
+    bag[key] = { ...(bag[key]||{}), texture, url, cachedAt: Date.now() };
+    return texture;
+  }
+  async function preloadAudio(key, url) {
+    const bag = cacheBag();
+    if (bag[key]?.buffer) return bag[key].buffer;
+    const ctx = audioCtx();
+    if (ctx.state === "suspended") { try { await ctx.resume(); } catch {} }
+    const resp = await fetch(url, { cache: "force-cache" });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const arr  = await resp.arrayBuffer();
+    const buff = await ctx.decodeAudioData(arr.slice(0));
+    bag[key] = { ...(bag[key]||{}), buffer: buff, url, cachedAt: Date.now() };
+    return buff;
+  }
+
+  // ------------------------------ PIXI renderer (reuses cached texture) ------------------------------
   const easeOutCubic = t => 1 - Math.pow(1 - t, 3);
   const easeInCubic  = t => t * t * t;
   const easeOutQuad  = t => 1 - (1 - t) * (1 - t);
   const easeInQuad   = t => t * t;
+  const sleep        = (ms) => new Promise(r => setTimeout(r, ms));
 
-  const sleep     = (ms) => new Promise(r => setTimeout(r, ms));
-  const nextFrame = ()  => new Promise(r => requestAnimationFrame(r));
+  let __installed = false, __layer=null, __dim=null, __flash=null, __portrait=null;
+  function ensureLayer() {
+    if (!canvas?.ready) throw new Error("Canvas not ready.");
+    if (__installed && __layer?.parent) return;
 
+    const layer = new PIXI.Container();
+    layer.name = TAG_ID; layer.zIndex = 999999; layer.sortableChildren = true; layer.visible = false; layer.interactiveChildren = false;
+
+    const dim   = new PIXI.Graphics();
+    const flash = new PIXI.Graphics();
+    const port  = new PIXI.Sprite(PIXI.Texture.EMPTY);
+    port.anchor.set(0.0, 1.0); port.zIndex = 2; port.alpha = 0.999;
+
+    layer.addChild(dim, flash, port);
+    canvas.stage.sortableChildren = true;
+    canvas.stage.addChild(layer);
+
+    const resize = () => {
+      const { width: W, height: H } = canvas.app.renderer.screen;
+      dim.clear().beginFill(0x000000, 1).drawRect(0,0,W,H).endFill();
+      flash.clear().beginFill(0xFFFFFF, 1).drawRect(0,0,W,H).endFill();
+      flash.alpha = 0;
+    };
+    Hooks.on("canvasPan", resize);
+    Hooks.on("resize", resize);
+    resize();
+
+    __layer = layer; __dim = dim; __flash = flash; __portrait = port; __installed = true;
+  }
+
+  async function playCutInFromCache(payload) {
+    // Payload must contain imgKey (maybe null) + sfxKey (maybe null) and timing/visual numbers
+    const {
+      t0 = Date.now(),
+      imgKey = null,
+      sfxKey = null,
+      dimAlpha = 0.6, dimFadeMs = 200,
+      flashPeak = 0.9, flashInMs = 70, flashOutMs = 180, flashDelayMs = 60,
+      slideInMs = 650, holdMs = 900, slideOutMs = 650,
+      portraitHeightRatio = 0.9, portraitBottomMargin = 40, portraitInsetX = 220,
+      sfxVol = 0.9
+    } = payload || {};
+
+    // Strict policy: if cache says this actor/type was a MISS, or if imgKey not found, skip quietly.
+    if (!imgKey || !cacheHas(imgKey) || !cacheGetTx(imgKey)) {
+      console.warn("[FU Cut-In] Cache miss for", imgKey, "—skipping render (per strict cache-only policy).");
+      return;
+    }
+
+    // Wait for the shared t0
+    const wait = Math.max(0, t0 - Date.now());
+    if (wait) await sleep(wait);
+
+    ensureLayer();
+    const tex = cacheGetTx(imgKey);
+    if (!tex || tex.destroyed) {
+      console.warn("[FU Cut-In] Texture destroyed/missing at showtime:", imgKey);
+      return;
+    }
+
+    // Prepare portrait
+    const p = __portrait;
+    p.texture = tex;
+    const { width: W, height: H } = canvas.app.renderer.screen;
+    const scale = (H * portraitHeightRatio) / (p.texture.height || p.texture.baseTexture?.realHeight || 512);
+    p.scale.set(scale, scale);
+    const finalX = portraitInsetX;
+    const finalY = H - portraitBottomMargin;
+    p.x = -p.width - 80; p.y = finalY; p.alpha = 1;
+
+    __layer.visible = true;
+
+    // Dim
+    await tween(__dim, "alpha", 0, dimAlpha, dimFadeMs, easeOutQuad);
+
+    // Flash
+    await sleep(flashDelayMs);
+    await tween(__flash, "alpha", 0, flashPeak, flashInMs, easeOutQuad);
+    const flashFade = tween(__flash, "alpha", __flash.alpha, 0, flashOutMs, easeInQuad);
+
+    // SFX strictly from cached buffer
+    if (sfxKey) {
+      const buff = cacheGetAB(sfxKey);
+      if (buff) {
+        try {
+          const ctx = audioCtx();
+          if (ctx.state === "suspended") { try { await ctx.resume(); } catch {} }
+          const source = ctx.createBufferSource();
+          const gain   = ctx.createGain();
+          gain.gain.value = sfxVol;
+          source.buffer = buff;
+          source.connect(gain).connect(ctx.destination);
+          source.start(0);
+        } catch (e) {
+          console.warn("[FU Cut-In] SFX play failed (buffer path):", e);
+        }
+      }
+    }
+
+    // Slide-in, hold, slide-out
+    await tweenXY(p, p.x, finalX, p.y, finalY, slideInMs, easeOutCubic);
+    await flashFade;
+    await sleep(holdMs);
+
+    const exitX = W + 40;
+    await Promise.all([
+      tween(__dim, "alpha", __dim.alpha, 0, 180, easeInQuad),
+      tweenCombo([
+        { obj: p,        prop: "x",     from: p.x, to: exitX, ms: slideOutMs, ease: easeInCubic },
+        { obj: p,        prop: "alpha", from: 1,   to: 0,     ms: slideOutMs, ease: easeInQuad }
+      ])
+    ]);
+
+    __layer.visible = false;
+  }
+
+  // Tween helpers (keep them local)
   function tween(obj, prop, from, to, ms, ease=easeOutQuad){
     return new Promise(resolve => {
       const start = performance.now(); obj[prop] = from;
@@ -79,224 +247,120 @@
     });
   }
 
-  // ————————————————— Optimized PIXI manager (preload/warm-up + reuse)  (inspired by your PoC) :contentReference[oaicite:4]{index=4}
-  const manager = {
-    __installed: true,
-    _layer: null,
-    _dim: null,
-    _flash: null,
-    _portrait: null,
-    _imgUrl: null,
-    _tex: null,
-    _warm: false,
-
-    _ensureLayer() {
-      if (!canvas?.ready) throw new Error("Canvas not ready.");
-      if (this._layer && this._layer.parent) return;
-
-      const layer = new PIXI.Container();
-      layer.name = TAG_ID;
-      layer.zIndex = 999999;
-      layer.sortableChildren = true;
-      layer.visible = false;
-      layer.interactiveChildren = false;
-
-      // Dim layer
-      const dim = new PIXI.Graphics();
-      // Flash layer (optional white flash on entry)
-      const flash = new PIXI.Graphics();
-
-      // Portrait
-      const portrait = new PIXI.Sprite(PIXI.Texture.EMPTY);
-      portrait.anchor.set(0.0, 1.0);
-      portrait.zIndex = 2;
-      portrait.alpha = 0.999;
-
-      layer.addChild(dim, flash, portrait);
-      canvas.stage.sortableChildren = true;
-      canvas.stage.addChild(layer);
-
-      const resize = () => {
-        const { width: W, height: H } = canvas.app.renderer.screen;
-        dim.clear().beginFill(0x000000, 1).drawRect(0,0,W,H).endFill();
-        flash.clear().beginFill(0xFFFFFF,1).drawRect(0,0,W,H).endFill();
-        flash.alpha = 0;
-      };
-      Hooks.on("canvasPan", resize);
-      Hooks.on("resize", resize);
-      resize();
-
-      this._layer = layer;
-      this._dim = dim;
-      this._flash = flash;
-      this._portrait = portrait;
-    },
-
-    async preload(url) {
-      this._ensureLayer();
-      if (this._imgUrl === url && this._tex) return;
-      this._tex = await loadTexture(url);
-      this._imgUrl = url;
-
-      // Warm-up: attach, hide, yield frames (GPU upload), then hide whole layer again
-      this._portrait.texture = this._tex;
-      this._layer.visible = true;
-      this._portrait.visible = false;
-      await nextFrame(); await nextFrame();
-      this._portrait.visible = true;
-      this._layer.visible = false;
-      this._warm = true;
-    },
-
-    async play({
-      imgUrl,
-      dimAlpha = 0.6, dimFadeMs = 200,
-      flashPeak = 0.9, flashInMs = 70, flashOutMs = 180, flashDelayMs = 60,
-      slideInMs = 650, holdMs = 900, slideOutMs = 650,
-      portraitHeightRatio = 0.9, portraitBottomMargin = 40, portraitInsetX = 220
-    } = {}) {
-      if (!canvas?.ready) return;
-
-      this._ensureLayer();
-      if (!this._warm || imgUrl !== this._imgUrl) {
-        await this.preload(imgUrl);
-      }
-
-      const { width: W, height: H } = canvas.app.renderer.screen;
-      const p = this._portrait;
-      p.texture = this._tex;
-
-      // size/placement
-      const scale = (H * portraitHeightRatio) / p.texture.height;
-      p.scale.set(scale, scale);
-      const finalX = portraitInsetX;
-      const finalY = H - portraitBottomMargin;
-      p.x = -p.width - 80; p.y = finalY; p.alpha = 1;
-
-      // show
-      this._layer.visible = true;
-
-      // dim in
-      await tween(this._dim, "alpha", 0, dimAlpha, dimFadeMs, easeOutQuad);
-
-      // white flash (optional)
-      await sleep(flashDelayMs);
-      await tween(this._flash, "alpha", 0, flashPeak, flashInMs, easeOutQuad);
-      const flashFade = tween(this._flash, "alpha", this._flash.alpha, 0, flashOutMs, easeInQuad);
-
-      // slide in
-      await tweenXY(p, p.x, finalX, p.y, finalY, slideInMs, easeOutCubic);
-      await flashFade;
-
-      // hold
-      await sleep(holdMs);
-
-      // slide out + fade + undim
-      const exitX = W + 40;
-      await tweenCombo([
-        { obj: p,        prop: "x",     from: p.x, to: exitX, ms: slideOutMs, ease: easeInCubic },
-        { obj: p,        prop: "alpha", from: 1,   to: 0,     ms: slideOutMs, ease: easeInQuad }
-      ]);
-      await tween(this._dim, "alpha", this._dim.alpha, 0, 180, easeInQuad);
-
-      this._layer.visible = false;
-    }
-  };
-
-  // ————————————————— Queue & duplicate suppression (coalesce)
-  let BUSY = false;
-  const QUEUE = [];
-  const DUP_SUPPRESS_MS = 350;
-  let lastSig = "", lastSigAt = 0;
-
-  async function runCutIn(payload) {
-    BUSY = true;
+  // ------------------------------ Socket receiver (cache-only) ------------------------------
+  if (window[FLAG]) return; // idempotent
+  Hooks.once("ready", () => {
     try {
-      // wait until shared t0 (synchronized start)  (pattern per your manifesto) :contentReference[oaicite:5]{index=5}
-      const wait = Math.max(0, (payload.t0 ?? Date.now()) - Date.now());
-      await sleep(wait);
-
-      // If payload has no imgUrl (fail-safe), just return quietly.
-      if (!payload?.imgUrl) return;
-
-      // SFX (per-client at t0) with cool-down to avoid bursts
-const now = Date.now();
-if (payload.sfxUrl && (now - __FU_LAST_SFX_AT) >= __FU_SFX_GUARD_MS) {
-  try {
-    await (foundry?.audio?.AudioHelper ?? AudioHelper).play(
-      { src: payload.sfxUrl, volume: payload.sfxVol ?? 0.9, loop: false },
-      true
-    );
-    __FU_LAST_SFX_AT = now;
-  } catch (err) {
-    console.warn("[FU Cut-In] SFX failed:", err);
-  }
-} // else: skip SFX but still render the visual
-
-      await manager.play(payload);
-    } finally {
-      BUSY = false;
-      if (QUEUE.length) {
-        const next = QUEUE.shift();
-        // reschedule queued one shortly in the future to keep clients aligned
-        next.t0 = Date.now() + 300;
-        runCutIn(next);
+      const sockMod = game.modules.get("socketlib");
+      if (!sockMod?.active || !window.socketlib) {
+        ui.notifications.error("FU Cut-In: socketlib not found/active.");
+        return;
       }
-    }
-  }
+      const socket = socketlib.registerModule(MODULE_ID);
 
-  socket.register(ACTION_KEY, async (payload) => {
-  // 1) Optional whitelist check (from broadcaster fallback)
-  const myUserId = game.user?.id;
-  if (Array.isArray(payload?.allowedUserIds) && myUserId) {
-    if (!payload.allowedUserIds.includes(myUserId)) return; // not for me
-  }
+      socket.register(ACTION_KEY, async (payload) => {
+        // Strict cache-only: require keys; drop if expired or not for me
+        const myId = game.user?.id;
+        if (Array.isArray(payload?.allowedUserIds) && myId && !payload.allowedUserIds.includes(myId)) return;
 
-  // 2) Expiry guard: if this client received it too late, ignore
-  const now = Date.now();
-  const expireAt = Number(payload?.expireAt) || (Number(payload?.t0) + 3000);
-  if (Number.isFinite(expireAt) && now > expireAt) {
-    // Too late—drop silently to avoid flooding late joiners
-    return;
-  }
+        const now = Date.now();
+        const expireAt = Number(payload?.expireAt) || (Number(payload?.t0) + 3000);
+        if (Number.isFinite(expireAt) && now > expireAt) return;
 
-  // (existing duplicate suppression and queue follow)
-  const sigObj = { ...payload }; delete sigObj.t0; delete sigObj.expireAt; delete sigObj.allowedUserIds;
-  const sig = JSON.stringify(sigObj);
-  const now2 = Date.now();
-
-  if (sig === lastSig && (now2 - lastSigAt) < DUP_SUPPRESS_MS) {
-    if (BUSY) {
-      const idx = QUEUE.findIndex(q => {
-        const a = { ...q }; delete a.t0; delete a.expireAt; delete a.allowedUserIds;
-        return JSON.stringify(a) === sig;
+        // Require keys, not URLs
+        if (!payload?.imgKey) {
+          console.warn("[FU Cut-In] Missing imgKey in payload; dropping (cache-only policy).");
+          return;
+        }
+        await playCutInFromCache(payload);
       });
-      if (idx >= 0) QUEUE[idx] = payload; else QUEUE.push(payload);
-    }
-    return;
-  }
-  lastSig = sig; lastSigAt = now2;
 
-  if (BUSY) { QUEUE.push(payload); return; }
-  runCutIn(payload);
-});
+      // Warm minimal texture to upload GPU path
+      Hooks.once("canvasReady", async () => {
+        try {
+          ensureLayer();
+          __layer.visible = true; __portrait.visible = false;
+          await new Promise(r => requestAnimationFrame(r));
+          __portrait.visible = true; __layer.visible = false;
+        } catch (e) {
+          console.warn("[FU Cut-In] Warm-up failed:", e);
+        }
+      });
 
-  // Expose public API & local fallback
-  window[NS] = window[NS] || {};
-  window[NS].cutin = manager;
-  window.__FU_CUTIN_PLAY = (payload) => runCutIn(payload); // optional local fallback
+      // ------------------------------ Combat hooks: preload & forget ------------------------------
+      Hooks.on("combatStart", async (combat) => {
+        // Preload cut-in portraits per combatant, and SFX set, then record keys for cleanup.
+        try {
+          const bag = cacheBag();
+          const cId = combat?.id ?? `combat:${Date.now()}`;
+          const list = combat?.combatants?.contents ?? [];
 
-  // Warm-up once the canvas is ready
-  Hooks.once("canvasReady", async () => {
-    try {
-      // Optional: warm a tiny transparent 1px image to initialize GPU path
-      const BLANK = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8Xw8AAj0Bz3k0aHAAAAAASUVORK5CYII=";
-      await manager.preload(BLANK);
-    } catch (e) { console.warn("[FU Cut-In] Warm-up failed:", e); }
-  });
+          // Always preload SFX buffers (once per session); still add keys to this combat for tidy cleanup
+          for (const t of ["critical","zero_power","fumble"]) {
+            const sfxKey = `sfx:${t}`;
+            try {
+              await preloadAudio(sfxKey, SFX_URLS[t]);
+              setCombatKey(cId, sfxKey);
+            } catch (e) { console.warn("[FU Cut-In] SFX preload failed:", t, e); }
+          }
 
-   window[FLAG] = true;
-      console.log("[FU Cut-In] Receiver installed.");
+          // Scan actors for portrait URLs per type; cache as textures or mark MISS
+          for (const c of list) {
+            const actor = c?.actor;
+            if (!actor) continue;
+            const aId = actor.id;
+            const props = actor?.system?.props ?? {};
+            const defs = {
+              critical:   props.cut_in_critical || null,
+              zero_power: props.cut_in_zero_power || null,
+              fumble:     props.cut_in_fumble || null
+            };
+            for (const [type, url] of Object.entries(defs)) {
+              const key = `cutin:${aId}:${type}`;
+              if (!url) {
+                // write a MISS marker so playback can skip instantly
+                bag[key] = { miss: true, cachedAt: Date.now(), note: "NO_IMAGE" };
+                setCombatKey(cId, key);
+                continue;
+              }
+              try {
+                await preloadTexture(key, url);
+                setCombatKey(cId, key);
+              } catch (e) {
+                // On error, store MISS so play won’t attempt URL
+                bag[key] = { miss: true, cachedAt: Date.now(), note: "LOAD_ERROR" };
+                setCombatKey(cId, key);
+                console.warn("[FU Cut-In] Texture preload failed:", key, e);
+              }
+            }
+          }
+
+          if (game.user?.isGM) ui.notifications.info("FU Cut-In: Assets cached for this combat.");
+        } catch (e) {
+          console.error("[FU Cut-In] combatStart preload error:", e);
+        }
+      });
+
+      Hooks.on("combatEnd", (combat) => {
+        try {
+          const cId = combat?.id ?? null;
+          if (cId) forgetCombat(cId);
+          if (game.user?.isGM) ui.notifications.info("FU Cut-In: Cleared combat cache.");
+        } catch (e) {
+          console.error("[FU Cut-In] combatEnd cleanup error:", e);
+        }
+      });
+
+      // Expose a tiny API for debugging
+      window[NS] = window[NS] || {};
+      window[NS].cutin = {
+        cacheInfo: () => ({ size: cacheBag().size, keys: Object.keys(cacheBag()).filter(k=>!k.startsWith("__")) }),
+        preload:    preloadTexture,
+        play:       playCutInFromCache
+      };
+
+      window[FLAG] = true;
+      console.log("[FU Cut-In] Receiver+Cache installed.");
     } catch (err) {
       console.error("[FU Cut-In] Receiver failed to install:", err);
     }
