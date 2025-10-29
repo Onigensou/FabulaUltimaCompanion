@@ -112,13 +112,14 @@ const sfxKey = type ? cutinSfxKey(type) : null;
 
    const payload = {
   // sync timing
-  t0, expireAt,
-  // keys (preferred)
-  imgKey: imgKey || null,
-  sfxKey: sfxKey || null,
+  t0, 
+  expireAt,
+
+  // keys ONLY (strict cache mode)
+  imgKey: imgKey ?? null,
+  sfxKey: sfxKey ?? null,
   sfxVol: v.sfxVol,
-  // legacy (receiver will self-preload if keys miss)
-  imgUrl: urlForLegacy || null,
+
   // visuals
   dimAlpha: v.dimAlpha,
   dimFadeMs: v.dimFadeMs,
@@ -132,6 +133,8 @@ const sfxKey = type ? cutinSfxKey(type) : null;
   portraitHeightRatio: v.portraitHeightRatio,
   portraitBottomMargin: v.portraitBottomMargin,
   portraitInsetX: v.portraitInsetX,
+
+  // delivery
   allowedUserIds: activeUsers
 };
 
