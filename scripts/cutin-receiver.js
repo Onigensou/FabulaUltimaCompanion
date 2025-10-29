@@ -16,6 +16,135 @@
   let __FU_LAST_SFX_AT = 0;
   const __FU_SFX_GUARD_MS = 900; // play SFX at most once per 0.9s per client
 
+  // ======= BEGIN: FU Cache + Combat Preloader (shared) =======
+const FU_CACHE_NS = "FU_ASSET_CACHE";
+function fuCache() {
+  globalThis[FU_CACHE_NS] ??= {
+    __createdAt: Date.now(),
+    __audioCtx: null,
+    // Track what we cached per-combat so we can free it later
+    __combatKeys: new Map(), // combatId -> Set(keys)
+    get size() { return Object.keys(this).filter(k => !k.startsWith("__")).length; }
+  };
+  return globalThis[FU_CACHE_NS];
+}
+function fuAudioCtx() {
+  const cache = fuCache();
+  cache.__audioCtx ??= new (window.AudioContext || window.webkitAudioContext)();
+  return cache.__audioCtx;
+}
+
+// Core helpers
+async function fuPreloadTexture(key, url) {
+  const cache = fuCache();
+  // Foundry 12: prefer foundry.utils.preloadTexture if present
+  const loader = foundry?.utils?.preloadTexture ?? globalThis.loadTexture;
+  if (typeof loader !== "function") throw new Error("No texture loader available.");
+  const tex = await loader(url);
+  cache[key] = { ...(cache[key]||{}), texture: tex, url, cachedAt: Date.now() };
+  return tex;
+}
+async function fuPreloadAudio(key, url) {
+  const cache = fuCache();
+  const ctx = fuAudioCtx();
+  if (ctx.state === "suspended") { try { await ctx.resume(); } catch {} }
+  const resp = await fetch(url, { cache: "force-cache" });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  const arr  = await resp.arrayBuffer();
+  const buff = await ctx.decodeAudioData(arr.slice(0));
+  cache[key] = { ...(cache[key]||{}), buffer: buff, url, cachedAt: Date.now() };
+  return buff;
+}
+function fuGetTexture(key) { return fuCache()[key]?.texture ?? null; }
+function fuGetBuffer(key)  { return fuCache()[key]?.buffer  ?? null; }
+function fuForget(key) {
+  const cache = fuCache();
+  const entry = cache[key];
+  if (!entry) return;
+  if (entry.texture && !entry.texture.destroyed) entry.texture.destroy(false);
+  delete cache[key];
+}
+
+// Stable keys for actors/types so all clients match
+function cutinImgKey(actorId, type) { return `cutin:${actorId}:${type}`; }
+function cutinSfxKey(type) { return `sfx:${type}`; }
+
+// SFX registry (authoritative URLs live here; we only fetch once at preload)
+const CUTIN_SFX = {
+  critical:   { key: cutinSfxKey("critical"),   url: "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/BurstMax.ogg" },
+  zero_power: { key: cutinSfxKey("zero_power"), url: "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/ChargeAttack.ogg" },
+  fumble:     { key: cutinSfxKey("fumble"),     url: "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/Down2.ogg" }
+};
+
+// Extract cut-in URL from actor by type (same logic your broadcaster used)
+function imageUrlFromActorByType(actor, type) {
+  const props = actor?.system?.props ?? {};
+  if (type === "critical")   return props.cut_in_critical || null;
+  if (type === "zero_power") return props.cut_in_zero_power || null;
+  if (type === "fumble")     return props.cut_in_fumble || null;
+  return null;
+}
+
+// Preload everything for a combat (images for all combatants + SFX set)
+async function fuPreloadCombatAssets(combat) {
+  const cache = fuCache();
+  const cId = combat?.id; if (!cId) return;
+  if (!cache.__combatKeys.has(cId)) cache.__combatKeys.set(cId, new Set());
+  const bucket = cache.__combatKeys.get(cId);
+
+  const types = ["critical","zero_power","fumble"];
+  const list  = combat?.combatants?.contents ?? [];
+
+  // 1) Preload SFX (always)
+  for (const t of types) {
+    const { key, url } = CUTIN_SFX[t];
+    if (!fuGetBuffer(key)) {
+      try { await fuPreloadAudio(key, url); } catch(e){ console.warn("[FU Cut-In] SFX preload failed", t, e); }
+    }
+    bucket.add(key);
+  }
+
+  // 2) Preload every actor's cut-in textures if present
+  for (const c of list) {
+    const a = c?.actor; const actorId = a?.id; if (!actorId) continue;
+    for (const t of types) {
+      const url = imageUrlFromActorByType(a, t);
+      if (!url) continue; // actor has no cut-in of this type
+      const k = cutinImgKey(actorId, t);
+      if (!fuGetTexture(k)) {
+        try { await fuPreloadTexture(k, url); } catch(e){ console.warn("[FU Cut-In] Texture preload failed", t, url, e); }
+      }
+      bucket.add(k);
+    }
+  }
+
+  console.log("[FU Cut-In] Preloaded combat assets. Keys:", Array.from(bucket));
+}
+
+// Free only the assets we loaded for that combat
+function fuForgetCombatAssets(combat) {
+  const cache = fuCache();
+  const cId = combat?.id; if (!cId) return;
+  const bucket = cache.__combatKeys.get(cId);
+  if (!bucket) return;
+  for (const key of bucket) { fuForget(key); }
+  cache.__combatKeys.delete(cId);
+  console.log("[FU Cut-In] Freed combat assets.");
+}
+
+// Install start/end hooks once (GM or everyone is fine; it’s per-tab cache)
+(function installCombatPreloaderOnce(){
+  const FLAG = "__FU_CUTIN_COMBAT_PRELOADER";
+  if (window[FLAG]) return;
+  window[FLAG] = true;
+
+  Hooks.on("combatStart", (combat) => { fuPreloadCombatAssets(combat); });
+  // Works when combat ends; if you prefer also clean on delete, add "deleteCombat"
+  Hooks.on("combatEnd",   (combat) => { fuForgetCombatAssets(combat); });
+  Hooks.on("deleteCombat",(combat) => { fuForgetCombatAssets(combat); });
+})();
+// ======= END: FU Cache + Combat Preloader =======
+
 
   if (window[FLAG]) return; // idempotent guard
 
@@ -162,6 +291,19 @@
         await this.preload(imgUrl);
       }
 
+      // Accept a pre-resolved texture (preferred path)
+if (arguments[0]?.__resolvedTexture) {
+  this._tex = arguments[0].__resolvedTexture;
+  this._imgUrl = "(cached)";
+  this._portrait.texture = this._tex;
+  this._warm = true;
+} else {
+  // legacy: if not warm or url changed, preload by URL once (but this shouldn't be used in new flow)
+  if (!this._warm || imgUrl !== this._imgUrl) {
+    await this.preload(imgUrl);
+  }
+}
+
       const { width: W, height: H } = canvas.app.renderer.screen;
       const p = this._portrait;
       p.texture = this._tex;
@@ -210,40 +352,91 @@
   let lastSig = "", lastSigAt = 0;
 
   async function runCutIn(payload) {
-    BUSY = true;
-    try {
-      // wait until shared t0 (synchronized start)  (pattern per your manifesto) :contentReference[oaicite:5]{index=5}
-      const wait = Math.max(0, (payload.t0 ?? Date.now()) - Date.now());
-      await sleep(wait);
-
-      // If payload has no imgUrl (fail-safe), just return quietly.
-      if (!payload?.imgUrl) return;
-
-      // SFX (per-client at t0) with cool-down to avoid bursts
-const now = Date.now();
-if (payload.sfxUrl && (now - __FU_LAST_SFX_AT) >= __FU_SFX_GUARD_MS) {
+  BUSY = true;
   try {
-    await (foundry?.audio?.AudioHelper ?? AudioHelper).play(
-      { src: payload.sfxUrl, volume: payload.sfxVol ?? 0.9, loop: false },
-      true
-    );
-    __FU_LAST_SFX_AT = now;
-  } catch (err) {
-    console.warn("[FU Cut-In] SFX failed:", err);
-  }
-} // else: skip SFX but still render the visual
+    // 1) Align start time across clients
+    const wait = Math.max(0, (payload.t0 ?? Date.now()) - Date.now());
+    await sleep(wait);
 
-      await manager.play(payload);
-    } finally {
-      BUSY = false;
-      if (QUEUE.length) {
-        const next = QUEUE.shift();
-        // reschedule queued one shortly in the future to keep clients aligned
-        next.t0 = Date.now() + 300;
-        runCutIn(next);
+    // 2) Resolve image from cache first (preferred)
+    let tex = null;
+    if (payload.imgKey) {
+      tex = fuGetTexture(payload.imgKey);
+    }
+
+    // Legacy path (if no key given but URL present): quick cache-once
+    if (!tex && payload.imgUrl) {
+      const legacyKey = `legacy:${payload.imgUrl}`;
+      try {
+        await fuPreloadTexture(legacyKey, payload.imgUrl);
+        tex = fuGetTexture(legacyKey);
+      } catch (e) { console.warn("[FU Cut-In] Legacy image preload failed:", e); }
+    }
+
+    if (!tex) return; // nothing to show
+
+    // 3) Resolve audio from cache first
+    let buff = null;
+    if (payload.sfxKey) {
+      buff = fuGetBuffer(payload.sfxKey);
+    }
+
+    // Legacy URL fallback
+    if (!buff && payload.sfxUrl) {
+      const legacySfxKey = `legacy-sfx:${payload.sfxUrl}`;
+      try {
+        await fuPreloadAudio(legacySfxKey, payload.sfxUrl);
+        buff = fuGetBuffer(legacySfxKey);
+      } catch (e) { console.warn("[FU Cut-In] Legacy SFX preload failed:", e); }
+    }
+
+    // 4) SFX play (AudioBuffer) with gentle cooldown to avoid bursts
+    const now = Date.now();
+    if (buff && (now - __FU_LAST_SFX_AT) >= __FU_SFX_GUARD_MS) {
+      try {
+        const ctx = fuAudioCtx();
+        if (ctx.state === "suspended") { try { await ctx.resume(); } catch {} }
+        const src  = ctx.createBufferSource();
+        const gain = ctx.createGain();
+        gain.gain.value = (payload.sfxVol ?? 0.9);
+        src.buffer = buff;
+        src.connect(gain).connect(ctx.destination);
+        src.start(0);
+        __FU_LAST_SFX_AT = now;
+      } catch (err) {
+        console.warn("[FU Cut-In] SFX (buffer) failed:", err);
       }
     }
+
+    // 5) Render using preloaded texture (no URL fetch here)
+    await manager.play({
+      // pass a sentinel for the manager so it doesn’t try to load by URL
+      imgUrl: "__USE_CACHED_TEXTURE__",
+      dimAlpha:              payload.dimAlpha,
+      dimFadeMs:             payload.dimFadeMs,
+      flashPeak:             payload.flashPeak,
+      flashInMs:             payload.flashInMs,
+      flashOutMs:            payload.flashOutMs,
+      flashDelayMs:          payload.flashDelayMs,
+      slideInMs:             payload.slideInMs,
+      holdMs:                payload.holdMs,
+      slideOutMs:            payload.slideOutMs,
+      portraitHeightRatio:   payload.portraitHeightRatio,
+      portraitBottomMargin:  payload.portraitBottomMargin,
+      portraitInsetX:        payload.portraitInsetX,
+      // Hand off the resolved texture object to the manager via symbol on instance
+      __resolvedTexture: tex
+    });
+
+  } finally {
+    BUSY = false;
+    if (QUEUE.length) {
+      const next = QUEUE.shift();
+      next.t0 = Date.now() + 300;
+      runCutIn(next);
+    }
   }
+}
 
   socket.register(ACTION_KEY, async (payload) => {
   // 1) Optional whitelist check (from broadcaster fallback)
