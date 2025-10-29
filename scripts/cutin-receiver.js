@@ -8,7 +8,6 @@
 (() => {
   const MODULE_ID  = "fabula-ultima-companion";
   const ACTION_KEY = "FU_CUTIN_PLAY";
-  const ACTION_PRELOAD = "FU_CUTIN_PRELOAD";
   const FLAG       = "__FU_CUTIN_READY_v4";
   const TAG_ID     = "fu-portrait-cutin-layer";
   const NS         = "FUCompanion";
@@ -276,31 +275,6 @@
         await playCutInFromCache(payload);
       });
 
-      // PRELOAD manifest handler: GM sends a list of {key,url,type:"img"|"sfx"} for a combat
-socket.register(ACTION_PRELOAD, async (manifest) => {
-  try {
-    const cId  = manifest?.combatId ?? null;
-    const list = Array.isArray(manifest?.items) ? manifest.items : [];
-    if (!cId || !list.length) return;
-
-    // For each item, preload strictly from URL now (only during preload)
-    for (const it of list) {
-      if (!it?.key || !it?.url) continue;
-      if (it.type === "img") {
-        try { await preloadTexture(it.key, it.url); setCombatKey(cId, it.key); }
-        catch (e) { cacheBag()[it.key] = { miss:true, cachedAt:Date.now(), note:"LOAD_ERROR" }; setCombatKey(cId, it.key); }
-      } else if (it.type === "sfx") {
-        try { await preloadAudio(it.key, it.url); setCombatKey(cId, it.key); }
-        catch (e) { /* sfx load failure is non-fatal */ }
-      }
-    }
-
-    console.log("[FU Cut-In] Preloaded via GM manifest for combat:", cId, "items:", list.length);
-  } catch (e) {
-    console.error("[FU Cut-In] Preload manifest error:", e);
-  }
-});
-
       window.__FU_CUTIN_PLAY = playCutInFromCache;
 
       // Warm minimal texture to upload GPU path
@@ -322,50 +296,46 @@ socket.register(ACTION_PRELOAD, async (manifest) => {
 //  • updateCombat(active) – when active flips to false (some modules/UIs do this)
 Hooks.on("combatStart", async (combat) => {
   try {
+    const bag = cacheBag();
     const cId = combat?.id ?? `combat:${Date.now()}`;
     const list = combat?.combatants?.contents ?? [];
 
-    // Build a manifest only on the GM (players will receive it and preload)
-    if (game.user?.isGM) {
-      const items = [];
+    // Preload SFX (add keys for cleanup)
+    for (const t of ["critical","zero_power","fumble"]) {
+      const sfxKey = `sfx:${t}`;
+      try { await preloadAudio(sfxKey, SFX_URLS[t]); setCombatKey(cId, sfxKey); }
+      catch (e) { console.warn("[FU Cut-In] SFX preload failed:", t, e); }
+    }
 
-      // SFX entries (GM decides final URLs)
-      for (const t of ["critical","zero_power","fumble"]) {
-        items.push({ type:"sfx", key:`sfx:${t}`, url:SFX_URLS[t] });
-      }
-
-      // Portraits per combatant
-      for (const c of list) {
-        const actor = c?.actor; if (!actor) continue;
-        const aId = actor.id;
-        const props = actor?.system?.props ?? {};
-        const defs = {
-          critical:   props.cut_in_critical || null,
-          zero_power: props.cut_in_zero_power || null,
-          fumble:     props.cut_in_fumble || null
-        };
-        for (const [type, url] of Object.entries(defs)) {
-          const key = `cutin:${aId}:${type}`;
-          if (url) items.push({ type:"img", key, url });
-          else     items.push({ type:"img", key, url:null }); // still create a slot; receivers will mark MISS
+    // Preload portraits (or mark MISS)
+    for (const c of list) {
+      const actor = c?.actor; if (!actor) continue;
+      const aId = actor.id;
+      const props = actor?.system?.props ?? {};
+      const defs = {
+        critical:   props.cut_in_critical || null,
+        zero_power: props.cut_in_zero_power || null,
+        fumble:     props.cut_in_fumble || null
+      };
+      for (const [type, url] of Object.entries(defs)) {
+        const key = `cutin:${aId}:${type}`;
+        if (!url) {
+          bag[key] = { miss: true, cachedAt: Date.now(), note: "NO_IMAGE" };
+          setCombatKey(cId, key);
+          continue;
+        }
+        try { await preloadTexture(key, url); setCombatKey(cId, key); }
+        catch (e) {
+          bag[key] = { miss: true, cachedAt: Date.now(), note: "LOAD_ERROR" };
+          setCombatKey(cId, key);
+          console.warn("[FU Cut-In] Texture preload failed:", key, e);
         }
       }
+    }
 
-      // Broadcast the manifest to every active user
-      const sock  = socketlib.registerModule(MODULE_ID);
-      const users = (game.users?.filter(u => u.active) ?? []).map(u => u.id);
-      await (typeof sock.executeForUsers === "function" && users.length
-        ? sock.executeForUsers(ACTION_PRELOAD, users, { combatId:cId, items })
-        : sock.executeForEveryone(ACTION_PRELOAD, { combatId:cId, items }));
-
-      // GM also preloads locally using the same path (call our own handler)
-      await socketlib.registerModule(MODULE_ID).executeForUser
-        ?.call(null, game.user.id, ACTION_PRELOAD, { combatId:cId, items });
-
+    if (game.user?.isGM) {
       ui.notifications.info("FU Cut-In: Assets cached for this combat.");
-      console.log("[FU Cut-In] GM broadcasted preload manifest for combat:", cId, "items:", items.length);
-    } else {
-      // Non-GM: do nothing here — we rely on the GM’s manifest handler above
+      console.log("[FU Cut-In] Cached assets for combat:", combat?.id, "scene:", combat?.scene?.name);
     }
   } catch (e) {
     console.error("[FU Cut-In] combatStart preload error:", e);
