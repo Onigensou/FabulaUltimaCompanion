@@ -263,6 +263,8 @@ function fuForgetCombatAssets(combat) {
 
     async preload(url) {
       this._ensureLayer();
+      // Guard: skip bogus/sentinel URL used for cache-first flow
+      if (!url || url === "__USE_CACHED_TEXTURE__") return;
       if (this._imgUrl === url && this._tex) return;
       this._tex = await loadTexture(url);
       this._imgUrl = url;
@@ -287,6 +289,37 @@ function fuForgetCombatAssets(combat) {
       if (!canvas?.ready) return;
 
       this._ensureLayer();
+       // Prefer a pre-resolved cached texture if provided (from runCutIn)
+       const args = arguments[0] || {};
+       const useCached = !!args.__resolvedTexture;
+       const isSentinel = (imgUrl === "__USE_CACHED_TEXTURE__");
+
+       if (useCached) {
+         // We were handed a texture directly; never preload by URL
+         this._tex = args.__resolvedTexture;
+         this._imgUrl = "__USE_CACHED_TEXTURE__";
+         this._portrait.texture = this._tex;
+         this._warm = true;
+       } else if (!isSentinel && imgUrl) {
+         // Normal legacy path: only preload real URLs
+         if (!this._warm || imgUrl !== this._imgUrl) {
+           await this.preload(imgUrl);
+         }
+       } else if (isSentinel) {
+         // Sentinel path: try to grab cached texture by key if available
+         const key = args.imgKey;
+         try {
+           if (typeof fuGetTexture === "function" && key) {
+             const tex = fuGetTexture(key);
+             if (tex) {
+               this._tex = tex;
+               this._portrait.texture = tex;
+               this._imgUrl = "__USE_CACHED_TEXTURE__";
+               this._warm = true;
+             }
+           }
+         } catch (e) { console.warn("[FU Cut-In] Sentinel cache lookup failed:", e); }
+      }
       if (!this._warm || imgUrl !== this._imgUrl) {
         await this.preload(imgUrl);
       }
