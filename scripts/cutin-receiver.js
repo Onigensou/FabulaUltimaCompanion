@@ -289,77 +289,95 @@
         }
       });
 
-      // ------------------------------ Combat hooks: preload & forget ------------------------------
-      Hooks.on("combatStart", async (combat) => {
-        // Preload cut-in portraits per combatant, and SFX set, then record keys for cleanup.
-        try {
-          const bag = cacheBag();
-          const cId = combat?.id ?? `combat:${Date.now()}`;
-          const list = combat?.combatants?.contents ?? [];
+// ------------------------------ Combat hooks: preload & forget (robust) ------------------------------
+// We listen to three hooks to catch all end paths:
+//  • combatEnd            – when the active flag is cleared via UI
+//  • deleteCombat         – when the Combat document is deleted
+//  • updateCombat(active) – when active flips to false (some modules/UIs do this)
+Hooks.on("combatStart", async (combat) => {
+  try {
+    const bag = cacheBag();
+    const cId = combat?.id ?? `combat:${Date.now()}`;
+    const list = combat?.combatants?.contents ?? [];
 
-          // Always preload SFX buffers (once per session); still add keys to this combat for tidy cleanup
-          for (const t of ["critical","zero_power","fumble"]) {
-            const sfxKey = `sfx:${t}`;
-            try {
-              await preloadAudio(sfxKey, SFX_URLS[t]);
-              setCombatKey(cId, sfxKey);
-            } catch (e) { console.warn("[FU Cut-In] SFX preload failed:", t, e); }
-          }
+    // Preload SFX (add keys for cleanup)
+    for (const t of ["critical","zero_power","fumble"]) {
+      const sfxKey = `sfx:${t}`;
+      try { await preloadAudio(sfxKey, SFX_URLS[t]); setCombatKey(cId, sfxKey); }
+      catch (e) { console.warn("[FU Cut-In] SFX preload failed:", t, e); }
+    }
 
-          // Scan actors for portrait URLs per type; cache as textures or mark MISS
-          for (const c of list) {
-            const actor = c?.actor;
-            if (!actor) continue;
-            const aId = actor.id;
-            const props = actor?.system?.props ?? {};
-            const defs = {
-              critical:   props.cut_in_critical || null,
-              zero_power: props.cut_in_zero_power || null,
-              fumble:     props.cut_in_fumble || null
-            };
-            for (const [type, url] of Object.entries(defs)) {
-              const key = `cutin:${aId}:${type}`;
-              if (!url) {
-                // write a MISS marker so playback can skip instantly
-                bag[key] = { miss: true, cachedAt: Date.now(), note: "NO_IMAGE" };
-                setCombatKey(cId, key);
-                continue;
-              }
-              try {
-                await preloadTexture(key, url);
-                setCombatKey(cId, key);
-              } catch (e) {
-                // On error, store MISS so play won’t attempt URL
-                bag[key] = { miss: true, cachedAt: Date.now(), note: "LOAD_ERROR" };
-                setCombatKey(cId, key);
-                console.warn("[FU Cut-In] Texture preload failed:", key, e);
-              }
-            }
-          }
-
-          if (game.user?.isGM) ui.notifications.info("FU Cut-In: Assets cached for this combat.");
-        } catch (e) {
-          console.error("[FU Cut-In] combatStart preload error:", e);
-        }
-      });
-
-      Hooks.on("combatEnd", (combat) => {
-        try {
-          const cId = combat?.id ?? null;
-          if (cId) forgetCombat(cId);
-          if (game.user?.isGM) ui.notifications.info("FU Cut-In: Cleared combat cache.");
-        } catch (e) {
-          console.error("[FU Cut-In] combatEnd cleanup error:", e);
-        }
-      });
-
-      // Expose a tiny API for debugging
-      window[NS] = window[NS] || {};
-      window[NS].cutin = {
-        cacheInfo: () => ({ size: cacheBag().size, keys: Object.keys(cacheBag()).filter(k=>!k.startsWith("__")) }),
-        preload:    preloadTexture,
-        play:       playCutInFromCache
+    // Preload portraits (or mark MISS)
+    for (const c of list) {
+      const actor = c?.actor; if (!actor) continue;
+      const aId = actor.id;
+      const props = actor?.system?.props ?? {};
+      const defs = {
+        critical:   props.cut_in_critical || null,
+        zero_power: props.cut_in_zero_power || null,
+        fumble:     props.cut_in_fumble || null
       };
+      for (const [type, url] of Object.entries(defs)) {
+        const key = `cutin:${aId}:${type}`;
+        if (!url) {
+          bag[key] = { miss: true, cachedAt: Date.now(), note: "NO_IMAGE" };
+          setCombatKey(cId, key);
+          continue;
+        }
+        try { await preloadTexture(key, url); setCombatKey(cId, key); }
+        catch (e) {
+          bag[key] = { miss: true, cachedAt: Date.now(), note: "LOAD_ERROR" };
+          setCombatKey(cId, key);
+          console.warn("[FU Cut-In] Texture preload failed:", key, e);
+        }
+      }
+    }
+
+    if (game.user?.isGM) {
+      ui.notifications.info("FU Cut-In: Assets cached for this combat.");
+      console.log("[FU Cut-In] Cached assets for combat:", combat?.id, "scene:", combat?.scene?.name);
+    }
+  } catch (e) {
+    console.error("[FU Cut-In] combatStart preload error:", e);
+  }
+});
+
+// unified cleanup function + console/notification
+function _fuCleanupCombatCache(combat, reason) {
+  try {
+    const cId = combat?.id ?? null;
+    if (cId) forgetCombat(cId);
+    if (game.user?.isGM) {
+      ui.notifications.info("FU Cut-In: Cleared combat cache.");
+      console.log("[FU Cut-In] Cleared combat cache via", reason, "combatId:", cId);
+    } else {
+      console.log("[FU Cut-In] Cleared combat cache (non-GM) via", reason, "combatId:", cId);
+    }
+  } catch (e) {
+    console.error("[FU Cut-In] cleanup error:", e);
+  }
+}
+
+// 1) Normal end
+Hooks.on("combatEnd", (combat) => _fuCleanupCombatCache(combat, "combatEnd"));
+
+// 2) Document deleted
+Hooks.on("deleteCombat", (combat) => _fuCleanupCombatCache(combat, "deleteCombat"));
+
+// 3) Active → false
+Hooks.on("updateCombat", (combat, changed) => {
+  if (Object.prototype.hasOwnProperty.call(changed, "active") && changed.active === false) {
+    _fuCleanupCombatCache(combat, "updateCombat(active=false)");
+  }
+});
+
+// Expose a tiny API for debugging (UNCHANGED — keep this)
+window[NS] = window[NS] || {};
+window[NS].cutin = {
+  cacheInfo: () => ({ size: cacheBag().size, keys: Object.keys(cacheBag()).filter(k=>!k.startsWith("__")) }),
+  preload:    preloadTexture,
+  play:       playCutInFromCache
+};
 
       window[FLAG] = true;
       console.log("[FU Cut-In] Receiver+Cache installed.");
