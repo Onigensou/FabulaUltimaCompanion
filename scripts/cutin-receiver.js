@@ -275,6 +275,8 @@
         await playCutInFromCache(payload);
       });
 
+      window.__FU_CUTIN_PLAY = playCutInFromCache;
+
       // Warm minimal texture to upload GPU path
       Hooks.once("canvasReady", async () => {
         try {
