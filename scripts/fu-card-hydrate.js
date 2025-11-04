@@ -308,7 +308,7 @@ function initEffectPreviewOnce(root) {
     }
 
     // Compute ~5 lines worth of height for preview
-    const PREVIEW_LINES = 7;
+    const PREVIEW_LINES = 8;
     const cs = getComputedStyle(inner);
     const lineH = parseFloat(cs.lineHeight) || 16;
     const padT  = parseFloat(cs.paddingTop) || 0;
