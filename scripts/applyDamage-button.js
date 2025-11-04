@@ -113,6 +113,102 @@ const {
 // Spend resources now (on confirm). If it fails, stop.
 const okToProceed = await spendResourcesOnApply(flagged ? flagged : null);
 if (!okToProceed) { btn.dataset.fuLock = "0"; return; }
+
+    // ──────────────────────────────────────────────────────────
+// NAMECARD TRIGGER — show only for Skill / Spell / Passive
+// (BEGIN BLOCK)
+try {
+  const payload = flagged || null;
+  const core  = payload?.core || {};
+  const meta  = payload?.meta || {};
+
+  // 1) Eligibility (skip normal weapon Attacks)
+  const listType = String(meta.listType || "").trim();
+  const skillTypeRaw = String(core.skillTypeRaw || "").trim().toLowerCase();
+  const sourceTypeRaw = String(advPayload?.sourceType || "").trim().toLowerCase();
+
+  const isAttackish = (listType === "Attack") || (sourceTypeRaw === "weapon");
+  const isSpellish  = !!meta.isSpellish;
+  const isActive    = (listType === "Active");
+  const isPassive   = (skillTypeRaw === "passive");  // you asked to allow Passive, too
+
+  const shouldShow = !isAttackish && (isSpellish || isActive || isPassive);
+
+  if (shouldShow) {
+    // 2) Title
+    let title = String(core.skillName || "—");
+
+    // 3) Action type → emoji preset from demo
+    let actionType = "skill";
+    if (isSpellish && (listType === "Offensive Spell")) actionType = "offensiveSpell";
+    else if (isSpellish) actionType = "spell";
+    else if (isPassive)  actionType = "passive";
+    // (we never treat it as "attack" here, since we skip attacks)
+
+    // 4) Palette by disposition (attacker)
+    let disp = 0;
+    try {
+      const aUuid = args.attackerUuid || meta.attackerUuid || null;
+      if (aUuid) {
+        const doc = await fromUuid(aUuid);
+        const tok = (doc?.documentName === "Token") ? doc : (doc?.token ?? null);
+        disp = Number(tok?.disposition ?? 0);
+      }
+    } catch {}
+
+    // simple themes: hostile=tomato-ish, friendly=blue-ish, neutral=gold-ish
+    const THEMES = {
+      hostile: { bg: "#000000", accent: "#d98c6f", text: ["#fff","#ffd1b3"], glowColor: "#ffffff" },
+      friendly:{ bg: "#000000", accent: "#7fb5ff", text: ["#fff","#d7e9ff"], glowColor: "#ffffff" },
+      neutral: { bg: "#000000", accent: "#d9b56f", text: ["#fff","#ffe7b0"], glowColor: "#ffffff" }
+    };
+    const theme = (disp === -1) ? THEMES.hostile : (disp === 1 ? THEMES.friendly : THEMES.neutral);
+
+    // 5) Options (safe defaults matching your demo vibe)
+    const options = {
+      actionType,
+      xAlign: "center",
+      offsetX: 0,
+      offsetY: 12,
+      fixedWidth: 640,
+      autoWidth: false,
+      cardScale: 0.95,
+      inMs: 320,
+      holdMs: 1400,
+      outMs: 360,
+      enterFrom: "up",
+
+      plateOpacity: 0.55,
+      bg: theme.bg,
+      accent: theme.accent,
+      text: theme.text,
+      glowColor: theme.glowColor,
+      border: "rgba(255,255,255,.10)",
+      dropShadow: "0 10px 22px rgba(0,0,0,.35)",
+      maskEdges: true,
+      edgeFade: 0.12,
+
+      // text stylings
+      maxFontPx: 30,
+      minFontPx: 16,
+      letterSpacing: 0.06,
+      fontWeight: 900,
+      fontFamily: "Pixel Operator, system-ui, sans-serif",
+      textStrokePx: 0.1,
+      textStrokeColor: "rgba(0,0,0,0.55)",
+      showIcon: true,
+      iconScale: 0.93,
+      iconGapPx: 10
+    };
+
+    // 6) Fire broadcast (multi-client)
+    await window.FUCompanion?.api?.namecardBroadcast?.({ title, options });
+  }
+} catch (e) {
+  console.warn("[fu-chatbtn] NameCard skipped:", e);
+}
+// (END BLOCK)
+// ──────────────────────────────────────────────────────────
     
     try {
       // UI feedback
