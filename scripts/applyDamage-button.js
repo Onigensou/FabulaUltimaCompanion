@@ -96,12 +96,9 @@ const {
   elementType      = "physical",
   isSpellish       = false,
 
-  // accuracy params
-  hasAccuracy      = true,
-  accuracyTotal    = null,
-
-  // NEW: override switch from the card (crit → true)
-  isHit            = null,
+  // NEW:
+  hasAccuracy      = true,          // default true to preserve old cards’ behavior
+  accuracyTotal    = null,          // null means “no check/auto-hit”
 
   weaponType       = "",
   attackRange      = "Melee",
@@ -290,27 +287,6 @@ const accTotal  = hasAccuracy ? Number(accuracyTotal) : NaN;
 
 const missUUIDs = [];
 const hitUUIDs  = [];
-
-// If it's healing, or no accuracy check → auto-hit all
-const elemKey   = String(elementType || "physical").toLowerCase();
-const isHealing = /^(heal|healing|recovery|restore|restoration)$/i.test(elemKey);
-const accTotal  = hasAccuracy ? Number(accuracyTotal) : NaN;
-
-// NEW: override path — when the card says "this action isHit", skip comparisons
-if (!isHealing && hasAccuracy && (isHit === true || isHit === false)) {
-  if (isHit === true) hitUUIDs.push(...savedUUIDs);
-  else                missUUIDs.push(...savedUUIDs);
-} else if (!isHealing && hasAccuracy) {
-  // Normal compare per target (unchanged)
-  for (const u of savedUUIDs) {
-    const usedDefense = await defenseForUuid(u, !!isSpellish);
-    const willMiss    = Number.isFinite(usedDefense) && Number.isFinite(accTotal) && accTotal < usedDefense;
-    if (willMiss) missUUIDs.push(u); else hitUUIDs.push(u);
-  }
-} else {
-  // Healing OR No-Check → auto-hit all saved targets
-  hitUUIDs.push(...savedUUIDs);
-}
 
 if (!isHealing && hasAccuracy) {
   // There WAS an accuracy check → compare vs defense per target
