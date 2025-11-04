@@ -99,6 +99,7 @@ const {
   // NEW:
   hasAccuracy      = true,          // default true to preserve old cards’ behavior
   accuracyTotal    = null,          // null means “no check/auto-hit”
+  accuracyAutoHit  = false,
 
   weaponType       = "",
   attackRange      = "Melee",
@@ -285,19 +286,27 @@ const isHealing = /^(heal|healing|recovery|restore|restoration)$/i.test(elemKey)
 // NEW: respect No-Check (auto-hit) by skipping accuracy compare entirely
 const accTotal  = hasAccuracy ? Number(accuracyTotal) : NaN;
 
+// If any source says "autoHit", we force a hit but DO NOT change accuracy total.
+const flagAuto =
+  !!accuracyAutoHit ||
+  !!(flagged?.accuracy?.autoHit) ||
+  !!(flagged?.advPayload?.autoHit);
+
+const forceAutoHit = flagAuto === true;
+
 const missUUIDs = [];
 const hitUUIDs  = [];
 
-if (!isHealing && hasAccuracy) {
-  // There WAS an accuracy check → compare vs defense per target
+// If healing OR there was no accuracy check OR a crit forced auto-hit → hit everyone.
+if (isHealing || !hasAccuracy || forceAutoHit) {
+  hitUUIDs.push(...savedUUIDs);
+} else {
+  // Accuracy compare per target
   for (const u of savedUUIDs) {
     const usedDefense = await defenseForUuid(u, !!isSpellish);
-    const willMiss    = Number.isFinite(usedDefense) && Number.isFinite(accTotal) && accTotal < usedDefense;
+    const willMiss = Number.isFinite(usedDefense) && Number.isFinite(accTotal) && accTotal < usedDefense;
     if (willMiss) missUUIDs.push(u); else hitUUIDs.push(u);
   }
-} else {
-  // Healing OR No-Check → auto-hit all saved targets
-  hitUUIDs.push(...savedUUIDs);
 }
 
       const prevTargets = Array.from(game.user?.targets ?? []).map(t => t.id);
