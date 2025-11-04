@@ -31,13 +31,16 @@ if (!document.getElementById("fu-effect-preview-css-v2")) {
   const style = document.createElement("style");
   style.id = "fu-effect-preview-css-v2";
   style.textContent = `
-  /* Force black text only in the scrollable body, not the header */
-.chat-message .message-content .fu-effect .fu-effect-body,
-.chat-message .message-content .fu-effect .fu-effect-body *,
-.chat-message .message-content .fu-effect .fu-effect-inner,
-.chat-message .message-content .fu-effect .fu-effect-inner * {
-  color: #000 !important;
-  text-shadow: none !important;
+  /* Keep regular body text black */
+.chat-message .message-content .fu-effect .fu-effect-inner {
+  color: #000;              /* no !important */
+  text-shadow: none;        /* no !important */
+}
+/* Do NOT recolor content-links; let your Custom CSS handle them */
+.chat-message .message-content .fu-effect .fu-effect-inner a.content-link,
+.chat-message .message-content .fu-effect .fu-effect-inner a.content-link * {
+  color: inherit;           /* external !important colors (e.g., Bolt) win */
+  text-shadow: none;
 }
  /* Ensure headers keep their themed color even if old styles linger */
 .fu-effect > .fu-effect-header,
