@@ -166,40 +166,51 @@ try {
 
     // 5) Options (safe defaults matching your demo vibe)
     const options = {
-      actionType,
-      xAlign: "center",
-      offsetX: 0,
-      offsetY: 12,
-      fixedWidth: 640,
-      autoWidth: false,
-      cardScale: 0.95,
-      inMs: 320,
-      holdMs: 1400,
-      outMs: 360,
-      enterFrom: "up",
+  // — Visual identity (kept)
+  actionType,
+  bg: theme.bg,
+  accent: theme.accent,
+  text: theme.text,
+  glowColor: theme.glowColor,
+  border: "rgba(255,255,255,.10)",
+  dropShadow: "0 10px 22px rgba(0,0,0,.35)",
+  maskEdges: true,
+  edgeFade: 0.12,
 
-      plateOpacity: 0.55,
-      bg: theme.bg,
-      accent: theme.accent,
-      text: theme.text,
-      glowColor: theme.glowColor,
-      border: "rgba(255,255,255,.10)",
-      dropShadow: "0 10px 22px rgba(0,0,0,.35)",
-      maskEdges: true,
-      edgeFade: 0.12,
+  // — Placement / sizing (match your DEMO)
+  xAlign: "center",   // center like your screenshot
+  offsetX: 0,
+  offsetY: 100,       // LOWER the bar like DEMO (was 12)
+  fixedWidth: 640,
+  autoWidth: false,
+  cardScale: 0.20,    // slim bar look like DEMO (was ~0.95)
 
-      // text stylings
-      maxFontPx: 30,
-      minFontPx: 16,
-      letterSpacing: 0.06,
-      fontWeight: 900,
-      fontFamily: "Pixel Operator, system-ui, sans-serif",
-      textStrokePx: 0.1,
-      textStrokeColor: "rgba(0,0,0,0.55)",
-      showIcon: true,
-      iconScale: 0.93,
-      iconGapPx: 10
-    };
+  // — Timing / motion (DEMO-ish)
+  inMs: 350,
+  holdMs: 1500,
+  outMs: 400,
+  enterFrom: "left",  // DEMO enters from the left
+
+  // — Text styling (match DEMO feel)
+  maxFontPx: 28,
+  minFontPx: 16,
+  letterSpacing: 0.06,
+  fontWeight: 0,      // demo used 0 (use font default/regular)
+  upperCase: false,
+  fontFamily: "Pixel Operator, system-ui, sans-serif",
+
+  // IMPORTANT: no glow
+  textShadowStrength: 0.0,
+
+  // Subtle outline (same as demo)
+  textStrokePx: 0.1,
+  textStrokeColor: "rgba(0,0,0,0.55)",
+
+  // Emoji icon spacing/scale like demo
+  showIcon: true,
+  iconScale: 0.93,
+  iconGapPx: 10
+};
 
     // 6) Fire broadcast (multi-client)
     await window.FUCompanion?.api?.namecardBroadcast?.({ title, options });
