@@ -87,10 +87,33 @@
     if (size > 0) el.style.webkitTextStroke = `${size}px ${color}`;
     else el.style.removeProperty("-webkit-text-stroke");
   }
-  function applyTextGlow(el, glowColor="#ffffff", strength=1){
-    const s = clamp01(strength), a1 = (0.35*s).toFixed(2), a2 = (0.35*s).toFixed(2), aGlow1=(0.45*s).toFixed(2), aGlow2=(0.32*s).toFixed(2);
-    el.style.textShadow = `0 1px 0 rgba(0,0,0,${a1}), 0 2px 6px rgba(0,0,0,${a2}), 0 0 6px ${glowColor}, 0 0 14px ${glowColor}`;
+  // REPLACE the whole applyTextGlow() helper with this:
+function applyTextGlow(el, glowColor="#ffffff", strength=1){
+  const s = Math.max(0, Math.min(1, Number(strength || 0)));
+  const a1 = (0.35*s).toFixed(2);
+  const a2 = (0.35*s).toFixed(2);
+  const aGlow1 = (0.45*s).toFixed(2);
+  const aGlow2 = (0.32*s).toFixed(2);
+
+  // If strength is 0, disable textShadow entirely to avoid any residual glow
+  if (s <= 0) { el.style.textShadow = "none"; return; }
+
+  el.style.textShadow =
+    `0 1px 0 rgba(0,0,0,${a1}),
+     0 2px 6px rgba(0,0,0,${a2}),
+     0 0 6px ${hexOrRgba(glowColor, aGlow1)},
+     0 0 14px ${hexOrRgba(glowColor, aGlow2)}`;
+}
+
+// Add this tiny helper (if your file doesn’t already have it near applyTextGlow):
+function hexOrRgba(col, alpha="1"){
+  if (String(col).startsWith("#")){
+    const rgb = hexToRgb(col);
+    if (!rgb) return `rgba(255,255,255,${alpha})`;
+    return `rgba(${rgb.r},${rgb.g},${rgb.b},${alpha})`;
   }
+  return col;
+}
 
   // ---------- Local draw function ----------
   async function showNameCardLocal(title, opts = {}) {
