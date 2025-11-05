@@ -285,18 +285,29 @@ const isHealing = /^(heal|healing|recovery|restore|restoration)$/i.test(elemKey)
 // NEW: respect No-Check (auto-hit) by skipping accuracy compare entirely
 const accTotal  = hasAccuracy ? Number(accuracyTotal) : NaN;
 
+// NEW: detect auto-hit conditions (no-check, explicit autoHit, or crit carried via advPayload/flag)
+const explicitAutoHit =
+  (args.autoHit === true) ||
+  (args.advPayload?.autoHit === true) ||
+  (args.advPayload?.isCrit === true) ||
+  (flagged?.accuracy?.isCrit === true);
+
+const treatAutoHit = (!hasAccuracy) || explicitAutoHit;
+
 const missUUIDs = [];
 const hitUUIDs  = [];
 
-if (!isHealing && hasAccuracy) {
-  // There WAS an accuracy check → compare vs defense per target
+// Per-target “isHit” boolean (computed here, not exported)
+//   • If treatAutoHit: true for all valid targets
+//   • Else: compare accuracy vs chosen defense kind
+if (!isHealing && !treatAutoHit) {
   for (const u of savedUUIDs) {
     const usedDefense = await defenseForUuid(u, !!isSpellish);
-    const willMiss    = Number.isFinite(usedDefense) && Number.isFinite(accTotal) && accTotal < usedDefense;
-    if (willMiss) missUUIDs.push(u); else hitUUIDs.push(u);
+    const isHit = Number.isFinite(usedDefense) && Number.isFinite(accTotal) ? (accTotal >= usedDefense) : true;
+    if (isHit) hitUUIDs.push(u); else missUUIDs.push(u);
   }
 } else {
-  // Healing OR No-Check → auto-hit all saved targets
+  // Healing or Auto-Hit path → everyone in saved list is a hit
   hitUUIDs.push(...savedUUIDs);
 }
 
