@@ -1,12 +1,27 @@
 // scripts/namecard-receiver.js
-// Shows JRPG-style NameCards on THIS client. Listens to module socket.
+// Shows JRPG-style NameCards on THIS client. Uses socketlib with a shared t0
+// for perfect multi-client sync, warms (caches) at combat start, and cleans up on end.
 // Exposes: window.FUCompanion.api.showNameCardLocal(title, options)
 
 (() => {
+  const MODULE_ID  = "fabula-ultima-companion";
+  const ACTION_KEY = "FU_NAMECARD_SHOW";
+  const STYLE_ID   = "oni-namecard-style";
+  const LAYER_ID   = "oni-namecard-layer";
+  const FLAG       = "__FU_NAMECARD_READY_v2";
+
   window.FUCompanion = window.FUCompanion || { api: {} };
 
-  const STYLE_ID = "oni-namecard-style";
-  const LAYER_ID = "oni-namecard-layer";
+  // ---- tiny per-tab cache (track combats we warmed) ----
+  const CACHE_NS = "FU_NAMECARD_CACHE";
+  function bag() {
+    globalThis[CACHE_NS] ??= {
+      __createdAt: Date.now(),
+      __combatReady: new Set(),
+      get size() { return this.__combatReady.size; }
+    };
+    return globalThis[CACHE_NS];
+  }
 
   // ---------- Bootstrap CSS + Layer (idempotent) ----------
   function ensureBootstrap() {
@@ -87,33 +102,51 @@
     if (size > 0) el.style.webkitTextStroke = `${size}px ${color}`;
     else el.style.removeProperty("-webkit-text-stroke");
   }
-  // REPLACE the whole applyTextGlow() helper with this:
-function applyTextGlow(el, glowColor="#ffffff", strength=1){
-  const s = Math.max(0, Math.min(1, Number(strength || 0)));
-  const a1 = (0.35*s).toFixed(2);
-  const a2 = (0.35*s).toFixed(2);
-  const aGlow1 = (0.45*s).toFixed(2);
-  const aGlow2 = (0.32*s).toFixed(2);
-
-  // If strength is 0, disable textShadow entirely to avoid any residual glow
-  if (s <= 0) { el.style.textShadow = "none"; return; }
-
-  el.style.textShadow =
-    `0 1px 0 rgba(0,0,0,${a1}),
-     0 2px 6px rgba(0,0,0,${a2}),
-     0 0 6px ${hexOrRgba(glowColor, aGlow1)},
-     0 0 14px ${hexOrRgba(glowColor, aGlow2)}`;
-}
-
-// Add this tiny helper (if your file doesn’t already have it near applyTextGlow):
-function hexOrRgba(col, alpha="1"){
-  if (String(col).startsWith("#")){
-    const rgb = hexToRgb(col);
-    if (!rgb) return `rgba(255,255,255,${alpha})`;
-    return `rgba(${rgb.r},${rgb.g},${rgb.b},${alpha})`;
+  function hexOrRgba(col, alpha="1"){
+    if (String(col).startsWith("#")){
+      const rgb = hexToRgb(col);
+      if (!rgb) return `rgba(255,255,255,${alpha})`;
+      return `rgba(${rgb.r},${rgb.g},${rgb.b},${alpha})`;
+    }
+    return col;
   }
-  return col;
-}
+  // No-glow when strength = 0
+  function applyTextGlow(el, glowColor="#ffffff", strength=1){
+    const s = Math.max(0, Math.min(1, Number(strength || 0)));
+    if (s <= 0) { el.style.textShadow = "none"; return; }
+    const a1 = (0.35*s).toFixed(2);
+    const a2 = (0.35*s).toFixed(2);
+    const aGlow1 = (0.45*s).toFixed(2);
+    const aGlow2 = (0.32*s).toFixed(2);
+    el.style.textShadow =
+      `0 1px 0 rgba(0,0,0,${a1}),
+       0 2px 6px rgba(0,0,0,${a2}),
+       0 0 6px ${hexOrRgba(glowColor, aGlow1)},
+       0 0 14px ${hexOrRgba(glowColor, aGlow2)}`;
+  }
+
+  // ---- Warm the layer once so layout/font work is done before first show ----
+  async function warmOnce() {
+    ensureBootstrap();
+    const layer = document.getElementById(LAYER_ID);
+    if (!layer) return;
+
+    const card = document.createElement("div");
+    card.className = "oni-namecard";
+    card.style.width = "480px";
+    card.style.opacity = "0";
+    card.style.transform = "translateY(-9999px)";
+
+    const plate = document.createElement("div"); plate.className = "oni-namecard__plate";
+    const wrap  = document.createElement("div"); wrap.className  = "oni-namecard__titlewrap";
+    const line  = document.createElement("span"); line.className = "oni-namecard__line";
+    const text  = document.createElement("span"); text.className = "oni-namecard__text"; text.textContent = "Warmup";
+    line.appendChild(text); wrap.appendChild(line);
+    card.appendChild(plate); card.appendChild(wrap);
+    layer.appendChild(card);
+    await new Promise(r => requestAnimationFrame(r));
+    card.remove();
+  }
 
   // ---------- Local draw function ----------
   async function showNameCardLocal(title, opts = {}) {
@@ -230,11 +263,13 @@ function hexOrRgba(col, alpha="1"){
       card.style.setProperty("--oni-exit-transform",  outVec);
 
       const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const easeIn  = String(o.easingIn  || "cubic-bezier(.22,.9,.24,1)");
+      const easeOut = String(o.easingOut || "cubic-bezier(.2,.7,.4,1)");
       if (!reduced) {
-        card.style.animation = `oni-in ${o.inMs}ms cubic-bezier(.22,.9,.24,1) forwards`;
+        card.style.animation = `oni-in ${o.inMs}ms ${easeIn} forwards`;
         await wait(o.inMs + 20);
         await wait(o.holdMs);
-        card.style.animation = `oni-out ${o.outMs}ms cubic-bezier(.2,.7,.4,1) forwards`;
+        card.style.animation = `oni-out ${o.outMs}ms ${easeOut} forwards`;
         await wait(o.outMs + 60);
       } else {
         card.style.opacity = "1";
@@ -251,12 +286,75 @@ function hexOrRgba(col, alpha="1"){
   // expose local API
   window.FUCompanion.api.showNameCardLocal = showNameCardLocal;
 
-  // listen for socket broadcasts
-  Hooks.once("ready", () => {
-    game.socket?.on?.("module.fabula-ultima-companion", (data) => {
-      if (!data || data.type !== "namecard") return;
-      const { title, options } = data;
-      showNameCardLocal(title, options);
-    });
+  // ---- Combat hooks: preload/warm & cleanup ----
+  Hooks.on("combatStart", async (combat) => {
+    try {
+      const cId = combat?.id ?? null;
+      if (!cId) return;
+      const b = bag();
+      if (b.__combatReady.has(cId)) return;   // already warmed
+      await warmOnce();
+      b.__combatReady.add(cId);
+      if (game.user?.isGM) console.log("[NameCard] Warmed at combatStart:", cId);
+    } catch (e) {
+      console.warn("[NameCard] warm error:", e);
+    }
   });
+
+  function _cleanup(combat, reason) {
+    try {
+      const cId = combat?.id ?? null;
+      if (!cId) return;
+      bag().__combatReady.delete(cId);
+      if (game.user?.isGM) console.log("[NameCard] Cleared warm cache via", reason, "combatId:", cId);
+    } catch (e) {
+      console.warn("[NameCard] cleanup error:", e);
+    }
+  }
+  Hooks.on("combatEnd",    (combat) => _cleanup(combat, "combatEnd"));
+  Hooks.on("deleteCombat", (combat) => _cleanup(combat, "deleteCombat"));
+  Hooks.on("updateCombat", (combat, changed) => {
+    if (Object.prototype.hasOwnProperty.call(changed, "active") && changed.active === false) {
+      _cleanup(combat, "updateCombat(active=false)");
+    }
+  });
+
+  // ---- Socketlib receiver: wait for shared t0, only show during active combat ----
+  if (!window[FLAG]) {
+    Hooks.once("ready", () => {
+      try {
+        const sockMod = game.modules.get("socketlib");
+        if (!sockMod?.active || !window.socketlib) {
+          ui.notifications.error("NameCard: socketlib not found/active.");
+          return;
+        }
+        const socket = socketlib.registerModule(MODULE_ID);
+
+        socket.register(ACTION_KEY, async (payload) => {
+          try {
+            const myId = game.user?.id;
+            if (Array.isArray(payload?.allowedUserIds) && myId && !payload.allowedUserIds.includes(myId)) return;
+
+            // Only show during combat (per your spec)
+            if (!game.combat?.active) return;
+
+            const t0 = Number(payload?.t0) || Date.now();
+            const waitMs = Math.max(0, t0 - Date.now());
+            if (waitMs) await new Promise(r => setTimeout(r, waitMs));
+
+            const title   = payload?.title ?? "—";
+            const options = payload?.options ?? {};
+            await showNameCardLocal(title, options);
+          } catch (e) {
+            console.warn("[NameCard] Receiver error:", e);
+          }
+        });
+
+        window[FLAG] = true;
+        console.log("[NameCard] Receiver+Cache installed.");
+      } catch (err) {
+        console.error("[NameCard] Receiver failed to install:", err);
+      }
+    });
+  }
 })();
