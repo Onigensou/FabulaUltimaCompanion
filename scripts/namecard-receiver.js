@@ -8,44 +8,70 @@
   const STYLE_ID = "oni-namecard-style";
   const LAYER_ID = "oni-namecard-layer";
 
+  // ───────────────────────────────────────────────────────────
+  // Per-client base font sizing (from your screenshot method)
+  // Sets document body's font-size; all Namecard measurements use em.
+  function setFonts() {
+    const size = { height: window.innerHeight, width: window.innerWidth };
+    const ratio = size.width / size.height;
+    const max = 2;
+    const factor = 1.98;
+    const w = (ratio > max) ? (size.height * factor) : size.width;
+    const widthInt = parseInt(w);
+    document.body.setAttribute('style', 'font-size:' + (widthInt / 26) + 'px');
+    window.fontSize = widthInt / 26;
+  }
+  // Run once now and again on resize/zoom
+  function bindFontResizer() {
+    setFonts();
+    window.addEventListener('resize', setFonts);
+    // visualViewport catches pinch-zoom on some browsers
+    window.visualViewport?.addEventListener?.('resize', setFonts);
+  }
+  bindFontResizer();
+  // ───────────────────────────────────────────────────────────
   // ---------- Bootstrap CSS + Layer (idempotent) ----------
   function ensureBootstrap() {
     if (!document.getElementById(STYLE_ID)) {
       const css = `
 #${LAYER_ID} {
-  position: fixed; inset: 0 0 auto 0; top: 8px; width: 100%;
+  position: fixed; inset: 0 0 auto 0; top: 0.5em; width: 100%;
   display: grid; place-items: start center;
   pointer-events: none; z-index: 999999;
 }
-.oni-namecard { pointer-events: none; opacity: 0; will-change: transform, opacity;
-  position: relative; border-radius: var(--oni-radius, 12px);
-  padding: 6px 18px; transform-origin: center center; }
-.oni-namecard__plate { position:absolute; inset:0; border-radius:var(--oni-radius,12px);
+.oni-namecard {
+  pointer-events: none; opacity: 0; will-change: transform, opacity;
+  position: relative; border-radius: var(--oni-radius, 0.75em);
+  padding: 0.375em 1.125em; transform-origin: center center;
+}
+.oni-namecard__plate {
+  position:absolute; inset:0; border-radius:var(--oni-radius,0.75em);
   background: rgba(var(--oni-bg-r), var(--oni-bg-g), var(--oni-bg-b), var(--oni-plate-alpha,.55));
-  border:1px solid var(--oni-border, rgba(255,255,255,.10));
-  box-shadow:var(--oni-shadow,0 10px 22px rgba(0,0,0,.35));
-  backdrop-filter:blur(var(--oni-blur,1.5px)) saturate(105%);
-  -webkit-backdrop-filter:blur(var(--oni-blur,1.5px)) saturate(105%);
-  filter: drop-shadow(0 1px 0 rgba(0,0,0,.18)); pointer-events:none;
+  border:0.0625em solid var(--oni-border, rgba(255,255,255,.10));
+  box-shadow:var(--oni-shadow,0 0.625em 1.375em rgba(0,0,0,.35));
+  backdrop-filter:blur(var(--oni-blur,0.09375em)) saturate(105%);
+  -webkit-backdrop-filter:blur(var(--oni-blur,0.09375em)) saturate(105%);
+  filter: drop-shadow(0 0.0625em 0 rgba(0,0,0,.18));
+  pointer-events:none;
 }
 .oni-namecard__plate::before, .oni-namecard__plate::after {
-  content:""; position:absolute; left:0; right:0; height:var(--oni-line-th,2px);
+  content:""; position:absolute; left:0; right:0; height:var(--oni-line-th,0.125em);
   background: linear-gradient(90deg, rgba(0,0,0,0) 0%, var(--oni-accent,#d9b56f) 12%, var(--oni-accent,#d9b56f) 88%, rgba(0,0,0,0) 100%);
-  border-radius:999px; box-shadow: 0 0 6px rgba(217,181,111,.45);
+  border-radius:999em; box-shadow: 0 0 0.375em rgba(217,181,111,.45);
 }
-.oni-namecard__plate::before { top: var(--oni-line-gap, 2px); }
-.oni-namecard__plate::after  { bottom: var(--oni-line-gap, 2px); }
+.oni-namecard__plate::before { top: var(--oni-line-gap, 0.125em); }
+.oni-namecard__plate::after  { bottom: var(--oni-line-gap, 0.125em); }
 .oni-namecard__plate[data-mask="1"]{
   --oni-fade: 12%;
   -webkit-mask-image:linear-gradient(to right, transparent var(--oni-fade), #000 calc(var(--oni-fade)+1%), #000 calc(100% - var(--oni-fade) - 1%), transparent 100%);
   mask-image:linear-gradient(to right, transparent var(--oni-fade), #000 calc(var(--oni-fade)+1%), #000 calc(100% - var(--oni-fade) - 1%), transparent 100%);
 }
 .oni-namecard__titlewrap{ position:relative; z-index:1; display:flex; align-items:center; justify-content:center; width:100%; overflow:hidden; white-space:nowrap; }
-.oni-namecard__line{ display:inline-flex; align-items:baseline; gap: var(--oni-icongap, 8px); transform-origin:center center; }
+.oni-namecard__line{ display:inline-flex; align-items:baseline; gap: var(--oni-icongap, 0.5em); transform-origin:center center; }
 .oni-namecard__icon{ display:inline-block; line-height:1; transform-origin:center center; }
 .oni-namecard__text{ display:inline-block; line-height:1.05; font-weight:var(--oni-weight,900); letter-spacing:var(--oni-track,.06em); transform-origin:center center; font-family:var(--oni-font,system-ui,sans-serif); }
-@keyframes oni-in { from{opacity:0; transform: var(--oni-enter-transform, translateY(-16px)) scale(.99);} to{opacity:1; transform: translate(0,0) scale(1);} }
-@keyframes oni-out{ from{opacity:1; transform: translate(0,0) scale(1);} to{opacity:0; transform: var(--oni-exit-transform, translateY(-14px)) scale(.99);} }
+@keyframes oni-in { from{opacity:0; transform: var(--oni-enter-transform, translateY(-1em)) scale(.99);} to{opacity:1; transform: translate(0,0) scale(1);} }
+@keyframes oni-out{ from{opacity:1; transform: translate(0,0) scale(1);} to{opacity:0; transform: var(--oni-exit-transform, translateY(-0.875em)) scale(.99);} }
 @media (prefers-reduced-motion: reduce){ .oni-namecard{ animation:none !important; transition:none !important; } }
       `.trim();
       const style = document.createElement("style");
@@ -146,122 +172,142 @@ function hexOrRgba(col, alpha="1"){
     if (!layer) return;
 
     // Defaults (safe)
-        const o = Object.assign({
-      inMs: 350, holdMs: 1500, outMs: 400,
-      xAlign: "center", offsetX: 0, offsetY: 8,
-      fixedWidth: 640, autoWidth: false, cardScale: 1.0,
-      maxFontPx: 28, minFontPx: 16,
-      plateOpacity: 0.55, bg: "#000000", border: "rgba(255,255,255,.10)",
-      text: "#ffffff", accent: "#d9b56f", glowColor: "#ffffff", dropShadow: "0 10px 22px rgba(0,0,0,.35)",
-      radius: 12, blurPx: 1.5, lineThickness: 2, lineGap: 2, edgeFade: 0.12, maskEdges: true,
-      letterSpacing: 0.06, fontWeight: 900, upperCase: false, textShadowStrength: 0.0,
-      fontFamily: "system-ui, sans-serif", textStrokePx: 0.0, textStrokeColor: "rgba(0,0,0,0.55)",
-      showIcon: true, actionType: "skill", iconOverride: "", iconGapPx: 10, iconScale: 0.93,
-      enterFrom: "up", easingIn: "cubic-bezier(.22,.9,.24,1)", easingOut: "cubic-bezier(.2,.7,.4,1)",
+        // Helpers to convert legacy px options to em (based on current body font-size)
+function _bodyEm(px) {
+  const base = parseFloat(getComputedStyle(document.body).fontSize || "16");
+  return px / base;
+}
 
-      // --- NEW (optional) per-client scaling knobs ---
-      baselineVh: 900,     // treat 900px viewport height as "reference"
-      scaleMin: 0.75,      // don’t shrink below 75%
-      scaleMax: 1.40,      // don’t grow above 140%
-      scaleMode: "vh"      // scale by viewport height ratio
-    }, opts || {});
+const o = Object.assign({
+  inMs: 350, holdMs: 1500, outMs: 400,
 
-    const ACTION_ICONS = { skill:"💥", offensiveSpell:"⚡️", spell:"📕", attack:"⚔️", passive:"📜" };
-    const PAD_X = 18;
+  // Placement (em)
+  xAlign: "center",
+  offsetXEm: 0,          // use these new em options going forward
+  offsetYEm: 0.5,
 
-    window._oniNameCardQueue = window._oniNameCardQueue || Promise.resolve();
-    const work = async () => {
-      const card = document.createElement("div");
-      card.className = "oni-namecard";
+  // Width (em)
+  fixedWidthEm: 40,      // ≈ 40em wide card by default
+  autoWidth: false,
+  cardScale: 1.0,
 
-           if (o.autoWidth) { card.style.width = "max-content"; card.style.maxWidth = "92vw"; }
-      else { card.style.width = `${o.fixedWidth}px`; card.style.maxWidth = "92vw"; }
+  // Typography (em)
+  maxFontEm: 1.75,       // ≈ 28px if base is 16px
+  minFontEm: 1.0,
 
-      // --- NEW: compute client scale and apply to placement ---
-      const clientScale = getClientScale({
-        baselineVh: o.baselineVh,
-        min: o.scaleMin,
-        max: o.scaleMax,
-        mode: o.scaleMode
-      });
-      const finalScale  = (o.cardScale ?? 1) * clientScale;
-      const offXScaled  = (o.offsetX || 0) * clientScale;
-      const offYScaled  = (o.offsetY || 0) * clientScale;
+  // Visual palette
+  plateOpacity: 0.55, bg: "#000000", border: "rgba(255,255,255,.10)",
+  text: "#ffffff", accent: "#d9b56f", glowColor: "#ffffff",
+  dropShadow: "0 0.625em 1.375em rgba(0,0,0,.35)",
 
-      const xMap = { left: "start", center: "center", right: "end" };
-      card.style.justifySelf = (xMap[o.xAlign] ?? "center");
-      card.style.marginTop = `${Math.round(offYScaled)}px`;
+  // Sizes (em)
+  radiusEm: 0.75,
+  blurEm: 0.09375,       // ≈ 1.5px @ 16px base
+  lineThicknessEm: 0.125,
+  lineGapEm: 0.125,
+  edgeFade: 0.12, maskEdges: true,
 
-      if (o.xAlign === "left") {
-        card.style.marginLeft = `${Math.round(offXScaled)}px`;
-        card.style.transform  = `scale(${finalScale})`;
-      } else if (o.xAlign === "right") {
-        card.style.marginRight = `${Math.round(offXScaled)}px`;
-        card.style.transform   = `scale(${finalScale})`;
-      } else {
-        // centered: keep your translateX behavior
-        card.style.transform = `scale(${finalScale}) translateX(${Math.round(offXScaled)}px)`;
-      }
+  // Font details
+  letterSpacing: 0.06, fontWeight: 900, upperCase: false, textShadowStrength: 0.0,
+  fontFamily: "system-ui, sans-serif",
+  // We avoid text stroke (px-only) to honor the "no px" rule:
+  textStrokeEm: 0, textStrokeColor: "rgba(0,0,0,0)",
 
-      const rgb = hexToRgb(o.bg) || { r:0,g:0,b:0 };
-      card.style.setProperty("--oni-radius", `${o.radius}px`);
-      card.style.setProperty("--oni-border", o.border);
-      card.style.setProperty("--oni-shadow", o.dropShadow);
-      card.style.setProperty("--oni-accent", o.accent);
-      card.style.setProperty("--oni-blur", `${o.blurPx}px`);
-      card.style.setProperty("--oni-line-th", `${o.lineThickness}px`);
-      card.style.setProperty("--oni-line-gap", `${o.lineGap}px`);
-      card.style.setProperty("--oni-bg-r", rgb.r);
-      card.style.setProperty("--oni-bg-g", rgb.g);
-      card.style.setProperty("--oni-bg-b", rgb.b);
-      card.style.setProperty("--oni-plate-alpha", `${clamp01(o.plateOpacity)}`);
+  // Icon
+  showIcon: true, actionType: "skill", iconOverride: "", iconGapEm: 0.625, iconScale: 0.93,
 
-      const plate = document.createElement("div");
-      plate.className = "oni-namecard__plate";
-      plate.dataset.mask = o.maskEdges ? "1" : "0";
-      if (o.maskEdges) plate.style.setProperty("--oni-fade", `${Math.round(clamp01(o.edgeFade)*100)}%`);
+  // Motion
+  enterFrom: "up", easingIn: "cubic-bezier(.22,.9,.24,1)", easingOut: "cubic-bezier(.2,.7,.4,1)",
 
-      const wrap = document.createElement("div");
-      wrap.className = "oni-namecard__titlewrap";
+  // Per-client scaling (kept; multiplies on top of em layout if you like)
+  baselineVh: 900, scaleMin: 0.75, scaleMax: 1.40, scaleMode: "vh"
+}, opts || {});
 
-      const line = document.createElement("span");
-      line.className = "oni-namecard__line";
-      line.style.setProperty("--oni-icongap", `${o.iconGapPx|0}px`);
+// Backward compatibility: if legacy px options are supplied, convert them to em
+if (o.offsetXEm === undefined && o.offsetX !== undefined) o.offsetXEm = _bodyEm(o.offsetX);
+if (o.offsetYEm === undefined && o.offsetY !== undefined) o.offsetYEm = _bodyEm(o.offsetY);
+if (o.fixedWidthEm === undefined && o.fixedWidth !== undefined) o.fixedWidthEm = _bodyEm(o.fixedWidth);
+if (o.maxFontEm === undefined && o.maxFontPx !== undefined) o.maxFontEm = _bodyEm(o.maxFontPx);
+if (o.minFontEm === undefined && o.minFontPx !== undefined) o.minFontEm = _bodyEm(o.minFontPx);
+if (o.iconGapEm === undefined && o.iconGapPx !== undefined) o.iconGapEm = _bodyEm(o.iconGapPx);
 
-      const iconStr = (o.iconOverride && String(o.iconOverride).trim()) || ACTION_ICONS[o.actionType] || "";
-      let iconEl = null;
-      if (o.showIcon && iconStr) {
-        iconEl = document.createElement("span");
-        iconEl.className = "oni-namecard__icon";
-        iconEl.textContent = iconStr;
-        iconEl.style.fontSize = `${o.maxFontPx * (o.iconScale ?? 1)}px`;
-      }
+const PAD_X_EM = 1.125; // internal left/right padding in em
 
-      const text = document.createElement("span");
-      text.className = "oni-namecard__text";
-      text.textContent = o.upperCase ? String(title).toUpperCase() : String(title);
-      text.style.fontSize = `${o.maxFontPx}px`;
-      text.style.setProperty("--oni-weight", String(o.fontWeight|0));
-      text.style.setProperty("--oni-track", `${o.letterSpacing}em`);
-      text.style.setProperty("--oni-font", o.fontFamily);
+// Width in em
+if (o.autoWidth) { card.style.width = "max-content"; card.style.maxWidth = "92vw"; }
+else { card.style.width = `${o.fixedWidthEm}em`; card.style.maxWidth = "92vw"; }
 
-      applyTextFill(text, o.text);
-      applyTextStroke(text, o.textStrokePx, o.textStrokeColor);
-      applyTextGlow(text, o.glowColor, o.textShadowStrength);
+// Per-client scale then em offsets
+const clientScale = getClientScale({ baselineVh: o.baselineVh, min: o.scaleMin, max: o.scaleMax, mode: o.scaleMode });
+const finalScale  = (o.cardScale ?? 1) * clientScale;
+const offX        = o.offsetXEm || 0;
+const offY        = o.offsetYEm || 0;
 
-      if (iconEl) line.appendChild(iconEl);
-      line.appendChild(text);
-      wrap.appendChild(line);
-      card.appendChild(plate);
-      card.appendChild(wrap);
-      document.getElementById(LAYER_ID).appendChild(card);
+const xMap = { left: "start", center: "center", right: "end" };
+card.style.justifySelf = (xMap[o.xAlign] ?? "center");
+card.style.marginTop = `${offY}em`;
 
-      await nextFrame();
+if (o.xAlign === "left") {
+  card.style.marginLeft = `${offX}em`;
+  card.style.transform  = `scale(${finalScale})`;
+} else if (o.xAlign === "right") {
+  card.style.marginRight = `${offX}em`;
+  card.style.transform   = `scale(${finalScale})`;
+} else {
+  card.style.transform = `scale(${finalScale}) translateX(${offX}em)`;
+}
 
-      const available = card.clientWidth - PAD_X*2;
-      const fullWidth = measureWidth(line);
-      let scale = fullWidth > 0 ? Math.min(1, available / fullWidth) : 1;
-      const minScale = (o.minFontPx / o.maxFontPx);
+// CSS custom properties (em)
+card.style.setProperty("--oni-radius", `${o.radiusEm}em`);
+card.style.setProperty("--oni-border", o.border);
+card.style.setProperty("--oni-shadow", o.dropShadow);
+card.style.setProperty("--oni-accent", o.accent);
+card.style.setProperty("--oni-blur", `${o.blurEm}em`);
+card.style.setProperty("--oni-line-th", `${o.lineThicknessEm}em`);
+card.style.setProperty("--oni-line-gap", `${o.lineGapEm}em`);
+
+// icon/text sizing in em
+line.style.setProperty("--oni-icongap", `${o.iconGapEm}em`);
+
+if (o.showIcon && iconStr) {
+  iconEl.style.fontSize = `${o.maxFontEm * (o.iconScale ?? 1)}em`;
+}
+
+text.style.fontSize = `${o.maxFontEm}em`;
+text.style.setProperty("--oni-weight", String(o.fontWeight|0));
+text.style.setProperty("--oni-track", `${o.letterSpacing}em`);
+text.style.setProperty("--oni-font", o.fontFamily);
+
+// We skip text stroke (px-only). Keep glow if you want:
+applyTextFill(text, o.text);
+applyTextGlow(text, o.glowColor, o.textShadowStrength);
+
+// Auto-fit scaling calc: we can still measure widths in pixels;
+// CSS will convert em widths to device pixels for the DOM rect.
+const available = card.clientWidth - (PAD_X_EM * 2 * parseFloat(getComputedStyle(document.body).fontSize || "16"));
+const fullWidth = measureWidth(line);
+let scale = fullWidth > 0 ? Math.min(1, available / fullWidth) : 1;
+const minScale = (o.minFontEm / o.maxFontEm);
+if (scale < minScale) {
+  text.style.fontSize = `${o.minFontEm}em`;
+  if (iconEl) iconEl.style.fontSize = `${o.minFontEm * (o.iconScale ?? 1)}em`;
+  await nextFrame();
+  const wMin = measureWidth(line);
+  scale = wMin > 0 ? Math.min(1, available / wMin) : 1;
+}
+line.style.transform = `scale(${scale})`;
+
+// Enter/exit vectors in em
+const dir = String(o.enterFrom||"up").toLowerCase();
+const inVec  = (dir === "down") ? "translateY(1em)" :
+               (dir === "left") ? "translateX(-1.375em)" :
+               (dir === "right")? "translateX(1.375em)" : "translateY(-1em)";
+const outVec = (dir === "down") ? "translateY(0.875em)" :
+               (dir === "left") ? "translateX(-1.125em)" :
+               (dir === "right")? "translateX(1.125em)" : "translateY(-0.875em)";
+card.style.setProperty("--oni-enter-transform", inVec);
+card.style.setProperty("--oni-exit-transform",  outVec);
+    
       if (scale < minScale) {
         text.style.fontSize = `${o.minFontPx}px`;
         if (iconEl) iconEl.style.fontSize = `${o.minFontPx * (o.iconScale ?? 1)}px`;
