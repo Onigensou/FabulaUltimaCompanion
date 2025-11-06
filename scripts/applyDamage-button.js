@@ -123,116 +123,102 @@ try {
   const meta  = payload?.meta || {};
 
   // 1) Eligibility (skip normal weapon Attacks)
-  const listType = String(meta.listType || "").trim();
-  const skillTypeRaw = String(core.skillTypeRaw || "").trim().toLowerCase();
+  const listType      = String(meta.listType || "").trim();
+  const skillTypeRaw  = String(core.skillTypeRaw || "").trim().toLowerCase();
   const sourceTypeRaw = String(advPayload?.sourceType || "").trim().toLowerCase();
 
   const isAttackish = (listType === "Attack") || (sourceTypeRaw === "weapon");
-  const isSpellish  = !!meta.isSpellish;
+  const isSpellish2 = !!meta.isSpellish;
   const isActive    = (listType === "Active");
-  const isPassive   = (skillTypeRaw === "passive");  // you asked to allow Passive, too
+  const isPassive   = (skillTypeRaw === "passive");
 
-  const shouldShow = !isAttackish && (isSpellish || isActive || isPassive);
+  const shouldShow = !isAttackish && (isSpellish2 || isActive || isPassive);
+  if (!shouldShow) throw 0;
 
-  if (shouldShow) {
-    // 2) Title
-    let title = String(core.skillName || "—");
+  // 2) Title
+  const title = String(core.skillName || "—");
 
-    // 3) Action type → emoji preset from demo
-    let actionType = "skill";
-    if (isSpellish && (listType === "Offensive Spell")) actionType = "offensiveSpell";
-    else if (isSpellish) actionType = "spell";
-    else if (isPassive)  actionType = "passive";
-    // (we never treat it as "attack" here, since we skip attacks)
+  // 3) Action type → emoji preset
+  let actionType = "skill";
+  if (isSpellish2 && (listType === "Offensive Spell")) actionType = "offensiveSpell";
+  else if (isSpellish2) actionType = "spell";
+  else if (isPassive)   actionType = "passive";
 
-    // 4) Palette by disposition (attacker)
-    let disp = 0;
-    try {
-      const aUuid = args.attackerUuid || meta.attackerUuid || null;
-      if (aUuid) {
-        const doc = await fromUuid(aUuid);
-        const tok = (doc?.documentName === "Token") ? doc : (doc?.token ?? null);
-        disp = Number(tok?.disposition ?? 0);
-      }
-    } catch {}
+  // 4) Palette by disposition (attacker) — includes Secret (-2)
+  let disp = 0;
+  try {
+    const aUuid = args.attackerUuid || meta.attackerUuid || null;
+    if (aUuid) {
+      const doc = await fromUuid(aUuid);
+      const tok = (doc?.documentName === "Token") ? doc : (doc?.token ?? null);
+      disp = Number(tok?.disposition ?? 0);
+    }
+  } catch {}
 
-    // simple themes: hostile=tomato-ish, friendly=blue-ish, neutral=gold-ish
-    const THEMES = {
-      hostile: { bg: "#000000", accent: "#d98c6f", text: ["#fff","#ffd1b3"], glowColor: "#ffffff" },
-      friendly:{ bg: "#000000", accent: "#7fb5ff", text: ["#fff","#d7e9ff"], glowColor: "#ffffff" },
-      neutral: { bg: "#000000", accent: "#d9b56f", text: ["#fff","#ffe7b0"], glowColor: "#ffffff" }
-    };
-    const theme = (disp === -1) ? THEMES.hostile : (disp === 1 ? THEMES.friendly : THEMES.neutral);
+  const THEMES = {
+    hostile: { bg: "#000000", accent: "#ff5a5a", text: ["#ffffff","#ffd6d6"], glowColor: "#ffffff" }, // RED
+    friendly:{ bg: "#000000", accent: "#7fb5ff", text: ["#ffffff","#d7e9ff"], glowColor: "#ffffff" }, // BLUE
+    neutral: { bg: "#000000", accent: "#ffd866", text: ["#ffffff","#fff1b3"], glowColor: "#ffffff" }, // YELLOW
+    secret:  { bg: "#000000", accent: "#a0a4a8", text: ["#ffffff","#e5e7ea"], glowColor: "#ffffff" }  // GREY
+  };
+  const theme =
+    (disp === -2) ? THEMES.secret  :
+    (disp === -1) ? THEMES.hostile :
+    (disp ===  1) ? THEMES.friendly: THEMES.neutral;
 
-    // 5) Options (safe defaults matching your demo vibe)
-    const options = {
-  // — Visual identity (kept)
-  actionType,
-  bg: theme.bg,
-  accent: theme.accent,
-  text: theme.text,
-  glowColor: theme.glowColor,
-  border: "rgba(255,255,255,.10)",
-  dropShadow: "0 10px 22px rgba(0,0,0,.35)",
-  maskEdges: true,
-  edgeFade: 0.12,
+  // 5) Build ALL options we want to use (including enterFrom: "left")
+  const options = {
+    // Identity
+    actionType,
+    bg: theme.bg,
+    accent: theme.accent,
+    text: theme.text,
+    glowColor: theme.glowColor,
+    border: "rgba(255,255,255,.10)",
+    dropShadow: "0 10px 22px rgba(0,0,0,.35)",
+    maskEdges: true,
+    edgeFade: 0.12,
 
-  // — Placement / sizing (match your DEMO)
-  xAlign: "center",   // center like your screenshot
-  offsetX: 0,
-  offsetY: 100,       // LOWER the bar like DEMO (was 12)
-  fixedWidth: 640,
-  autoWidth: false,
-  cardScale: 0.20,    // slim bar look like DEMO (was ~0.95)
-
-  // — Timing / motion (DEMO-ish)
-  inMs: 350,
-  holdMs: 1500,
-  outMs: 400,
-  enterFrom: "left",  // DEMO enters from the left
-
-  // — Text styling (match DEMO feel)
-  maxFontPx: 28,
-  minFontPx: 16,
-  letterSpacing: 0.06,
-  fontWeight: 0,      // demo used 0 (use font default/regular)
-  upperCase: false,
-  fontFamily: "Pixel Operator, system-ui, sans-serif",
-
-  // IMPORTANT: no glow
-  textShadowStrength: 0.0,
-
-  // Subtle outline (same as demo)
-  textStrokePx: 0.1,
-  textStrokeColor: "rgba(0,0,0,0.55)",
-
-  // Emoji icon spacing/scale like demo
-  showIcon: true,
-  iconScale: 0.93,
-  iconGapPx: 10
-};
-
-    // 6) Fire broadcast (multi-client)
-    await window.FUCompanion?.api?.namecardBroadcast?.({
-      title,
-      options: {
-       // your existing visual options...
+    // Placement / sizing
     xAlign: "center",
     offsetX: 0,
     offsetY: 100,
     fixedWidth: 640,
+    autoWidth: false,
     cardScale: 0.20,
 
-    // NEW scaling controls (optional overrides)
-    baselineVh: 900,   // try 900–980 for bigger baseline UI
-    scaleMin: 0.80,    // allow a bit less shrink
-    scaleMax: 1.50,    // allow a bit more growth
+    // Timing / motion
+    inMs: 350,
+    holdMs: 1500,
+    outMs: 400,
+    enterFrom: "left", // ← slide in from LEFT
+
+    // Text styling
+    maxFontPx: 28,
+    minFontPx: 16,
+    letterSpacing: 0.06,
+    fontWeight: 0,
+    upperCase: false,
+    fontFamily: "Pixel Operator, system-ui, sans-serif",
+    textShadowStrength: 0.0,
+    textStrokePx: 0.1,
+    textStrokeColor: "rgba(0,0,0,0.55)",
+    showIcon: true,
+    iconScale: 0.93,
+    iconGapPx: 10,
+
+    // Per-client scaling (keep your knobs)
+    baselineVh: 900,
+    scaleMin: 0.80,
+    scaleMax: 1.50,
     scaleMode: "vh"
-      }
-      });
-  }
+  };
+
+  // 6) Broadcast using the FULL options object (this was the bug)
+  await window.FUCompanion?.api?.namecardBroadcast?.({ title, options });
+
 } catch (e) {
-  console.warn("[fu-chatbtn] NameCard skipped:", e);
+  if (e !== 0) console.warn("[fu-chatbtn] NameCard skipped:", e);
 }
 // (END BLOCK)
 // ──────────────────────────────────────────────────────────
