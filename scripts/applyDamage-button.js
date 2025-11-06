@@ -213,7 +213,23 @@ try {
 };
 
     // 6) Fire broadcast (multi-client)
-    await window.FUCompanion?.api?.namecardBroadcast?.({ title, options });
+    await window.FUCompanion?.api?.namecardBroadcast?.({
+      title,
+      options: {
+       // your existing visual options...
+    xAlign: "center",
+    offsetX: 0,
+    offsetY: 100,
+    fixedWidth: 640,
+    cardScale: 0.20,
+
+    // NEW scaling controls (optional overrides)
+    baselineVh: 900,   // try 900–980 for bigger baseline UI
+    scaleMin: 0.80,    // allow a bit less shrink
+    scaleMax: 1.50,    // allow a bit more growth
+    scaleMode: "vh"
+      }
+      });
   }
 } catch (e) {
   console.warn("[fu-chatbtn] NameCard skipped:", e);
