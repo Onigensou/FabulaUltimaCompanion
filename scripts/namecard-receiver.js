@@ -61,7 +61,7 @@
   }
 
   // ---------- Helpers ----------
-  const clamp01 = v => Math.max(0, Math.min(1, Number(v||0)));
+    const clamp01 = v => Math.max(0, Math.min(1, Number(v||0)));
   const nextFrame = () => new Promise(r => requestAnimationFrame(() => r()));
   const wait = (ms) => new Promise(r => setTimeout(r, ms));
   function hexToRgb(hex){
@@ -71,6 +71,29 @@
     if ([r,g,b].some(n=>Number.isNaN(n))) return null; return { r,g,b };
   }
   function measureWidth(el){ return Math.ceil(el.getBoundingClientRect().width); }
+
+  // --- NEW: Per-client scale helper ---------------------------------
+  // Uses viewport height (CSS px) as the normalizer so OS scaling and browser zoom
+  // are naturally accounted for. You can tune baselineVh / min / max in options.
+  function getClientScale({ baselineVh = 900, min = 0.75, max = 1.40, mode = "vh" } = {}) {
+    // mode "vh": scale by viewport height ratio
+    // (visualViewport is best, falls back to innerHeight)
+    const vv = window.visualViewport;
+    const cssH = (vv && vv.height) ? vv.height : window.innerHeight;
+
+    let s = 1;
+    if (mode === "vh") {
+      s = cssH > 0 ? (cssH / Number(baselineVh)) : 1;
+    } else {
+      // future modes could be added here (e.g., "vw", "minDim")
+      s = 1;
+    }
+
+    // Clamp to avoid extremes
+    s = Math.max(min, Math.min(max, s));
+    return s;
+  }
+  // -------------------------------------------------------------------
   function applyTextFill(el, textOpt){
     if (Array.isArray(textOpt) && textOpt.length >= 2){
       el.style.background = `linear-gradient(180deg, ${textOpt.join(", ")})`;
@@ -123,7 +146,7 @@ function hexOrRgba(col, alpha="1"){
     if (!layer) return;
 
     // Defaults (safe)
-    const o = Object.assign({
+        const o = Object.assign({
       inMs: 350, holdMs: 1500, outMs: 400,
       xAlign: "center", offsetX: 0, offsetY: 8,
       fixedWidth: 640, autoWidth: false, cardScale: 1.0,
@@ -134,7 +157,13 @@ function hexOrRgba(col, alpha="1"){
       letterSpacing: 0.06, fontWeight: 900, upperCase: false, textShadowStrength: 0.0,
       fontFamily: "system-ui, sans-serif", textStrokePx: 0.0, textStrokeColor: "rgba(0,0,0,0.55)",
       showIcon: true, actionType: "skill", iconOverride: "", iconGapPx: 10, iconScale: 0.93,
-      enterFrom: "up", easingIn: "cubic-bezier(.22,.9,.24,1)", easingOut: "cubic-bezier(.2,.7,.4,1)"
+      enterFrom: "up", easingIn: "cubic-bezier(.22,.9,.24,1)", easingOut: "cubic-bezier(.2,.7,.4,1)",
+
+      // --- NEW (optional) per-client scaling knobs ---
+      baselineVh: 900,     // treat 900px viewport height as "reference"
+      scaleMin: 0.75,      // don’t shrink below 75%
+      scaleMax: 1.40,      // don’t grow above 140%
+      scaleMode: "vh"      // scale by viewport height ratio
     }, opts || {});
 
     const ACTION_ICONS = { skill:"💥", offensiveSpell:"⚡️", spell:"📕", attack:"⚔️", passive:"📜" };
@@ -145,15 +174,34 @@ function hexOrRgba(col, alpha="1"){
       const card = document.createElement("div");
       card.className = "oni-namecard";
 
-      if (o.autoWidth) { card.style.width = "max-content"; card.style.maxWidth = "92vw"; }
+           if (o.autoWidth) { card.style.width = "max-content"; card.style.maxWidth = "92vw"; }
       else { card.style.width = `${o.fixedWidth}px`; card.style.maxWidth = "92vw"; }
+
+      // --- NEW: compute client scale and apply to placement ---
+      const clientScale = getClientScale({
+        baselineVh: o.baselineVh,
+        min: o.scaleMin,
+        max: o.scaleMax,
+        mode: o.scaleMode
+      });
+      const finalScale  = (o.cardScale ?? 1) * clientScale;
+      const offXScaled  = (o.offsetX || 0) * clientScale;
+      const offYScaled  = (o.offsetY || 0) * clientScale;
 
       const xMap = { left: "start", center: "center", right: "end" };
       card.style.justifySelf = (xMap[o.xAlign] ?? "center");
-      card.style.marginTop = `${o.offsetY|0}px`;
-      if (o.xAlign === "left") card.style.marginLeft = `${o.offsetX|0}px`;
-      else if (o.xAlign === "right") card.style.marginRight = `${o.offsetX|0}px`;
-      else card.style.transform = `scale(${o.cardScale ?? 1}) translateX(${o.offsetX|0}px)`;
+      card.style.marginTop = `${Math.round(offYScaled)}px`;
+
+      if (o.xAlign === "left") {
+        card.style.marginLeft = `${Math.round(offXScaled)}px`;
+        card.style.transform  = `scale(${finalScale})`;
+      } else if (o.xAlign === "right") {
+        card.style.marginRight = `${Math.round(offXScaled)}px`;
+        card.style.transform   = `scale(${finalScale})`;
+      } else {
+        // centered: keep your translateX behavior
+        card.style.transform = `scale(${finalScale}) translateX(${Math.round(offXScaled)}px)`;
+      }
 
       const rgb = hexToRgb(o.bg) || { r:0,g:0,b:0 };
       card.style.setProperty("--oni-radius", `${o.radius}px`);
