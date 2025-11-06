@@ -15,14 +15,41 @@
   const FALLBACK_IMG = "icons/svg/mystery-man.svg";
   const CARD_MARKER  = "fu-damage-card";    // <— unique marker we’ll detect in render hook
 
-  async function tokenImgFromUuid(uuid) {
-    try {
-      if (!uuid) return FALLBACK_IMG;
-      const doc = await fromUuid(uuid);
-      const tok = doc?.isToken ? doc : (doc?.token ?? doc);
-      return tok?.texture?.src || tok?.document?.texture?.src || tok?.img || tok?.actor?.img || FALLBACK_IMG;
-    } catch { return FALLBACK_IMG; }
+  // Prefer the Actor's Profile/Portrait image for cards.
+// Falls back to token texture if the actor image isn't available.
+async function tokenImgFromUuid(uuid) {
+  try {
+    if (!uuid) return FALLBACK_IMG;
+
+    const doc = await fromUuid(uuid);
+
+    // Normalize to TokenDocument (tok) and Actor (actor)
+    const tok =
+      doc?.isToken ? doc :
+      (doc?.token ?? null);
+
+    const actor =
+      doc?.actor ??
+      tok?.actor ??
+      (doc?.type === "Actor" ? doc : null) ??
+      tok?.document?.actor ??
+      null;
+
+    // 1) Use Actor profile image (portrait) FIRST
+    if (actor?.img) return actor.img;
+
+    // 2) Then try the prototype token portrait (static)
+    if (actor?.prototypeToken?.texture?.src) return actor.prototypeToken.texture.src;
+
+    // 3) Finally fall back to whatever the token is using (may be animated)
+    return tok?.texture?.src ||
+           tok?.document?.texture?.src ||
+           tok?.img ||
+           FALLBACK_IMG;
+  } catch {
+    return FALLBACK_IMG;
   }
+}
   async function guessAttackerByName(name) {
     const t = canvas?.tokens?.placeables?.find(t => (t.actor?.name || t.name) === name);
     return t?.document?.uuid ?? "";
