@@ -156,15 +156,20 @@ try {
   } catch {}
 
   const THEMES = {
-    hostile: { bg: "#000000", accent: "#ff5a5a", text: ["#ffffff","#ffd6d6"], glowColor: "#ffffff" }, // RED
-    friendly:{ bg: "#000000", accent: "#7fb5ff", text: ["#ffffff","#d7e9ff"], glowColor: "#ffffff" }, // BLUE
-    neutral: { bg: "#000000", accent: "#ffd866", text: ["#ffffff","#fff1b3"], glowColor: "#ffffff" }, // YELLOW
-    secret:  { bg: "#000000", accent: "#a0a4a8", text: ["#ffffff","#e5e7ea"], glowColor: "#ffffff" }  // GREY
-  };
-  const theme =
-    (disp === -2) ? THEMES.secret  :
-    (disp === -1) ? THEMES.hostile :
-    (disp ===  1) ? THEMES.friendly: THEMES.neutral;
+  hostile: { bg: "#000000", accent: "#ff5a5a", text: ["#ffffff","#ffd6d6"], glowColor: "#ffffff" }, // RED
+  friendly:{ bg: "#000000", accent: "#7fb5ff", text: ["#ffffff","#d7e9ff"], glowColor: "#ffffff" }, // BLUE
+  neutral: { bg: "#000000", accent: "#ffd866", text: ["#ffffff","#fff1b3"], glowColor: "#ffffff" }, // YELLOW
+  secret:  { bg: "#000000", accent: "#a0a4a8", text: ["#ffffff","#e5e7ea"], glowColor: "#ffffff" }  // GREY
+};
+
+// Be defensive: coerce to a clean integer and provide a default fallback.
+const d = Number.isFinite(disp) ? Math.trunc(Number(disp)) : 0;
+
+const theme =
+  (d === -2) ? THEMES.secret  :
+  (d === -1) ? THEMES.hostile :
+  (d ===  1) ? THEMES.friendly:
+  /* default (includes 0 / unexpected) */ THEMES.neutral;
 
   // 5) Build ALL options we want to use (including enterFrom: "left")
   const options = {
