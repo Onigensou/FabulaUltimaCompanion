@@ -128,38 +128,31 @@
   --mp-a: ${TONE.mpA}; --mp-b: ${TONE.mpB};
   --zp-a: ${TONE.zpA}; --zp-b: ${TONE.zpB};
   --tick: ${TONE.tick};
-  position: fixed; left:1.25rem; bottom:3.25rem; z-index:50;
+  position: fixed; left:1.25rem; bottom:9rem; z-index:40;
   pointer-events:none; display:grid; grid-auto-flow:column; gap:.6rem;
-  transform-origin:bottom left;
+  transform-origin:bottom left; transform: scale(0.78:)
 }
 .oni2-card{pointer-events:auto; display:inline-flex; align-items:flex-start; gap:.6rem; opacity:0; transform:translateX(-24px); transition:opacity 420ms ease, transform 420ms ease;}
 .oni2-card.oni2-appear{opacity:1; transform:translateX(0);}
 /* Floaty portrait with no background box */
 .oni2-portrait{
-  pointer-events: none;
+  pointer-events:none;
   background: transparent !important;
   filter: drop-shadow(0 18px 32px rgba(0,0,0,.55));
 }
 .oni2-portrait img{
-  display: block;
-  width: auto; height: auto;
-  /* Bigger portrait */
-  max-width:  min(22vmin, 280px);
-  max-height: min(22vmin, 280px);
-  object-fit: contain;
-  /* Ensure no “box” artifacts */
+  display:block; width:auto; height:auto; object-fit:contain;
+  max-width:  min(24vmin, 360px);   /* <-- --oni2-portrait-vmin / px */
+  max-height: min(24vmin, 360px);
   background: transparent !important;
-  border: none !important;
-  outline: none !important;
-  box-shadow: none !important;
-  border-radius: 0 !important;
+  border: none !important; outline: none !important; box-shadow: none !important;
 }
 /* Translucent panel: 0 opacity background, keep soft shadow for depth */
 .oni2-panel{
   position: relative;
   min-width: 22rem; max-width: 28rem;
   /* 0 opacity — fully see-through */
-  background: linear-gradient(180deg, rgba(var(--top), 0), rgba(var(--bot), 0)) !important;
+  background: linear-gradient(180deg, rgba(18,18,20,0), rgba(12,12,14,0)) !important; /* <-- --oni2-panel-op: 0 */
   border: none;
   border-radius: .9rem;
   padding: 1rem;
@@ -170,21 +163,23 @@
 }
 .oni2-top{display:flex; align-items:center; gap:.5rem; margin-bottom:.12rem;}
 .oni2-name{
-  color:#fff;
-  transform:skewX(-8deg);
+  font-family:var(--ui-font); font-size:.95rem; font-weight:700; letter-spacing:.02em; color:#fff; transform:skewX(-8deg);
   text-shadow:
-    0 1px 2px rgba(0,0,0,.95),
-    0 2px 6px rgba(0,0,0,.55),
+    0 1px 3px rgba(0,0,0,.95),
+    0 2px 9px rgba(0,0,0,.55),
     0 0 1px rgba(0,0,0,.85);
+  flex:1 1 auto;
 }
 .oni2-ip{display:flex; gap:6px;} .oni2-ip i{width:12px; height:12px; border-radius:999px; background:rgba(255,255,255,.25); box-shadow:0 0 0 1px rgba(0,0,0,.25) inset;} .oni2-ip i.on{background:#ffb84a;}
 .oni2-hpbig{
-  color:#fff;
-  /* italic HP number */
-  font-style: italic;
+  position:relative; margin:.05rem 0 .45rem 0;
+  font-family:var(--num-font);
+  font-size: 2.28rem;     /* <-- --oni2-hp-rem */
+  font-style: italic;     /* <-- --oni2-italic-hp */
+  font-weight:400; letter-spacing:.5px; color:#fff;
   text-shadow:
-    0 2px 3px rgba(0,0,0,.95),
-    0 4px 12px rgba(0,0,0,.55),
+    0 2px 4.5px rgba(0,0,0,.95),
+    0 4px 18px rgba(0,0,0,.55),
     0 0 1px rgba(0,0,0,.85);
 }
 .oni2-mpmini{position:absolute; right:.5rem; bottom:.1rem; display:flex; align-items:baseline; gap:.4rem;}
@@ -194,11 +189,13 @@
     0 0 1px rgba(0,0,0,.85);
 }
 .oni2-mpmini .num{
-  /* italic MP number */
-  font-style: italic;
+  font-family:var(--num-font);
+  font-size: 1.58rem;     /* <-- --oni2-mp-rem */
+  font-style: italic;     /* <-- --oni2-italic-mp */
+  color:#fff;
   text-shadow:
-    0 2px 3px rgba(0,0,0,.95),
-    0 4px 12px rgba(0,0,0,.55),
+    0 2px 4.5px rgba(0,0,0,.95),
+    0 4px 18px rgba(0,0,0,.55),
     0 0 1px rgba(0,0,0,.85);
 }
 .oni2-bar{position:relative; height:1rem; border-radius:.6rem; overflow:hidden; border:1px solid rgba(255,255,255,.20); background:linear-gradient(180deg, rgba(0,0,0,.45), rgba(0,0,0,.65)); box-shadow:inset 0 0 0 1px rgba(0,0,0,.65);}
@@ -208,10 +205,11 @@
 .oni2-zp{height:.65rem;} .oni2-zp .oni2-fill{background:linear-gradient(90deg, var(--zp-a), var(--zp-b));}
 .oni2-zprow{display:flex; align-items:center; gap:.5rem; margin-top:.25rem;}
 .oni2-zplabel{
-  color:#fff;
+  font-family:var(--zp-font); font-weight:700; letter-spacing:.06em; color:#fff;
   text-shadow:
-    0 2px 3px rgba(0,0,0,.95),
+    0 2px 4.5px rgba(0,0,0,.95),
     0 0 1px rgba(0,0,0,.85);
+  user-select:none;
 }
 .oni2-zp .oni2-fill.oni2-glow{filter:drop-shadow(0 0 6px rgba(80,140,255,.65)) drop-shadow(0 0 12px rgba(80,140,255,.35)); animation:oni2ZpGlow 1.2s ease-in-out infinite alternate;}
 @keyframes oni2ZpGlow{0%{box-shadow:0 0 0 rgba(80,140,255,0)}100%{box-shadow:0 0 22px rgba(80,140,255,.55)}}
