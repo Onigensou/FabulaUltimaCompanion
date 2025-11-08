@@ -11,14 +11,18 @@
   const ACTION_BUILD = "ONIHUD2_BUILD";
   const ACTION_KILL  = "ONIHUD2_DESTROY";
 
-  window[HUD_NS] = window[HUD_NS] || {
-    // Map<combatId, {root:HTMLElement, cards:Map<actorId,CardRefs>, off:Fn[]}>
+    window[HUD_NS] = window[HUD_NS] || {
     byCombat: new Map(),
-    // Hook refs for off() / dedupe
     hooks: {},
-    // NEW: keep the socket ref once registered
-    socket: null
+    socket: null,
+    debug: true // flip to false later if too noisy
   };
+
+  // Tiny tagged logger so we can filter easily
+  function dlog(...args){
+    if (!window[HUD_NS].debug) return;
+    console.log("%c[OniHud2 DEBUG]", "color:#9cf;background:#123;padding:2px 6px;border-radius:4px;", ...args);
+  }
 
   // ===== System paths (same as before) ======================================
   const PATH_HP_VAL = "system.props.current_hp";
@@ -107,6 +111,7 @@
   }
 
   function injectStyles(){
+  dlog("injectStyles: check style tag", { hasStyle: !!document.getElementById(STYLE_ID) });
     if(document.getElementById(STYLE_ID)) return;
     mountFonts();
     const css=`
@@ -248,6 +253,7 @@
 
   // ===== per-combat owner object ============================================
   function makeOwnerFor(combat){
+  dlog("makeOwnerFor: create owner", { combatId: combat?.id });
     const id = combat.id;
     // root per combat
     const root = document.createElement("div");
@@ -280,39 +286,70 @@
   }
 
   // ===== build / destroy for a specific combat ==============================
-  async function buildForCombat(combat){
-    // clean any previous owner for same id just in case
-    destroyForCombat(combat);
-
-    injectStyles();
-    const owner = makeOwnerFor(combat);
-    window[HUD_NS].byCombat.set(combat.id, owner);
-
-    const slots = await fetchPartySlots();
-    const picks = mapPartyToCombat(combat, slots);
-    if (!picks.length) return;
-
-    for (const entry of picks){
-      const card = makeCard(entry.actor, entry.combatant.token ?? entry.actor?.prototypeToken);
-      if (!card) continue;
-      // name setter for hooks
-      const setName = (nm)=>{ const el = card.el.querySelector(".oni2-name"); if (el) el.textContent = nm; };
-      owner.root.appendChild(card.el);
-      owner.cards.set(entry.actor.id, card);
-      owner.attachActorHooks(entry.actor.id, card, setName);
-    }
-    owner.scale();
-  }
-
-    function destroyForCombat(combat){
+    async function buildForCombat(combat){
     try{
+      dlog("buildForCombat: enter", { combatId: combat?.id, existingOwners: Array.from(window[HUD_NS].byCombat.keys()) });
+      // clean any previous owner for same id just in case
+      destroyForCombat(combat);
+
+      injectStyles();
+      const owner = makeOwnerFor(combat);
+      window[HUD_NS].byCombat.set(combat.id, owner);
+      dlog("buildForCombat: owner created", { combatId: combat.id });
+
+      const slots = await fetchPartySlots();
+      dlog("buildForCombat: party slots", slots);
+      const picks = mapPartyToCombat(combat, slots);
+      dlog("buildForCombat: mapped picks", picks.map(p=>({slot:p.slot, actor:p.actor?.name, token:p.token?.name})));
+      if (!picks.length){
+        dlog("buildForCombat: no party picks, early return");
+        return;
+      }
+
+      for (const entry of picks){
+        const card = makeCard(entry.actor, entry.combatant.token ?? entry.actor?.prototypeToken);
+        if (!card){ dlog("buildForCombat: skip card (missing hp?) for actor", entry.actor?.name); continue; }
+        const setName = (nm)=>{ const el = card.el.querySelector(".oni2-name"); if (el) el.textContent = nm; };
+        owner.root.appendChild(card.el);
+        owner.cards.set(entry.actor.id, card);
+        owner.attachActorHooks(entry.actor.id, card, setName);
+      }
+      owner.scale();
+
+      dlog("buildForCombat: success", { combatId: combat.id, cardCount: owner.cards.size, mapSize: window[HUD_NS].byCombat.size });
+    }catch(e){
+      console.error("[OniHud2 buildForCombat] Error:", e);
+    }
+  }
+     function destroyForCombat(combat){
+    try{
+      dlog("destroyForCombat: enter", { combatId: combat?.id, mapHas: window[HUD_NS].byCombat.has(combat?.id), mapKeys: Array.from(window[HUD_NS].byCombat.keys()) });
       const owner = window[HUD_NS].byCombat.get(combat?.id);
-      if (!owner) return;
-      for (const fn of owner.off){ try{ fn(); }catch{} }
+      if (!owner){ dlog("destroyForCombat: no owner found for combat", combat?.id); return; }
+
+      // unhook
+      let offCount = 0;
+      for (const fn of owner.off){
+        try{ fn(); offCount++; }catch(e){ console.warn("[OniHud2 destroy] off error:", e); }
+      }
       owner.off.length = 0;
-      try{ owner.root.remove(); }catch{}
+
+      // remove DOM
+      try{
+        if (owner.root && owner.root.parentNode){
+          owner.root.remove();
+          dlog("destroyForCombat: root removed");
+        } else {
+          dlog("destroyForCombat: root already absent");
+        }
+      }catch(e){
+        console.warn("[OniHud2 destroy] root.remove error:", e);
+      }
+
       owner.cards.clear();
       window[HUD_NS].byCombat.delete(combat.id);
+
+      dlog("destroyForCombat: success", { combatId: combat?.id, offCount, remainingOwners: Array.from(window[HUD_NS].byCombat.keys()) });
     }catch(e){
       console.warn("[OniHud2] destroy error:", e);
     }
@@ -321,39 +358,66 @@
   // ─────────────────────────────────────────────────────────────
   // NEW: socket setup + action handlers (every client runs these)
   // ─────────────────────────────────────────────────────────────
-  function ensureSocket(){
-    if (window[HUD_NS].socket) return window[HUD_NS].socket;
+    function ensureSocket(){
+    if (window[HUD_NS].socket) {
+      dlog("ensureSocket: already have socket");
+      return window[HUD_NS].socket;
+    }
     const sockMod = game.modules.get("socketlib");
-    if (!sockMod?.active || !window.socketlib) return null;
+    if (!sockMod?.active || !window.socketlib) {
+      dlog("ensureSocket: socketlib NOT available (mod active? ", !!sockMod?.active, ")");
+      return null;
+    }
     const socket = socketlib.registerModule(MODULE_ID);
+    dlog("ensureSocket: socket registered for", MODULE_ID);
+
     // When any client receives these actions, it builds/tears down locally
     socket.register(ACTION_BUILD, ({ combatId } = {}) => {
-      const c = game.combats?.get(combatId) || game.combat;
-      if (c) buildForCombat(c);
+      dlog("SOCKET RX:", ACTION_BUILD, { combatId, onUser: game.user?.id });
+      try {
+        const c = game.combats?.get(combatId) || game.combat;
+        if (!c) return dlog("SOCKET RX build: combat not found", combatId);
+        buildForCombat(c);
+      } catch (e) {
+        console.error("[OniHud2 SOCKET RX build] Error:", e);
+      }
     });
+
     socket.register(ACTION_KILL, ({ combatId } = {}) => {
-      const c = game.combats?.get(combatId) || game.combat;
-      if (c) destroyForCombat(c);
+      dlog("SOCKET RX:", ACTION_KILL, { combatId, onUser: game.user?.id });
+      try {
+        const c = game.combats?.get(combatId) || game.combat;
+        if (!c) return dlog("SOCKET RX kill: combat not found", combatId);
+        destroyForCombat(c);
+      } catch (e) {
+        console.error("[OniHud2 SOCKET RX kill] Error:", e);
+      }
     });
+
     window[HUD_NS].socket = socket;
     return socket;
   }
 
   // GM helper to signal all clients, with local fallback if no socketlib
-  function broadcastAll(action, payload){
+    function broadcastAll(action, payload){
+    dlog("broadcastAll:", action, payload, { isGM: game.user?.isGM });
     const socket = ensureSocket();
-    if (socket) return socket.executeForEveryone(action, payload);
+    if (socket) {
+      return socket.executeForEveryone(action, payload);
+    }
+    dlog("broadcastAll: NO SOCKET, falling back to local only");
     // Fallback (no socketlib): run locally so at least one client sees it
-    if (action === ACTION_BUILD) {
+    try{
       const c = game.combats?.get(payload?.combatId) || game.combat;
-      if (c) buildForCombat(c);
-    } else if (action === ACTION_KILL) {
-      const c = game.combats?.get(payload?.combatId) || game.combat;
-      if (c) destroyForCombat(c);
+      if (!c) return dlog("broadcastAll fallback: combat not found", payload?.combatId);
+      if (action === ACTION_BUILD) buildForCombat(c);
+      else if (action === ACTION_KILL) destroyForCombat(c);
+    }catch(e){
+      console.error("[OniHud2 broadcastAll] Error:", e);
     }
   }
 
-    // ===== hook wiring (deduped, socket broadcast) ============================
+  // ===== hook wiring (deduped, socket broadcast) ============================
   // Off existing hooks if reloaded
   if (window[HUD_NS].hooks.combatStart)  Hooks.off("combatStart",  window[HUD_NS].hooks.combatStart);
   if (window[HUD_NS].hooks.combatEnd)    Hooks.off("combatEnd",    window[HUD_NS].hooks.combatEnd);
@@ -361,11 +425,15 @@
   if (window[HUD_NS].hooks.updateCombat) Hooks.off("updateCombat", window[HUD_NS].hooks.updateCombat);
 
   // Make sure socket is available ASAP
-  Hooks.once("ready", () => ensureSocket());
+  Hooks.once("ready", () => {
+    dlog("Hooks.ready fired; ensureSocket");
+    ensureSocket();
+  });
 
   // GM: broadcast build when combat starts
   window[HUD_NS].hooks.combatStart = (combat) => {
     try {
+      dlog("HOOK combatStart", { isGM: game.user?.isGM, combatId: combat?.id });
       if (!game.user.isGM) return;
       broadcastAll(ACTION_BUILD, { combatId: combat.id });
     } catch (err) { console.warn("[OniHud2] combatStart:", err); }
@@ -374,6 +442,7 @@
   // GM: broadcast destroy when combat ends (explicit end path)
   window[HUD_NS].hooks.combatEnd = (combat) => {
     try {
+      dlog("HOOK combatEnd", { isGM: game.user?.isGM, combatId: combat?.id });
       if (!game.user.isGM) return;
       broadcastAll(ACTION_KILL, { combatId: combat.id });
     } catch (err) { console.warn("[OniHud2] combatEnd:", err); }
@@ -382,6 +451,7 @@
   // GM: also destroy when combat doc is deleted
   window[HUD_NS].hooks.deleteCombat = (combat) => {
     try {
+      dlog("HOOK deleteCombat", { isGM: game.user?.isGM, combatId: combat?.id });
       if (!game.user.isGM) return;
       broadcastAll(ACTION_KILL, { combatId: combat.id });
     } catch (err) { console.warn("[OniHud2] deleteCombat:", err); }
@@ -390,11 +460,15 @@
   // GM: some end flows set active:false / started:false via update
   window[HUD_NS].hooks.updateCombat = (combat, changed) => {
     try {
+      dlog("HOOK updateCombat", { isGM: game.user?.isGM, combatId: combat?.id, changed });
       if (!game.user.isGM) return;
       const ended =
         (Object.prototype.hasOwnProperty.call(changed, "active")  && changed.active  === false) ||
         (Object.prototype.hasOwnProperty.call(changed, "started") && changed.started === false);
-      if (ended) broadcastAll(ACTION_KILL, { combatId: combat.id });
+      if (ended) {
+        dlog("HOOK updateCombat detected end-state; broadcasting destroy");
+        broadcastAll(ACTION_KILL, { combatId: combat.id });
+      }
     } catch (err) { console.warn("[OniHud2] updateCombat:", err); }
   };
 
@@ -405,6 +479,7 @@
 
   // Client-side safety: destroy locally if canvas tears down (scene switch/reload)
   Hooks.on("canvasTearDown", () => {
+    dlog("HOOK canvasTearDown: destroying all owners on this client");
     for (const [cid] of window[HUD_NS].byCombat) {
       const c = game.combats?.get(cid);
       if (c) destroyForCombat(c);
@@ -414,9 +489,10 @@
   // GM: if page reloads while combat is active, rebroadcast a build so all sync
   Hooks.once("canvasReady", () => {
     const c = game.combat ?? game.combats?.active ?? null;
+    dlog("HOOK canvasReady", { isGM: game.user?.isGM, haveCombat: !!c, combatId: c?.id, started: c?.started, round: c?.round, active: c?.active });
     if (game.user.isGM && c && (c.started || (c.round ?? 0) > 0) && c.active !== false) {
+      dlog("canvasReady: rebroadcast BUILD for active combat");
       broadcastAll(ACTION_BUILD, { combatId: c.id });
     }
   });
-
 })();
