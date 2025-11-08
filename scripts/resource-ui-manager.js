@@ -35,7 +35,7 @@
     textDim: "rgba(255,255,255,.86)",
     topRGB: "18,18,20",
     botRGB: "12,12,14",
-    opac:   0.88,
+    opac:   0,
     border: "rgba(255,255,255,0.12)",
     hpGoodA: "#6bd66b",
     hpGoodB: "#2fbf71",
@@ -193,20 +193,28 @@
   background:
     linear-gradient(180deg,
       rgba(var(--hud-top), var(--hud-op)),
-      rgba(var(--hud-bot), var(--hud-op)));
-  border: none; border-radius: .9rem; padding: 1rem;
-  box-shadow: ${PALETTE.shadow}; backdrop-filter: blur(3px);
+      rgba(var(--hud-bot), var(--hud-op)));       /* translucent like demo */
+  border: none;
+  border-radius: .9rem;
+  padding: 1rem;
+  box-shadow: 0 12px 28px rgba(0,0,0,0.45);       /* stronger soft shadow */
+  backdrop-filter: blur(3px);                     /* glassy softening */
   overflow: hidden;
 }
 
 /* Header */
 .fu-top{ display:flex; align-items:center; gap:.5rem; margin-bottom:.12rem; }
 .fu-name{
-  font-family: var(--hud-font-ui);
-  font-size: .95rem; font-weight: 700; letter-spacing: .02em;
-  color: var(--hud-text-dim);
-  text-shadow: 0 1px 2px rgba(0,0,0,.95), 0 2px 6px rgba(0,0,0,.45), 0 0 1px rgba(0,0,0,.85);
-  flex:1 1 auto;
+  font-family: var(--fu-name, "Signika", system-ui, sans-serif);
+  font-weight: 700;
+  letter-spacing: .02em;
+  color: #fff;
+  transform: skewX(-8deg);
+  text-shadow:
+    0 1px 2px rgba(0,0,0,.95),
+    0 2px 6px rgba(0,0,0,.45),
+    0 0 1px rgba(0,0,0,.85);
+  font-size: 0.95rem;
 }
 .fu-ip{ display:flex; gap:6px; }
 .fu-ip i{ width:12px; height:12px; border-radius:999px; background:rgba(255,255,255,.25); box-shadow:0 0 0 1px rgba(0,0,0,.25) inset; }
@@ -214,15 +222,48 @@
 
 /* Big HP + mini MP on same row */
 .fu-hpbig{
-  position: relative; margin:.05rem 0 .45rem 0;
-  font-family: var(--hud-font-num);
-  font-size: 2.25rem; font-weight: 400; letter-spacing: .5px;
-  color: var(--hud-text);
-  text-shadow: 0 2px 3px rgba(0,0,0,.95), 0 4px 10px rgba(0,0,0,.45), 0 0 1px rgba(0,0,0,.85);
+  position: relative;
+  font-family: var(--fu-num, "Cinzel", ui-monospace, monospace);
+  font-size: 2.25rem;
+  font-weight: 400;
+  letter-spacing: .5px;
+  color: #fff;
+  text-shadow:
+    0 2px 3px rgba(0,0,0,.95),
+    0 4px 10px rgba(0,0,0,.45),
+    0 0 1px rgba(0,0,0,.85);
+  margin: .05rem 0 .45rem 0;
 }
 .fu-mpmini{ position:absolute; right:.5rem; bottom:.1rem; display:flex; align-items:baseline; gap:.4rem; }
-.fu-mpmini .tag{ font-family: var(--hud-font-ui); font-weight:700; font-size:.85rem; color:var(--hud-text-dim); text-shadow:0 1px 2px rgba(0,0,0,.95), 0 0 1px rgba(0,0,0,.85); }
-.fu-mpmini .num{ font-family: var(--hud-font-num); font-size:1.26rem; color:var(--hud-text); text-shadow:0 2px 3px rgba(0,0,0,.95), 0 4px 10px rgba(0,0,0,.45), 0 0 1px rgba(0,0,0,.85); }
+.fu-mpmini .tag{
+  font-family: var(--fu-name, "Signika", system-ui, sans-serif);
+  font-weight: 700;
+  font-size: .85rem;
+  color: rgba(255,255,255,.86);
+  text-shadow:
+    0 1px 2px rgba(0,0,0,.95),
+    0 0 1px rgba(0,0,0,.85);
+}
+.fu-mpmini .num{
+  font-family: var(--fu-num, "Cinzel", ui-monospace, monospace);
+  font-size: 1.26rem;
+  color: #fff;
+  text-shadow:
+    0 2px 3px rgba(0,0,0,.95),
+    0 4px 10px rgba(0,0,0,.45),
+    0 0 1px rgba(0,0,0,.85);
+}
+/* ZP row: ensure label is WHITE and glowy */
+.fu-zplabel{
+  font-family: var(--hud-font-zp, "Silkscreen", "Signika", sans-serif);
+  font-weight: 700;
+  letter-spacing: .06em;
+  color: #fff;                                       /* ← force white */
+  text-shadow:
+    0 2px 3px rgba(0,0,0,.95),
+    0 0 1px rgba(0,0,0,.85);
+  user-select: none;
+}
 
 /* Bars */
 .fu-bar{
@@ -329,7 +370,7 @@
 
         <div class="fu-bar fu-hp"><div class="fu-fill hp-fill"></div><div class="fu-ticks"></div></div>
         <div class="fu-bar fu-mp"><div class="fu-fill mp-fill"></div></div>
-        <div class="fu-zprow"><div class="fu-zplabel" style="font-family:var(--hud-font-zp);font-weight:700;letter-spacing:.06em;">ZP</div>
+        <div class="fu-zprow"><div class="fu-zplabel">ZP</div>
           <div class="fu-bar fu-zp" style="flex:1 1 auto; min-width:6rem;"><div class="fu-fill zp-fill"></div></div>
         </div>
       </div>
