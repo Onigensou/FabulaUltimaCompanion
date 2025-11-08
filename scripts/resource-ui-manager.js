@@ -1,20 +1,18 @@
 // scripts/resource-ui-manager.js
-// OniHud2 — Conflict-safe Player Resource HUD (socketlib multi-client + per-combat owner)
-// • GM broadcasts build/destroy over SocketLib so every client mirrors the HUD.
-// • Each client keeps its own per-combat owner (DOM + hooks) and tears down cleanly.
-// • Visuals/animations match the approved DEMO look. Actor.<ID> prefix handled.
-
+// Conflict-safe Player Resource HUD (per-combat owner, robust teardown)
 (() => {
-  // ====== Namespace & socket channel ========================================
-  const HUD_NS       = "OniHud2"; // window[HUD_NS] container
-  const MODULE_ID    = "fabula-ultima-companion";
-  const ACTION_BUILD = "ONIHUD2_BUILD";
-  const ACTION_KILL  = "ONIHUD2_DESTROY";
+  // ===== Unique namespace and per-combat registry ===========================
+  const HUD_NS      = "OniHud2"; // window[HUD_NS]
+  const STYLE_ID    = "oni2-hud-style";
+  const FONTLINK_ID = "oni2-hud-fonts";
+  window[HUD_NS] = window[HUD_NS] || {
+    // Map<combatId, {root:HTMLElement, cards:Map<actorId,CardRefs>, off:Fn[]}>
+    byCombat: new Map(),
+    // Hook refs for off() / dedupe
+    hooks: {}
+  };
 
-  // Global registry: Map<combatId, {root, cards, off}>
-  window[HUD_NS] = window[HUD_NS] || { byCombat: new Map(), hooks: {}, socket: null };
-
-  // ====== Data paths =========================================================
+  // ===== System paths (same as before) ======================================
   const PATH_HP_VAL = "system.props.current_hp";
   const PATH_HP_MAX = "system.props.max_hp";
   const PATH_MP_VAL = "system.props.current_mp";
@@ -24,7 +22,7 @@
   const PATH_ZP_VAL = "system.props.zero_power_value";
   const ZP_MAX_CONST = 6;
 
-  // ====== Look & feel (demo) ================================================
+  // ===== Fonts / palette (same as your approved look) =======================
   const UI_FONT  = "Signika";
   const NUM_FONT = "Cinzel";
   const ZP_FONT  = "Silkscreen";
@@ -43,49 +41,51 @@
     tick: "rgba(255,255,255,.12)"
   };
 
-  // ====== Helpers ============================================================
-  const getp=(o,p)=>{try{return getProperty(o,p);}catch{ return undefined; }};
+  // ===== helpers ============================================================
+  const pick=(o,p)=>{try{return getProperty(o,p);}catch{return undefined;}};
   const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
   const pct=(v,m)=>`${(clamp(v/m,0,1)*100).toFixed(4)}%`;
-  const fmt=x=>new Intl.NumberFormat().format(Math.max(0,Math.floor(Number(x)||0)));
-  const stripActorPrefix = id => id ? String(id).replace(/^Actor\./i,"").trim() : id;
+  const nice=x=>new Intl.NumberFormat().format(Math.max(0,Math.floor(Number(x)||0)));
+  const stripActorPrefix=id=>id?String(id).replace(/^Actor\./i,"").trim():id;
 
-  const pair=(a,vp,mp,fb=null)=>{const v=Number(getp(a,vp)); let m=Number(getp(a,mp)); if(!Number.isFinite(m)) m=fb; if(!Number.isFinite(v)||!Number.isFinite(m)||m<=0) return null; return {v,m};};
+  const pair=(a,vp,mp,fb=null)=>{const v=Number(pick(a,vp));let m=Number(pick(a,mp));if(!Number.isFinite(m))m=fb;if(!Number.isFinite(v)||!Number.isFinite(m)||m<=0)return null;return{v,m};};
   const readHP=a=>pair(a,PATH_HP_VAL,PATH_HP_MAX);
   const readMP=a=>pair(a,PATH_MP_VAL,PATH_MP_MAX)||{v:0,m:1};
-  const readZP=a=>{const v=Number(getp(a,PATH_ZP_VAL)); return {v:Number.isFinite(v)?Math.max(0,v):0, m:ZP_MAX_CONST};};
-  const readIP=a=>{const v=Number(getp(a,PATH_IP_VAL)); let m=Number(getp(a,PATH_IP_MAX)); if(!Number.isFinite(m)||m<=0) m=6; return {v:Number.isFinite(v)?clamp(v,0,m):0, m};};
+  const readZP=a=>{const v=Number(pick(a,PATH_ZP_VAL));return{v:Number.isFinite(v)?Math.max(0,v):0,m:ZP_MAX_CONST};};
+  const readIP=a=>{const v=Number(pick(a,PATH_IP_VAL));let m=Number(pick(a,PATH_IP_MAX));if(!Number.isFinite(m)||m<=0)m=6;return{v:Number.isFinite(v)?clamp(v,0,m):0,m};};
 
+  // ===== DB party slots =====================================================
   async function fetchPartySlots(){
-    const API = window.FUCompanion?.api; if(!API?.getCurrentGameDb) return [];
-    const { db, source } = await API.getCurrentGameDb(); if(!db) return [];
+    const API = window.FUCompanion?.api;
+    if (!API?.getCurrentGameDb) return [];
+    const { db, source } = await API.getCurrentGameDb();
+    if (!db) return [];
     const src = source ?? db;
     return [1,2,3,4].map(i=>{
-      const rawId = getp(src,`system.props.member_id_${i}`) || getp(src,`system.props.party_member_${i}_id`);
-      const name  = getp(src,`system.props.member_name_${i}`) || getp(src,`system.props.party_member_${i}`);
-      return { slot:i, id:stripActorPrefix(rawId), name: name?String(name).trim():null };
+      const rawId = pick(src,`system.props.member_id_${i}`) || pick(src,`system.props.party_member_${i}_id`);
+      const name  = pick(src,`system.props.member_name_${i}`) || pick(src,`system.props.party_member_${i}`);
+      return {slot:i, id:stripActorPrefix(rawId), name:name?String(name).trim():null};
     }).filter(s=>s.id||s.name);
   }
 
+  // ===== map party to combatants ===========================================
   function mapPartyToCombat(combat, roster){
-    const chosen=[]; const all=combat?.combatants?.contents??[];
-    for(const s of roster){
+    const sel=[]; const all=combat?.combatants?.contents??[];
+    for (const s of roster){
       let hit=null;
-      if(s.id){
-        hit = all.find(c=> stripActorPrefix(c.actor?.id)===s.id ||
-                           stripActorPrefix(c.actor?.uuid?.split(".").pop())===s.id );
+      if (s.id){
+        hit=all.find(c=>stripActorPrefix(c.actor?.id)===s.id || stripActorPrefix(c.actor?.uuid?.split(".").pop())===s.id);
       }
-      if(!hit && s.name){
-        hit = all.find(c=> (c.actor?.name===s.name) || (c.token?.name===s.name) || (c.name===s.name));
+      if (!hit && s.name){
+        hit=all.find(c=> (c.actor?.name===s.name) || (c.token?.name===s.name) || (c.name===s.name));
       }
-      if(hit?.actor) chosen.push({slot:s.slot, combatant:hit, actor:hit.actor, token:hit.token});
+      if (hit?.actor) sel.push({slot:s.slot, combatant:hit, actor:hit.actor, token:hit.token});
     }
-    chosen.sort((a,b)=>a.slot-b.slot);
-    return chosen.slice(0,4);
+    sel.sort((a,b)=>a.slot-b.slot);
+    return sel.slice(0,4);
   }
 
-  // ====== Styles/DOM ========================================================
-  const STYLE_ID="oni2-hud-style"; const FONTLINK_ID="oni2-hud-fonts";
+  // ===== fonts & styles =====================================================
   function mountFonts(){
     const families=[
       "family="+encodeURIComponent(`${UI_FONT}:wght@400;600;700;900`),
@@ -94,15 +94,31 @@
     ].join("&");
     const href=`https://fonts.googleapis.com/css2?${families}&display=swap`;
     let link=document.getElementById(FONTLINK_ID);
-    if(!link){ link=document.createElement("link"); link.id=FONTLINK_ID; link.rel="stylesheet"; document.head.appendChild(link); }
+    if(!link){link=document.createElement("link");link.id=FONTLINK_ID;link.rel="stylesheet";document.head.appendChild(link);}
     if(link.href!==href) link.href=href;
   }
+
   function injectStyles(){
     if(document.getElementById(STYLE_ID)) return;
     mountFonts();
     const css=`
-.oni2-root{ --ui-font:"${UI_FONT}",system-ui,sans-serif; --num-font:"${NUM_FONT}","${UI_FONT}",monospace; --zp-font:"${ZP_FONT}","${UI_FONT}",monospace; --txt:${TONE.text}; --txt-dim:${TONE.textDim}; --top:${TONE.topRGB}; --bot:${TONE.botRGB}; --op:${TONE.opac}; --hp-a:${TONE.hpA}; --hp-b:${TONE.hpB}; --mp-a:${TONE.mpA}; --mp-b:${TONE.mpB}; --zp-a:${TONE.zpA}; --zp-b:${TONE.zpB}; --tick:${TONE.tick};
-  position:fixed; left:1.25rem; bottom:1.25rem; z-index:50; pointer-events:none; display:grid; grid-auto-flow:column; gap:.6rem; transform-origin:bottom left;}
+.oni2-root{
+  --ui-font: "${UI_FONT}", system-ui, sans-serif;
+  --num-font: "${NUM_FONT}", "${UI_FONT}", monospace;
+  --zp-font:  "${ZP_FONT}", "${UI_FONT}", monospace;
+  --txt: ${TONE.text};
+  --txt-dim: ${TONE.textDim};
+  --top: ${TONE.topRGB};
+  --bot: ${TONE.botRGB};
+  --op: ${TONE.opac};
+  --hp-a: ${TONE.hpA}; --hp-b: ${TONE.hpB};
+  --mp-a: ${TONE.mpA}; --mp-b: ${TONE.mpB};
+  --zp-a: ${TONE.zpA}; --zp-b: ${TONE.zpB};
+  --tick: ${TONE.tick};
+  position: fixed; left:1.25rem; bottom:1.25rem; z-index:50;
+  pointer-events:none; display:grid; grid-auto-flow:column; gap:.6rem;
+  transform-origin:bottom left;
+}
 .oni2-card{pointer-events:auto; display:inline-flex; align-items:flex-start; gap:.6rem; opacity:0; transform:translateX(-24px); transition:opacity 420ms ease, transform 420ms ease;}
 .oni2-card.oni2-appear{opacity:1; transform:translateX(0);}
 .oni2-portrait{filter:drop-shadow(0 18px 32px rgba(0,0,0,.55)); pointer-events:none;}
@@ -126,43 +142,37 @@
 @keyframes oni2ZpGlow{0%{box-shadow:0 0 0 rgba(80,140,255,0)}100%{box-shadow:0 0 22px rgba(80,140,255,.55)}}
 .oni2-flash{animation:oni2FillFlash .35s ease;} @keyframes oni2FillFlash{0%{filter:brightness(1.15)}100%{filter:brightness(1)}}
 `;
-    const st=document.createElement("style"); st.id=STYLE_ID; st.textContent=css; document.head.appendChild(st);
+    const st=document.createElement("style");
+    st.id=STYLE_ID; st.textContent=css; document.head.appendChild(st);
   }
 
-  function makeRootFor(combatId){
-    const root=document.createElement("div");
-    root.className="oni2-root";
-    root.id=`oni2-hud-root-${combatId}`;
-    document.body.appendChild(root);
-    return root;
-  }
-  function scaleRoot(root,count){
+  // ===== DOM build helpers ===================================================
+  function scaleRoot(root, count){
     const vmin=Math.min(window.innerWidth, window.innerHeight);
-    let base=clamp(vmin/1080,0.75,1.15);
+    let base=clamp(vmin/1080, 0.75, 1.15);
     const factor=(count>=4)?0.78:(count===3?0.85:1.00);
     root.style.transform=`scale(${(base*factor).toFixed(4)})`;
   }
-
-  // ====== Card render/update ================================================
-  const dots=(m,v)=>Array.from({length:m},(_,i)=>`<i class="${i<v?'on':''}"></i>`).join("");
-  function tintHp(fillEl,v,m){
+  const dotRow=(m,v)=>Array.from({length:m},(_,i)=>`<i class="${i<v?'on':''}"></i>`).join("");
+  function tintHp(fillEl, v, m){
     const p=Math.max(0,Math.min(1,v/m));
-    if(p<=0.10)      fillEl.style.background=`linear-gradient(90deg, ${TONE.hp10}, #ff7676)`;
+    if(p<=0.10) fillEl.style.background=`linear-gradient(90deg, ${TONE.hp10}, #ff7676)`;
     else if(p<=0.25) fillEl.style.background=`linear-gradient(90deg, ${TONE.hp25}, #ff9a5c)`;
     else if(p<=0.50) fillEl.style.background=`linear-gradient(90deg, ${TONE.hp50}, #89e14a)`;
-    else             fillEl.style.background=`linear-gradient(90deg, var(--hp-a), var(--hp-b))`;
+    else fillEl.style.background=`linear-gradient(90deg, var(--hp-a), var(--hp-b))`;
   }
-  function animNumber(node, from, to, ms=420){
+  function glideNumber(node, from, to, ms=420){
     if(!node) return;
     const t0=performance.now(), d=to-from;
-    function tick(t){
+    function loop(t){
       const n=Math.min(1,(t-t0)/ms);
       const e=n<.5?2*n*n:1-Math.pow(-2*n+2,2)/2;
-      node.textContent=fmt(from + d*e);
-      if(n<1) requestAnimationFrame(tick);
+      node.textContent=nice(from + d*e);
+      if(n<1) requestAnimationFrame(loop);
     }
-    requestAnimationFrame(tick);
+    requestAnimationFrame(loop);
   }
+
   function makeCard(actor, token){
     const card=document.createElement("div"); card.className="oni2-card";
     const portrait=actor?.img || actor?.prototypeToken?.texture?.src || token?.texture?.src || "";
@@ -174,11 +184,11 @@
       <div class="oni2-panel">
         <div class="oni2-top">
           <div class="oni2-name">${token?.name || actor?.name || "—"}</div>
-          <div class="oni2-ip">${dots(ip.m, ip.v)}</div>
+          <div class="oni2-ip">${dotRow(ip.m, ip.v)}</div>
         </div>
         <div class="oni2-hpbig">
-          <span class="oni2-hpcur">${fmt(hp.v)}</span> / <span class="oni2-hpmax">${fmt(hp.m)}</span>
-          <div class="oni2-mpmini"><span class="tag">MP</span><span class="num">${fmt(mp.v)}</span></div>
+          <span class="oni2-hpcur">${nice(hp.v)}</span> / <span class="oni2-hpmax">${nice(hp.m)}</span>
+          <div class="oni2-mpmini"><span class="tag">MP</span><span class="num">${nice(mp.v)}</span></div>
         </div>
         <div class="oni2-bar oni2-hp"><div class="oni2-fill oni2-hpfill"></div><div class="oni2-ticks"></div></div>
         <div class="oni2-bar oni2-mp"><div class="oni2-fill oni2-mpfill"></div></div>
@@ -205,17 +215,18 @@
 
     return { el:card, hpFill, mpFill, zpFill, hpCur, hpMax, mpNum, ipRow };
   }
+
   function updateCard(card, actor){
     const hp=readHP(actor); if(hp){
       const cur=Number(card.hpCur?.textContent?.replace(/,/g,""))||0;
-      animNumber(card.hpCur, cur, hp.v, 420);
-      if(card.hpMax) card.hpMax.textContent=fmt(hp.m);
+      glideNumber(card.hpCur, cur, hp.v, 420);
+      if(card.hpMax) card.hpMax.textContent=nice(hp.m);
       tintHp(card.hpFill, hp.v, hp.m);
       card.hpFill.style.width=pct(hp.v,hp.m);
       card.hpFill.classList.remove("oni2-flash"); void card.hpFill.offsetWidth; card.hpFill.classList.add("oni2-flash");
     }
     const mp=readMP(actor); if(mp){
-      if(card.mpNum){ const o=Number(card.mpNum.textContent?.replace(/,/g,""))||0; animNumber(card.mpNum, o, mp.v, 420); }
+      if(card.mpNum){ const o=Number(card.mpNum.textContent?.replace(/,/g,""))||0; glideNumber(card.mpNum,o,mp.v,420); }
       card.mpFill.style.width=pct(mp.v,mp.m);
       card.mpFill.classList.remove("oni2-flash"); void card.mpFill.offsetWidth; card.mpFill.classList.add("oni2-flash");
     }
@@ -224,63 +235,60 @@
       card.zpFill.classList.remove("oni2-flash"); void card.zpFill.offsetWidth; card.zpFill.classList.add("oni2-flash");
       card.zpFill.classList.toggle("oni2-glow", zp.v>=zp.m);
     }
-    const ip=readIP(actor); if(ip && card.ipRow){ card.ipRow.innerHTML=dots(ip.m, ip.v); }
+    const ip=readIP(actor); if(ip && card.ipRow){ card.ipRow.innerHTML=dotRow(ip.m, ip.v); }
   }
 
-  // ====== Per-combat owner (DOM + hooks) ====================================
-  function makeOwner(combat){
-    const id=combat.id;
-    const root=makeRootFor(id);
-    const owner={ root, cards:new Map(), off:[] };
-    owner.scale=()=> scaleRoot(root, owner.cards.size);
+  // ===== per-combat owner object ============================================
+  function makeOwnerFor(combat){
+    const id = combat.id;
+    // root per combat
+    const root = document.createElement("div");
+    root.className = "oni2-root";
+    root.id = `oni2-hud-root-${id}`;
+    document.body.appendChild(root);
 
-    owner.attachActorHooks=(actorId, card, setName)=>{
-      const h1=Hooks.on("updateActor",(doc,diff)=>{
-        if(doc?.id!==actorId) return;
-        if (typeof diff?.name === "string") setName(diff.name);
-        const live=game.actors?.get(actorId); if(live) updateCard(card, live);
+    const state = { root, cards:new Map(), off:[] };
+
+    // scale based on card count
+    state.scale = ()=> scaleRoot(root, state.cards.size);
+
+    // live update hook factories (closed over entry.actor.id)
+    state.attachActorHooks = (actorId, card, nameSetter) => {
+      const h1 = Hooks.on("updateActor", (doc,diff)=>{
+        if (doc?.id !== actorId) return;
+        if (typeof diff?.name === "string") nameSetter(diff.name);
+        const live=game.actors?.get(actorId);
+        if (live) updateCard(card, live);
       });
-      const h2=Hooks.on("updateToken",(tok,chg)=>{
-        if(stripActorPrefix(tok?.actor?.id)!==stripActorPrefix(actorId)) return;
-        if (typeof chg?.name === "string") setName(chg.name || tok?.actor?.name);
+      const h2 = Hooks.on("updateToken", (tok,chg)=>{
+        if (stripActorPrefix(tok?.actor?.id) !== stripActorPrefix(actorId)) return;
+        if (typeof chg?.name === "string") nameSetter(chg.name || tok?.actor?.name);
         const live=tok.actor; if(live) updateCard(card, live);
       });
-      owner.off.push(()=>Hooks.off("updateActor",h1), ()=>Hooks.off("updateToken",h2));
+      state.off.push(()=>Hooks.off("updateActor",h1), ()=>Hooks.off("updateToken",h2));
     };
 
-    return owner;
+    return state;
   }
 
-  function destroyOwner(combat){
-    const entry=window[HUD_NS].byCombat.get(combat?.id);
-    if(!entry) return;
-    for(const fn of entry.off){ try{ fn(); }catch{} }
-    entry.off.length=0;
-    try{ entry.root.remove(); }catch{}
-    entry.cards.clear();
-    window[HUD_NS].byCombat.delete(combat.id);
-  }
+  // ===== build / destroy for a specific combat ==============================
+  async function buildForCombat(combat){
+    // clean any previous owner for same id just in case
+    destroyForCombat(combat);
 
-  // ====== Build for a specific combat (runs on EVERY client) ================
-  async function handleBuild({ combatId } = {}){
-    const combat = game.combats?.get(combatId) || game.combat;
-    if(!combat) return;
-
-    // Clean and prep
-    destroyOwner(combat);
     injectStyles();
-
-    const owner = makeOwner(combat);
+    const owner = makeOwnerFor(combat);
     window[HUD_NS].byCombat.set(combat.id, owner);
 
     const slots = await fetchPartySlots();
     const picks = mapPartyToCombat(combat, slots);
     if (!picks.length) return;
 
-    for(const entry of picks){
+    for (const entry of picks){
       const card = makeCard(entry.actor, entry.combatant.token ?? entry.actor?.prototypeToken);
-      if(!card) continue;
-      const setName = (nm)=>{ const el=card.el.querySelector(".oni2-name"); if(el) el.textContent=nm; };
+      if (!card) continue;
+      // name setter for hooks
+      const setName = (nm)=>{ const el = card.el.querySelector(".oni2-name"); if (el) el.textContent = nm; };
       owner.root.appendChild(card.el);
       owner.cards.set(entry.actor.id, card);
       owner.attachActorHooks(entry.actor.id, card, setName);
@@ -288,88 +296,47 @@
     owner.scale();
   }
 
-  function handleDestroy({ combatId } = {}){
-    const combat = game.combats?.get(combatId) || game.combat;
-    if(!combat) return;
-    destroyOwner(combat);
-  }
-
-  // Local safety: if this client sees combat become inactive, tear down locally.
-Hooks.on("updateCombat", (combat, changed) => {
-  const ended = (Object.prototype.hasOwnProperty.call(changed, "active")  && changed.active  === false)
-             || (Object.prototype.hasOwnProperty.call(changed, "started") && changed.started === false);
-  if (ended) handleDestroy({ combatId: combat.id });
-});
-
-// Safety on canvas teardown (scene switch / reload)
-Hooks.on("canvasTearDown", () => {
-  for (const [cid] of window[HUD_NS].byCombat) {
-    handleDestroy({ combatId: cid });
-  }
-});
-
-  // ====== Socket setup + GM broadcasts ======================================
-  function ensureSocket(){
-    if(window[HUD_NS].socket) return window[HUD_NS].socket;
-    const sockMod = game.modules.get("socketlib");
-    if (!sockMod?.active || !window.socketlib) return null;
-    const socket = socketlib.registerModule(MODULE_ID);
-    socket.register(ACTION_BUILD, handleBuild);
-    socket.register(ACTION_KILL,  handleDestroy);
-    window[HUD_NS].socket = socket;
-    return socket;
+  function destroyForCombat(combat){
+    try{
+      const owner = window[HUD_NS].byCombat.get(combat?.id);
+      if (!owner) return;
+      // remove hooks
+      for (const fn of owner.off){ try{ fn(); }catch{} }
+      owner.off.length = 0;
+      // remove DOM
+      try{ owner.root.remove(); }catch{}
+      // clear cards map
+      owner.cards.clear();
+      window[HUD_NS].byCombat.delete(combat.id);
+    }catch(e){
+      console.warn("[OniHud2] destroy error:", e);
     }
-
-  // GM side: broadcast build/kill
-  function broadcastAll(action, payload){
-    const socket = ensureSocket();
-    if (socket) return socket.executeForEveryone(action, payload);
-    // fallback (no socketlib): run locally so at least GM sees it
-    if (action === ACTION_BUILD) handleBuild(payload); else handleDestroy(payload);
   }
 
-  // ====== Hooks (GM sends; everyone receives through socket) =================
-  Hooks.once("ready", () => ensureSocket());
+  // ===== hook wiring (deduped, demo-style) ==================================
+  // Off existing hooks if reloaded (like your demo)
+  if (window[HUD_NS].hooks.combatStart) Hooks.off("combatStart", window[HUD_NS].hooks.combatStart);
+  if (window[HUD_NS].hooks.combatEnd)   Hooks.off("combatEnd",   window[HUD_NS].hooks.combatEnd);
+  if (window[HUD_NS].hooks.deleteCombat)Hooks.off("deleteCombat",window[HUD_NS].hooks.deleteCombat);
 
-// de-dup
-if (window[HUD_NS].hooks.combatStart)  Hooks.off("combatStart",  window[HUD_NS].hooks.combatStart);
-if (window[HUD_NS].hooks.combatEnd)    Hooks.off("combatEnd",    window[HUD_NS].hooks.combatEnd);
-if (window[HUD_NS].hooks.deleteCombat) Hooks.off("deleteCombat", window[HUD_NS].hooks.deleteCombat);
-if (window[HUD_NS].hooks.updateCombat) Hooks.off("updateCombat", window[HUD_NS].hooks.updateCombat);
+  window[HUD_NS].hooks.combatStart = (combat)=> {
+    try { buildForCombat(combat); } catch(err){ console.warn("[OniHud2] combatStart:", err); }
+  };
+  window[HUD_NS].hooks.combatEnd = (combat)=> {
+    try { destroyForCombat(combat); } catch(err){ console.warn("[OniHud2] combatEnd:", err); }
+  };
+  window[HUD_NS].hooks.deleteCombat = (combat)=> {
+    try { destroyForCombat(combat); } catch(err){ console.warn("[OniHud2] deleteCombat:", err); }
+  };
 
-window[HUD_NS].hooks.combatStart = (combat)=>{
-  if (!game.user.isGM) return;
-  broadcastAll(ACTION_BUILD, { combatId: combat.id });
-};
+  Hooks.on("combatStart", window[HUD_NS].hooks.combatStart);
+  Hooks.on("combatEnd",   window[HUD_NS].hooks.combatEnd);
+  Hooks.on("deleteCombat",window[HUD_NS].hooks.deleteCombat);
 
-window[HUD_NS].hooks.combatEnd = (combat)=>{
-  if (!game.user.isGM) return;
-  broadcastAll(ACTION_KILL, { combatId: combat.id });
-};
-
-window[HUD_NS].hooks.deleteCombat = (combat)=>{
-  if (!game.user.isGM) return;
-  broadcastAll(ACTION_KILL, { combatId: combat.id });
-};
-
-// IMPORTANT: many “End Combat” paths set active:false (and sometimes started:false).
-window[HUD_NS].hooks.updateCombat = (combat, changed)=>{
-  if (!game.user.isGM) return;
-  const ended = (Object.prototype.hasOwnProperty.call(changed, "active")  && changed.active  === false)
-             || (Object.prototype.hasOwnProperty.call(changed, "started") && changed.started === false);
-  if (ended) broadcastAll(ACTION_KILL, { combatId: combat.id });
-};
-
-Hooks.on("combatStart",  window[HUD_NS].hooks.combatStart);
-Hooks.on("combatEnd",    window[HUD_NS].hooks.combatEnd);
-Hooks.on("deleteCombat", window[HUD_NS].hooks.deleteCombat);
-Hooks.on("updateCombat", window[HUD_NS].hooks.updateCombat);
-
-  // Page reload while already in combat: GM fires a build so everyone syncs.
+  // Build if page reloads while combat is already active
   Hooks.once("canvasReady", ()=>{
     const c = game.combat ?? game.combats?.active ?? null;
-    if (game.user.isGM && c && (c.started || (c.round ?? 0) > 0) && c.active !== false) {
-      broadcastAll(ACTION_BUILD, { combatId: c.id });
-    }
+    if (c && (c.started || (c.round ?? 0) > 0) && c.active !== false) buildForCombat(c);
   });
+
 })();
