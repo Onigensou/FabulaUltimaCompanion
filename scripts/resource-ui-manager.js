@@ -5,11 +5,19 @@
   const HUD_NS      = "OniHud2"; // window[HUD_NS]
   const STYLE_ID    = "oni2-hud-style";
   const FONTLINK_ID = "oni2-hud-fonts";
+
+  // NEW: module + socket action keys (to mirror GM → everyone)
+  const MODULE_ID    = "fabula-ultima-companion";
+  const ACTION_BUILD = "ONIHUD2_BUILD";
+  const ACTION_KILL  = "ONIHUD2_DESTROY";
+
   window[HUD_NS] = window[HUD_NS] || {
     // Map<combatId, {root:HTMLElement, cards:Map<actorId,CardRefs>, off:Fn[]}>
     byCombat: new Map(),
     // Hook refs for off() / dedupe
-    hooks: {}
+    hooks: {},
+    // NEW: keep the socket ref once registered
+    socket: null
   };
 
   // ===== System paths (same as before) ======================================
@@ -296,16 +304,13 @@
     owner.scale();
   }
 
-  function destroyForCombat(combat){
+    function destroyForCombat(combat){
     try{
       const owner = window[HUD_NS].byCombat.get(combat?.id);
       if (!owner) return;
-      // remove hooks
       for (const fn of owner.off){ try{ fn(); }catch{} }
       owner.off.length = 0;
-      // remove DOM
       try{ owner.root.remove(); }catch{}
-      // clear cards map
       owner.cards.clear();
       window[HUD_NS].byCombat.delete(combat.id);
     }catch(e){
@@ -313,30 +318,105 @@
     }
   }
 
-  // ===== hook wiring (deduped, demo-style) ==================================
-  // Off existing hooks if reloaded (like your demo)
-  if (window[HUD_NS].hooks.combatStart) Hooks.off("combatStart", window[HUD_NS].hooks.combatStart);
-  if (window[HUD_NS].hooks.combatEnd)   Hooks.off("combatEnd",   window[HUD_NS].hooks.combatEnd);
-  if (window[HUD_NS].hooks.deleteCombat)Hooks.off("deleteCombat",window[HUD_NS].hooks.deleteCombat);
+  // ─────────────────────────────────────────────────────────────
+  // NEW: socket setup + action handlers (every client runs these)
+  // ─────────────────────────────────────────────────────────────
+  function ensureSocket(){
+    if (window[HUD_NS].socket) return window[HUD_NS].socket;
+    const sockMod = game.modules.get("socketlib");
+    if (!sockMod?.active || !window.socketlib) return null;
+    const socket = socketlib.registerModule(MODULE_ID);
+    // When any client receives these actions, it builds/tears down locally
+    socket.register(ACTION_BUILD, ({ combatId } = {}) => {
+      const c = game.combats?.get(combatId) || game.combat;
+      if (c) buildForCombat(c);
+    });
+    socket.register(ACTION_KILL, ({ combatId } = {}) => {
+      const c = game.combats?.get(combatId) || game.combat;
+      if (c) destroyForCombat(c);
+    });
+    window[HUD_NS].socket = socket;
+    return socket;
+  }
 
-  window[HUD_NS].hooks.combatStart = (combat)=> {
-    try { buildForCombat(combat); } catch(err){ console.warn("[OniHud2] combatStart:", err); }
-  };
-  window[HUD_NS].hooks.combatEnd = (combat)=> {
-    try { destroyForCombat(combat); } catch(err){ console.warn("[OniHud2] combatEnd:", err); }
-  };
-  window[HUD_NS].hooks.deleteCombat = (combat)=> {
-    try { destroyForCombat(combat); } catch(err){ console.warn("[OniHud2] deleteCombat:", err); }
+  // GM helper to signal all clients, with local fallback if no socketlib
+  function broadcastAll(action, payload){
+    const socket = ensureSocket();
+    if (socket) return socket.executeForEveryone(action, payload);
+    // Fallback (no socketlib): run locally so at least one client sees it
+    if (action === ACTION_BUILD) {
+      const c = game.combats?.get(payload?.combatId) || game.combat;
+      if (c) buildForCombat(c);
+    } else if (action === ACTION_KILL) {
+      const c = game.combats?.get(payload?.combatId) || game.combat;
+      if (c) destroyForCombat(c);
+    }
+  }
+
+    // ===== hook wiring (deduped, socket broadcast) ============================
+  // Off existing hooks if reloaded
+  if (window[HUD_NS].hooks.combatStart)  Hooks.off("combatStart",  window[HUD_NS].hooks.combatStart);
+  if (window[HUD_NS].hooks.combatEnd)    Hooks.off("combatEnd",    window[HUD_NS].hooks.combatEnd);
+  if (window[HUD_NS].hooks.deleteCombat) Hooks.off("deleteCombat", window[HUD_NS].hooks.deleteCombat);
+  if (window[HUD_NS].hooks.updateCombat) Hooks.off("updateCombat", window[HUD_NS].hooks.updateCombat);
+
+  // Make sure socket is available ASAP
+  Hooks.once("ready", () => ensureSocket());
+
+  // GM: broadcast build when combat starts
+  window[HUD_NS].hooks.combatStart = (combat) => {
+    try {
+      if (!game.user.isGM) return;
+      broadcastAll(ACTION_BUILD, { combatId: combat.id });
+    } catch (err) { console.warn("[OniHud2] combatStart:", err); }
   };
 
-  Hooks.on("combatStart", window[HUD_NS].hooks.combatStart);
-  Hooks.on("combatEnd",   window[HUD_NS].hooks.combatEnd);
-  Hooks.on("deleteCombat",window[HUD_NS].hooks.deleteCombat);
+  // GM: broadcast destroy when combat ends (explicit end path)
+  window[HUD_NS].hooks.combatEnd = (combat) => {
+    try {
+      if (!game.user.isGM) return;
+      broadcastAll(ACTION_KILL, { combatId: combat.id });
+    } catch (err) { console.warn("[OniHud2] combatEnd:", err); }
+  };
 
-  // Build if page reloads while combat is already active
-  Hooks.once("canvasReady", ()=>{
+  // GM: also destroy when combat doc is deleted
+  window[HUD_NS].hooks.deleteCombat = (combat) => {
+    try {
+      if (!game.user.isGM) return;
+      broadcastAll(ACTION_KILL, { combatId: combat.id });
+    } catch (err) { console.warn("[OniHud2] deleteCombat:", err); }
+  };
+
+  // GM: some end flows set active:false / started:false via update
+  window[HUD_NS].hooks.updateCombat = (combat, changed) => {
+    try {
+      if (!game.user.isGM) return;
+      const ended =
+        (Object.prototype.hasOwnProperty.call(changed, "active")  && changed.active  === false) ||
+        (Object.prototype.hasOwnProperty.call(changed, "started") && changed.started === false);
+      if (ended) broadcastAll(ACTION_KILL, { combatId: combat.id });
+    } catch (err) { console.warn("[OniHud2] updateCombat:", err); }
+  };
+
+  Hooks.on("combatStart",  window[HUD_NS].hooks.combatStart);
+  Hooks.on("combatEnd",    window[HUD_NS].hooks.combatEnd);
+  Hooks.on("deleteCombat", window[HUD_NS].hooks.deleteCombat);
+  Hooks.on("updateCombat", window[HUD_NS].hooks.updateCombat);
+
+  // Client-side safety: destroy locally if canvas tears down (scene switch/reload)
+  Hooks.on("canvasTearDown", () => {
+    for (const [cid] of window[HUD_NS].byCombat) {
+      const c = game.combats?.get(cid);
+      if (c) destroyForCombat(c);
+    }
+  });
+
+  // GM: if page reloads while combat is active, rebroadcast a build so all sync
+  Hooks.once("canvasReady", () => {
     const c = game.combat ?? game.combats?.active ?? null;
-    if (c && (c.started || (c.round ?? 0) > 0) && c.active !== false) buildForCombat(c);
+    if (game.user.isGM && c && (c.started || (c.round ?? 0) > 0) && c.active !== false) {
+      broadcastAll(ACTION_BUILD, { combatId: c.id });
+    }
   });
 
 })();
