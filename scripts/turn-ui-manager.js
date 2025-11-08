@@ -9,7 +9,17 @@
 // • On combat start   -> Preload UI SFX for snappy navigation.
 // • On combat end     -> Despawn everything and unload SFX.
 //
-// Later wiring: replace the placeholder button click handlers with your 9 scripts.
+// Buttons are now WIRED to your existing Macro scripts by name.
+// - Attack      -> "Attack"
+// - Guard       -> "Guard"
+// - Skill       -> "Skill"
+// - Spell       -> "Spell"
+// - Item        -> (not wired yet; shows a friendly notice)
+// - Equipment   -> "Equipment"
+// - Study       -> "Study"
+// - Hinder      -> "Hinder"
+// - Objective   -> "Objective"
+// - Switch      -> "Party Swap"
 //
 // Oni safe-guard: installs once, cleans up safely, no cross-client duplication.
 // ============================================================================
@@ -30,6 +40,20 @@
   const STYLE_ID = "fu-turnui-style";
   const INDICATOR_STYLE_ID = "fu-turn-indicator-style";
 
+  // Map button label -> Macro name
+  const MACRO_NAME = {
+    "Attack":    "Attack",
+    "Guard":     "Guard",
+    "Skill":     "Skill",
+    "Spell":     "Spell",
+    "Item":      null,           // leave for later
+    "Equipment": "Equipment",
+    "Study":     "Study",
+    "Hinder":    "Hinder",
+    "Objective": "Objective",
+    "Switch":    "Party Swap"
+  };
+
   // --- State ---------------------------------------------------------------
   TurnUI.state = {
     currentTokenId: null,      // which token these buttons were spawned for
@@ -46,7 +70,7 @@
   }
 
   function isLinkedToLocalUser(actor) {
-    // Oni: per your spec, use the “character linked with the user”
+    // Per spec, use the “character linked with the user”
     const myCharId = game.user?.character?.id ?? null;
     if (myCharId && actor?.id === myCharId) return true;
 
@@ -297,6 +321,30 @@
   }
 
   // === Command buttons UI (owner-only) ====================================
+
+  // Helper to run a Macro by name mapped from button label
+  async function runByButtonLabel(label) {
+    const macroName = MACRO_NAME[label] ?? null;
+
+    if (!macroName) {
+      ui.notifications.info(`"${label}" isn’t wired yet. (Item system pending)`);
+      return;
+    }
+
+    const macro = game.macros.getName(macroName);
+    if (!macro) {
+      ui.notifications.error(`Macro "${macroName}" not found or no permission.`);
+      return;
+    }
+
+    try {
+      await macro.execute();
+    } catch (err) {
+      console.error(`[Turn UI] Failed executing "${macroName}"`, err);
+      ui.notifications.error(`Error running "${macroName}". See console.`);
+    }
+  }
+
   function spawnButtonsForToken(token) {
     removeButtons();
     ensureBaseStyles();
@@ -413,13 +461,10 @@
         if (!it.bound && p >= 1) {
           bindHoverSound(it.btn);
 
-          // === PLACEHOLDER: Wire your 9 scripts here =======================
-          // Replace this with your real handlers later.
-          // You have the clicked label at: it.label (e.g., "Attack")
+          // === WIRED: call your macro by button label ======================
           it.btn.addEventListener("click", async (ev) => {
             ev.stopPropagation();
-            await ChatMessage.create({ content: `<b>${it.label}</b> pressed!` });
-            // TODO: call your real script dispatcher here.
+            await runByButtonLabel(it.label);
           });
           // =================================================================
 
