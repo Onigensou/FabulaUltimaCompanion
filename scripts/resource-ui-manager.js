@@ -355,6 +355,32 @@
     }
   }
 
+    // NEW: allow teardown by combatId even if the Combat doc is already deleted
+  function destroyForCombatId(combatId){
+    try{
+      dlog("destroyForCombatId: enter", { combatId, mapHas: window[HUD_NS].byCombat.has(combatId), mapKeys: Array.from(window[HUD_NS].byCombat.keys()) });
+      const owner = window[HUD_NS].byCombat.get(combatId);
+
+      // If we still track it in the map, reuse the normal flow
+      if (owner){
+        destroyForCombat({ id: combatId });
+        return;
+      }
+
+      // Fallback: try to remove DOM by known id even if map is gone/out-of-sync
+      const rootId = `oni2-hud-root-${combatId}`;
+      const rootEl = document.getElementById(rootId);
+      if (rootEl){
+        try { rootEl.remove(); dlog("destroyForCombatId: removed stray DOM by id", rootId); }
+        catch(e){ console.warn("[OniHud2 destroyForCombatId] root.remove error:", e); }
+      } else {
+        dlog("destroyForCombatId: no DOM element found for", rootId);
+      }
+    }catch(e){
+      console.warn("[OniHud2] destroyForCombatId error:", e);
+    }
+  }
+
   // ─────────────────────────────────────────────────────────────
   // NEW: socket setup + action handlers (every client runs these)
   // ─────────────────────────────────────────────────────────────
@@ -383,12 +409,16 @@
       }
     });
 
-    socket.register(ACTION_KILL, ({ combatId } = {}) => {
+        socket.register(ACTION_KILL, ({ combatId } = {}) => {
       dlog("SOCKET RX:", ACTION_KILL, { combatId, onUser: game.user?.id });
       try {
         const c = game.combats?.get(combatId) || game.combat;
-        if (!c) return dlog("SOCKET RX kill: combat not found", combatId);
-        destroyForCombat(c);
+        if (c && c.id === combatId) {
+          destroyForCombat(c);
+        } else {
+          dlog("SOCKET RX kill: combat not found on this client; using destroyForCombatId");
+          destroyForCombatId(combatId);
+        }
       } catch (e) {
         console.error("[OniHud2 SOCKET RX kill] Error:", e);
       }
@@ -399,19 +429,23 @@
   }
 
   // GM helper to signal all clients, with local fallback if no socketlib
-    function broadcastAll(action, payload){
+      function broadcastAll(action, payload){
     dlog("broadcastAll:", action, payload, { isGM: game.user?.isGM });
     const socket = ensureSocket();
     if (socket) {
       return socket.executeForEveryone(action, payload);
     }
     dlog("broadcastAll: NO SOCKET, falling back to local only");
-    // Fallback (no socketlib): run locally so at least one client sees it
     try{
-      const c = game.combats?.get(payload?.combatId) || game.combat;
-      if (!c) return dlog("broadcastAll fallback: combat not found", payload?.combatId);
-      if (action === ACTION_BUILD) buildForCombat(c);
-      else if (action === ACTION_KILL) destroyForCombat(c);
+      const id = payload?.combatId;
+      const c  = game.combats?.get(id) || game.combat;
+      if (action === ACTION_BUILD) {
+        if (!c || c.id !== id) return dlog("broadcastAll fallback BUILD: combat not found", id);
+        buildForCombat(c);
+      } else if (action === ACTION_KILL) {
+        if (c && c.id === id) destroyForCombat(c);
+        else destroyForCombatId(id); // <-- NEW: tear down even if combat already gone
+      }
     }catch(e){
       console.error("[OniHud2 broadcastAll] Error:", e);
     }
@@ -478,11 +512,10 @@
   Hooks.on("updateCombat", window[HUD_NS].hooks.updateCombat);
 
   // Client-side safety: destroy locally if canvas tears down (scene switch/reload)
-  Hooks.on("canvasTearDown", () => {
+    Hooks.on("canvasTearDown", () => {
     dlog("HOOK canvasTearDown: destroying all owners on this client");
     for (const [cid] of window[HUD_NS].byCombat) {
-      const c = game.combats?.get(cid);
-      if (c) destroyForCombat(c);
+      destroyForCombatId(cid); // <-- tear down by id; doesn’t depend on doc
     }
   });
 
