@@ -35,9 +35,9 @@
   const ZP_MAX_CONST = 6;
 
   // ===== Fonts / palette (same as your approved look) =======================
-  const UI_FONT  = "Signika";
-  const NUM_FONT = "Cinzel";
-  const ZP_FONT  = "Silkscreen";
+  const UI_FONT  = "Merriweather";
+  const NUM_FONT = "Merriweather";
+  const ZP_FONT  = "Merriweather";
   const TONE = {
     text: "#ffffff",
     textDim: "rgba(255,255,255,.86)",
@@ -102,7 +102,8 @@
     const families=[
       "family="+encodeURIComponent(`${UI_FONT}:wght@400;600;700;900`),
       "family="+encodeURIComponent(`${NUM_FONT}:wght@400;700;900`),
-      "family="+encodeURIComponent(`${ZP_FONT}:wght@400;700`)
+      "family="+encodeURIComponent(`${ZP_FONT}:wght@400;700`),
+      "family=" + encodeURIComponent(`Merriweather:ital,wght@0,400;0,700;1,400;1,700`)
     ].join("&");
     const href=`https://fonts.googleapis.com/css2?${families}&display=swap`;
     let link=document.getElementById(FONTLINK_ID);
@@ -165,9 +166,9 @@
 .oni2-name{
   font-family:var(--ui-font); font-size:.95rem; font-weight:700; letter-spacing:.02em; color:#fff; transform:skewX(-8deg);
   text-shadow:
-    0 1px 3px rgba(0,0,0,.95),
-    0 2px 9px rgba(0,0,0,.55),
-    0 0 1px rgba(0,0,0,.85);
+    0 4px 5px rgba(0,0,0,.98),
+    0 6px 16px rgba(0,0,0,.65),
+    0 0 3px rgba(0,0,0,.85);
   flex:1 1 auto;
 }
 .oni2-ip{display:flex; gap:6px;} .oni2-ip i{width:12px; height:12px; border-radius:999px; background:rgba(255,255,255,.25); box-shadow:0 0 0 1px rgba(0,0,0,.25) inset;} .oni2-ip i.on{background:#ffb84a;}
@@ -178,15 +179,15 @@
   font-style: italic;     /* <-- --oni2-italic-hp */
   font-weight:400; letter-spacing:.5px; color:#fff;
   text-shadow:
-    0 2px 4.5px rgba(0,0,0,.95),
-    0 4px 18px rgba(0,0,0,.55),
-    0 0 1px rgba(0,0,0,.85);
+    0 4px 6.5px rgba(0,0,0,.95),
+    0 6px 20px rgba(0,0,0,.55),
+    0 0 3px rgba(0,0,0,.85);
 }
 .oni2-mpmini{position:absolute; right:.5rem; bottom:.1rem; display:flex; align-items:baseline; gap:.4rem;}
 .oni2-mpmini .tag{
   text-shadow:
-    0 1px 2px rgba(0,0,0,.95),
-    0 0 1px rgba(0,0,0,.85);
+    0 3px 4px rgba(0,0,0,.95),
+    0 0 3px rgba(0,0,0,.85);
 }
 .oni2-mpmini .num{
   font-family:var(--num-font);
@@ -194,9 +195,9 @@
   font-style: italic;     /* <-- --oni2-italic-mp */
   color:#fff;
   text-shadow:
-    0 2px 4.5px rgba(0,0,0,.95),
-    0 4px 18px rgba(0,0,0,.55),
-    0 0 1px rgba(0,0,0,.85);
+    0 4px 6.5px rgba(0,0,0,.95),
+    0 6px 20px rgba(0,0,0,.55),
+    0 0 3px rgba(0,0,0,.85);
 }
 .oni2-bar{position:relative; height:1rem; border-radius:.6rem; overflow:hidden; border:1px solid rgba(255,255,255,.20); background:linear-gradient(180deg, rgba(0,0,0,.45), rgba(0,0,0,.65)); box-shadow:inset 0 0 0 1px rgba(0,0,0,.65);}
 .oni2-fill{position:absolute; left:0; top:0; bottom:0; width:0%; background:linear-gradient(90deg, var(--hp-a), var(--hp-b)); transition:width 240ms ease, background 120ms linear;}
@@ -207,8 +208,8 @@
 .oni2-zplabel{
   font-family:var(--zp-font); font-weight:700; letter-spacing:.06em; color:#fff;
   text-shadow:
-    0 2px 4.5px rgba(0,0,0,.95),
-    0 0 1px rgba(0,0,0,.85);
+    0 4px 6.5px rgba(0,0,0,.95),
+    0 0 3px rgba(0,0,0,.85);
   user-select:none;
 }
 .oni2-zp .oni2-fill.oni2-glow{filter:drop-shadow(0 0 6px rgba(80,140,255,.65)) drop-shadow(0 0 12px rgba(80,140,255,.35)); animation:oni2ZpGlow 1.2s ease-in-out infinite alternate;}
