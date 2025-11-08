@@ -35,7 +35,7 @@
     textDim: "rgba(255,255,255,.86)",
     topRGB: "18,18,20",
     botRGB: "12,12,14",
-    opac:   0.78,
+    opac:   0,
     border: "rgba(255,255,255,0.12)",
     hpA: "#6bd66b",
     hpB: "#2fbf71",
@@ -384,8 +384,9 @@
 
   // ——— Build/teardown (renamed) —————————————————————————————
   async function composeHudForCombat(combat){
-    dismantle(); // safety reset
-    injectStyles(); mountRoot();
+  if (!combat || combat.active === false) { dismantle(); return; }
+  dismantle(); // safety reset
+  injectStyles(); mountRoot();
 
     const slots = await fetchPartySlots();
     const picks = mapPartyToCombat(combat, slots);
@@ -432,14 +433,27 @@
     if (window[HUD_NS].active) return;
 
     const hStart  = Hooks.on("combatStart", (c)=> composeHudForCombat(c));
-    const hEnd    = Hooks.on("combatEnd",   ()=> dismantle());
-    const hDel    = Hooks.on("deleteCombat",()=> dismantle());
-    const hUpd    = Hooks.on("updateCombat",(c,diff)=> { if (diff?.started === false) dismantle(); });
-    const hDown   = Hooks.on("canvasTearDown", ()=> dismantle());
-    const hReady  = Hooks.on("canvasReady", ()=> {
-      const c = game.combat;
-      if (c?.started || (c?.round ?? 0) > 0) composeHudForCombat(c);
-    });
+const hEnd    = Hooks.on("combatEnd",   ()=> dismantle());
+const hDel    = Hooks.on("deleteCombat",()=> dismantle());
+
+// IMPORTANT: End Combat usually flips `active:false` (not `started:false`)
+const hUpd    = Hooks.on("updateCombat",(c, changed)=> {
+  if (Object.prototype.hasOwnProperty.call(changed, "active") && changed.active === false) {
+    dismantle(); return;
+  }
+  // Safety: if anybody forces `started:false`, clear too
+  if (Object.prototype.hasOwnProperty.call(changed, "started") && changed.started === false) {
+    dismantle(); return;
+  }
+});
+
+const hDown   = Hooks.on("canvasTearDown", ()=> dismantle());
+
+// If we reload while a combat is active, build once
+const hReady  = Hooks.on("canvasReady", ()=> {
+  const c = game.combat ?? game.combats?.active ?? null;
+  if (c && (c.started || (c.round ?? 0) > 0) && c.active !== false) composeHudForCombat(c);
+});
 
     window[HUD_NS].off.push(
       ()=>Hooks.off("combatStart", hStart),
