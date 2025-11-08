@@ -129,7 +129,7 @@
   --mp-a: ${TONE.mpA}; --mp-b: ${TONE.mpB};
   --zp-a: ${TONE.zpA}; --zp-b: ${TONE.zpB};
   --tick: ${TONE.tick};
-  position: fixed; left:1.25rem; bottom:9rem; z-index:40;
+  position: fixed; left:1.25rem; bottom:6rem; z-index:40;
   pointer-events:none; display:grid; grid-auto-flow:column; gap:.6rem;
   transform-origin:bottom left; transform: scale(0.78:)
 }
@@ -185,6 +185,9 @@
 }
 .oni2-mpmini{position:absolute; right:.5rem; bottom:.1rem; display:flex; align-items:baseline; gap:.4rem;}
 .oni2-mpmini .tag{
+  font-weight:700;
+  font-size: 0.85rem;   /* ← THIS controls the MP label size */
+  color: rgba(255,255,255,.86);
   text-shadow:
     0 3px 4px rgba(0,0,0,.95),
     0 0 3px rgba(0,0,0,.85);
