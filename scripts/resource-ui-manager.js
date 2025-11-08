@@ -294,6 +294,20 @@
     destroyOwner(combat);
   }
 
+  // Local safety: if this client sees combat become inactive, tear down locally.
+Hooks.on("updateCombat", (combat, changed) => {
+  const ended = (Object.prototype.hasOwnProperty.call(changed, "active")  && changed.active  === false)
+             || (Object.prototype.hasOwnProperty.call(changed, "started") && changed.started === false);
+  if (ended) handleDestroy({ combatId: combat.id });
+});
+
+// Safety on canvas teardown (scene switch / reload)
+Hooks.on("canvasTearDown", () => {
+  for (const [cid] of window[HUD_NS].byCombat) {
+    handleDestroy({ combatId: cid });
+  }
+});
+
   // ====== Socket setup + GM broadcasts ======================================
   function ensureSocket(){
     if(window[HUD_NS].socket) return window[HUD_NS].socket;
@@ -317,27 +331,39 @@
   // ====== Hooks (GM sends; everyone receives through socket) =================
   Hooks.once("ready", () => ensureSocket());
 
-  // Dedup in dev
-  if (window[HUD_NS].hooks.combatStart) Hooks.off("combatStart", window[HUD_NS].hooks.combatStart);
-  if (window[HUD_NS].hooks.combatEnd)   Hooks.off("combatEnd",   window[HUD_NS].hooks.combatEnd);
-  if (window[HUD_NS].hooks.deleteCombat)Hooks.off("deleteCombat",window[HUD_NS].hooks.deleteCombat);
+// de-dup
+if (window[HUD_NS].hooks.combatStart)  Hooks.off("combatStart",  window[HUD_NS].hooks.combatStart);
+if (window[HUD_NS].hooks.combatEnd)    Hooks.off("combatEnd",    window[HUD_NS].hooks.combatEnd);
+if (window[HUD_NS].hooks.deleteCombat) Hooks.off("deleteCombat", window[HUD_NS].hooks.deleteCombat);
+if (window[HUD_NS].hooks.updateCombat) Hooks.off("updateCombat", window[HUD_NS].hooks.updateCombat);
 
-  window[HUD_NS].hooks.combatStart = (combat)=>{
-    if (!game.user.isGM) return; // only GM broadcasts
-    broadcastAll(ACTION_BUILD, { combatId: combat.id });
-  };
-  window[HUD_NS].hooks.combatEnd = (combat)=>{
-    if (!game.user.isGM) return;
-    broadcastAll(ACTION_KILL, { combatId: combat.id });
-  };
-  window[HUD_NS].hooks.deleteCombat = (combat)=>{
-    if (!game.user.isGM) return;
-    broadcastAll(ACTION_KILL, { combatId: combat.id });
-  };
+window[HUD_NS].hooks.combatStart = (combat)=>{
+  if (!game.user.isGM) return;
+  broadcastAll(ACTION_BUILD, { combatId: combat.id });
+};
 
-  Hooks.on("combatStart", window[HUD_NS].hooks.combatStart);
-  Hooks.on("combatEnd",   window[HUD_NS].hooks.combatEnd);
-  Hooks.on("deleteCombat",window[HUD_NS].hooks.deleteCombat);
+window[HUD_NS].hooks.combatEnd = (combat)=>{
+  if (!game.user.isGM) return;
+  broadcastAll(ACTION_KILL, { combatId: combat.id });
+};
+
+window[HUD_NS].hooks.deleteCombat = (combat)=>{
+  if (!game.user.isGM) return;
+  broadcastAll(ACTION_KILL, { combatId: combat.id });
+};
+
+// IMPORTANT: many “End Combat” paths set active:false (and sometimes started:false).
+window[HUD_NS].hooks.updateCombat = (combat, changed)=>{
+  if (!game.user.isGM) return;
+  const ended = (Object.prototype.hasOwnProperty.call(changed, "active")  && changed.active  === false)
+             || (Object.prototype.hasOwnProperty.call(changed, "started") && changed.started === false);
+  if (ended) broadcastAll(ACTION_KILL, { combatId: combat.id });
+};
+
+Hooks.on("combatStart",  window[HUD_NS].hooks.combatStart);
+Hooks.on("combatEnd",    window[HUD_NS].hooks.combatEnd);
+Hooks.on("deleteCombat", window[HUD_NS].hooks.deleteCombat);
+Hooks.on("updateCombat", window[HUD_NS].hooks.updateCombat);
 
   // Page reload while already in combat: GM fires a build so everyone syncs.
   Hooks.once("canvasReady", ()=>{
