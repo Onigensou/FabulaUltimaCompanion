@@ -90,11 +90,10 @@
     css.id = STYLE_ID;
     css.textContent = `
       /* Root for the Octopath-like list */
-      #oni-octopath{
+     #oni-octopath{
   position:fixed; left:0; top:0;
-  z-index:calc(var(--z-index-canvas)); /* below #hud (which is +1) */
-  /* optional fallback if the var isn’t present for some reason */
-  z-index:30;
+  /* Use the var if present; otherwise fall back to 0 (below HUD=1) */
+  z-index:var(--z-index-canvas, 0);
   pointer-events:none;
 }
       #oni-octopath .pivot{ position:absolute; width:0; height:0; pointer-events:none }
