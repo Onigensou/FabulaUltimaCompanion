@@ -90,7 +90,7 @@
     css.id = STYLE_ID;
     css.textContent = `
       /* Root for the Octopath-like list */
-      #oni-octopath{ position:fixed; left:0; top:0; z-index:10010; pointer-events:none }
+      #oni-octopath{ position:fixed; left:0; top:0; z-index:95; pointer-events:none }
       #oni-octopath .pivot{ position:absolute; width:0; height:0; pointer-events:none }
       #oni-octopath .item{ position:absolute; transform-origin:left center; pointer-events:auto }
       :root {
