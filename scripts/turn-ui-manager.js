@@ -90,7 +90,13 @@
     css.id = STYLE_ID;
     css.textContent = `
       /* Root for the Octopath-like list */
-      #oni-octopath{ position:fixed; left:0; top:0; z-index:95; pointer-events:none }
+      #oni-octopath{
+  position:fixed; left:0; top:0;
+  z-index:calc(var(--z-index-canvas)); /* below #hud (which is +1) */
+  /* optional fallback if the var isn’t present for some reason */
+  z-index:30;
+  pointer-events:none;
+}
       #oni-octopath .pivot{ position:absolute; width:0; height:0; pointer-events:none }
       #oni-octopath .item{ position:absolute; transform-origin:left center; pointer-events:auto }
       :root {
@@ -159,7 +165,7 @@
     const css = document.createElement("style");
     css.id = INDICATOR_STYLE_ID;
     css.textContent = `
-      .fu-turn-ind-wrap{position:absolute;pointer-events:none;z-index:2147483646;transform-origin:center bottom;--s:1}
+      .fu-turn-ind-wrap{position:absolute;pointer-events:none;z-index:30;transform-origin:center bottom;--s:1}
       .fu-turn-ind-wrap.friendly{transform:translate(-50%,-100%) scale(var(--s))}
       .fu-turn-ind-wrap.friendly .bubble{
         display:inline-flex;gap:5px;padding:6px 10px;border-radius:12px;
