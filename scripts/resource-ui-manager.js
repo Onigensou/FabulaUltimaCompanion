@@ -129,9 +129,10 @@
   --mp-a: ${TONE.mpA}; --mp-b: ${TONE.mpB};
   --zp-a: ${TONE.zpA}; --zp-b: ${TONE.zpB};
   --tick: ${TONE.tick};
-  position: fixed; left:1.25rem; bottom:6rem; z-index:40;
+  position: fixed; left:1.25rem; bottom:6rem;
+  z-index: var(--z-index-canvas, 0); /* <= under #hud (z=1) */
   pointer-events:none; display:grid; grid-auto-flow:column; gap:.6rem;
-  transform-origin:bottom left; transform: scale(0.78:)
+  transform-origin:bottom left; transform: scale(0.78)
 }
 .oni2-card{pointer-events:auto; display:inline-flex; align-items:flex-start; gap:.6rem; opacity:0; transform:translateX(-24px); transition:opacity 420ms ease, transform 420ms ease;}
 .oni2-card.oni2-appear{opacity:1; transform:translateX(0);}
