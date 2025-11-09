@@ -43,7 +43,7 @@
     textDim: "rgba(255,255,255,.86)",
     topRGB: "18,18,20",
     botRGB: "12,12,14",
-    opac:   0.24,
+    opac:   0,
     border: "rgba(255,255,255,0.12)",
     hpA: "#6bd66b", hpB: "#2fbf71",
     mpA: "#5aa8ff", mpB: "#2e7bd6",
@@ -131,7 +131,7 @@
   --tick: ${TONE.tick};
   position: fixed; left:1.25rem; bottom:6rem; z-index:40;
   pointer-events:none; display:grid; grid-auto-flow:column; gap:.6rem;
-  transform-origin:bottom left; transform: scale(0.68:)
+  transform-origin:bottom left; transform: scale(0.78:)
 }
 .oni2-card{pointer-events:auto; display:inline-flex; align-items:flex-start; gap:.6rem; opacity:0; transform:translateX(-24px); transition:opacity 420ms ease, transform 420ms ease;}
 .oni2-card.oni2-appear{opacity:1; transform:translateX(0);}
@@ -143,8 +143,8 @@
 }
 .oni2-portrait img{
   display:block; width:auto; height:auto; object-fit:contain;
-  max-width:  min(17vmin, 292px);   /* <-- --oni2-portrait-vmin / px */
-  max-height: min(17vmin, 292px);
+  max-width:  min(24vmin, 360px);   /* <-- --oni2-portrait-vmin / px */
+  max-height: min(24vmin, 360px);
   background: transparent !important;
   border: none !important; outline: none !important; box-shadow: none !important;
 }
