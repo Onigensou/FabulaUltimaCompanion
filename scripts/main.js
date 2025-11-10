@@ -159,3 +159,94 @@ function add(a, b) {
   console.log("The addition is performed on a GM client.");
   return a + b;
 }
+
+// scripts/main.js
+import { runJRPGSpeechBubble } from "./features/speech-bubble.js";
+
+const MODULE_ID = "fabula-ultima-companion";
+const CURSOR_URL = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/Soundboard/Cursor1.ogg";
+
+Hooks.once("init", () => {
+  // Prepare api bag
+  const mod = game.modules.get(MODULE_ID);
+  if (mod) {
+    mod.api ??= {};
+    mod.api.sfx ??= {};
+    mod.api.speechBubble = () => runJRPGSpeechBubble();
+  }
+});
+
+Hooks.once("ready", () => {
+  // ---- Preload & cache the tiny cursor sound -------------------------------
+  try {
+    // Foundry ships Howler. Create a single Howl instance and reuse it.
+    const howl = new Howl({
+      src: [CURSOR_URL],
+      preload: true,
+      html5: false,     // use WebAudio buffer (snappier for short SFX)
+      volume: 0.55
+    });
+    const mod = game.modules.get(MODULE_ID);
+    if (mod) mod.api.sfx.cursor = howl;
+  } catch (err) {
+    console.warn(`[${MODULE_ID}] Failed to cache cursor SFX`, err);
+  }
+});
+
+// ---- Chat button ------------------------------------------------------------
+// Put a small "megaphone" button in the Chat sidebar controls.
+// It triggers the module feature without needing a macro.
+Hooks.on("renderChatLog", (app, html) => {
+  try {
+    // Find a sensible container row for small icon buttons
+    // (right side of the roll-mode dropdown area has a row of icons)
+    const controls = html[0].querySelector(".control-buttons, .chat-control-iconrow, #chat-controls .control-buttons")
+                  ?? html[0].querySelector("#chat-controls") 
+                  ?? html[0];
+
+    // Avoid double-insertion
+    if (controls.querySelector?.(".fu-speak-btn")) return;
+
+    const btn = document.createElement("a");
+    btn.className = "fu-speak-btn";
+    btn.setAttribute("title", "Speak (JRPG Bubble)");
+    btn.innerHTML = `<i class="fas fa-bullhorn"></i>`;
+
+    // Minimal styling so it matches the small icon buttons
+    const style = document.createElement("style");
+    style.textContent = `
+      .fu-speak-btn { display:inline-flex; align-items:center; justify-content:center;
+        width: 26px; height: 26px; margin-left: 4px; border-radius: 4px;
+        background: var(--color-bg-option) !important; color: var(--color-text);
+        border: 1px solid var(--color-border-light-tertiary); cursor: pointer; }
+      .fu-speak-btn:hover { filter: brightness(1.05); }
+      .fu-speak-btn.disabled { opacity: .45; cursor: not-allowed; }
+    `;
+    document.head.appendChild(style);
+
+    // Enable/disable for player who has no token on scene
+    const updateEnabledState = () => {
+      if (game.user.isGM) { btn.classList.remove("disabled"); return; }
+      const linked = game.user?.character ?? null;
+      if (!linked) return btn.classList.add("disabled");
+      const onScene = canvas?.tokens?.placeables?.some(t => t?.document?.actorId === linked.id);
+      if (onScene) btn.classList.remove("disabled"); else btn.classList.add("disabled");
+    };
+    updateEnabledState();
+
+    btn.addEventListener("click", async () => {
+      if (btn.classList.contains("disabled")) return;
+      await game.modules.get(MODULE_ID)?.api?.speechBubble?.();
+    });
+
+    // Re-evaluate when control/scene changes
+    Hooks.on("controlToken", updateEnabledState);
+    Hooks.on("updateToken", updateEnabledState);
+    Hooks.on("canvasReady", updateEnabledState);
+
+    // Insert button
+    controls.appendChild(btn);
+  } catch (err) {
+    console.warn(`[${MODULE_ID}] Could not insert chat Speak button:`, err);
+  }
+});
