@@ -196,57 +196,76 @@ Hooks.once("ready", () => {
 // ---- Chat button ------------------------------------------------------------
 // Put a small "megaphone" button in the Chat sidebar controls.
 // It triggers the module feature without needing a macro.
+// ---- Chat button (robust injector) -----------------------------------------
 Hooks.on("renderChatLog", (app, html) => {
-  try {
-    // Find a sensible container row for small icon buttons
-    // (right side of the roll-mode dropdown area has a row of icons)
-    const controls = html[0].querySelector(".control-buttons, .chat-control-iconrow, #chat-controls .control-buttons")
-                  ?? html[0].querySelector("#chat-controls") 
-                  ?? html[0];
+  const MODULE_ID = "fabula-ultima-companion";
 
-    // Avoid double-insertion
-    if (controls.querySelector?.(".fu-speak-btn")) return;
+  // Avoid duplicates if ChatLog re-renders
+  if (html[0].querySelector?.(".fu-speak-btn")) return;
 
-    const btn = document.createElement("a");
-    btn.className = "fu-speak-btn";
-    btn.setAttribute("title", "Speak (JRPG Bubble)");
-    btn.innerHTML = `<i class="fas fa-bullhorn"></i>`;
+  // 1) Find the controls block or create a safe container row
+  let controls =
+    html[0].querySelector("#chat-controls") ||
+    html[0].querySelector(".chat-controls") ||
+    html[0].querySelector(".control-buttons") ||
+    html[0];
 
-    // Minimal styling so it matches the small icon buttons
+  // Ensure a dedicated row we control (works across themes/systems)
+  let row = controls.querySelector(".fu-speak-row");
+  if (!row) {
+    row = document.createElement("div");
+    row.className = "fu-speak-row";
+    // place it right under existing controls (roll-mode select & icon row)
+    // If #chat-controls exists, append there; else append to ChatLog root.
+    controls.appendChild(row);
+  }
+
+  // 2) Minimal CSS (once)
+  if (!document.getElementById("fu-speak-style")) {
     const style = document.createElement("style");
+    style.id = "fu-speak-style";
     style.textContent = `
-      .fu-speak-btn { display:inline-flex; align-items:center; justify-content:center;
-        width: 26px; height: 26px; margin-left: 4px; border-radius: 4px;
-        background: var(--color-bg-option) !important; color: var(--color-text);
-        border: 1px solid var(--color-border-light-tertiary); cursor: pointer; }
-      .fu-speak-btn:hover { filter: brightness(1.05); }
-      .fu-speak-btn.disabled { opacity: .45; cursor: not-allowed; }
+      /* Container row matches chat spacing */
+      .fu-speak-row { display:flex; gap:6px; align-items:center; margin:6px 0 2px; }
+      .fu-speak-btn {
+        display:inline-flex; align-items:center; gap:6px;
+        padding: 4px 8px; height: 26px; border-radius: 6px;
+        background: var(--color-bg-option, rgba(0,0,0,.15));
+        color: var(--color-text, #ddd); border: 1px solid var(--color-border-light-tertiary, rgba(255,255,255,.15));
+        cursor: pointer; font-size: 12px; text-decoration: none;
+      }
+      .fu-speak-btn i { width:14px; text-align:center; }
+      .fu-speak-btn:hover { filter: brightness(1.08); }
+      .fu-speak-btn.disabled { opacity:.45; cursor:not-allowed; }
     `;
     document.head.appendChild(style);
-
-    // Enable/disable for player who has no token on scene
-    const updateEnabledState = () => {
-      if (game.user.isGM) { btn.classList.remove("disabled"); return; }
-      const linked = game.user?.character ?? null;
-      if (!linked) return btn.classList.add("disabled");
-      const onScene = canvas?.tokens?.placeables?.some(t => t?.document?.actorId === linked.id);
-      if (onScene) btn.classList.remove("disabled"); else btn.classList.add("disabled");
-    };
-    updateEnabledState();
-
-    btn.addEventListener("click", async () => {
-      if (btn.classList.contains("disabled")) return;
-      await game.modules.get(MODULE_ID)?.api?.speechBubble?.();
-    });
-
-    // Re-evaluate when control/scene changes
-    Hooks.on("controlToken", updateEnabledState);
-    Hooks.on("updateToken", updateEnabledState);
-    Hooks.on("canvasReady", updateEnabledState);
-
-    // Insert button
-    controls.appendChild(btn);
-  } catch (err) {
-    console.warn(`[${MODULE_ID}] Could not insert chat Speak button:`, err);
   }
+
+  // 3) Build the button
+  const btn = document.createElement("a");
+  btn.className = "fu-speak-btn";
+  btn.title = "Speak (JRPG Bubble)";
+  btn.innerHTML = `<i class="fas fa-bullhorn"></i><span>Speak</span>`;
+  row.appendChild(btn);
+
+  // 4) Enable/disable logic for Players (needs a linked Actor token on scene)
+  const updateEnabledState = () => {
+    if (game.user.isGM) return btn.classList.remove("disabled");
+    const linked = game.user?.character ?? null;
+    if (!linked) return btn.classList.add("disabled");
+    const onScene = canvas?.tokens?.placeables?.some(t => t?.document?.actorId === linked.id);
+    if (onScene) btn.classList.remove("disabled"); else btn.classList.add("disabled");
+  };
+  updateEnabledState();
+
+  Hooks.on("controlToken", updateEnabledState);
+  Hooks.on("updateToken", updateEnabledState);
+  Hooks.on("canvasReady",  updateEnabledState);
+  Hooks.on("updateScene",  updateEnabledState);
+
+  // 5) Click → run feature
+  btn.addEventListener("click", async () => {
+    if (btn.classList.contains("disabled")) return;
+    await game.modules.get(MODULE_ID)?.api?.speechBubble?.();
+  });
 });
