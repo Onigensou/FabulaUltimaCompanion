@@ -66,36 +66,23 @@
   const readZP=a=>{const v=Number(pick(a,PATH_ZP_VAL));return{v:Number.isFinite(v)?Math.max(0,v):0,m:ZP_MAX_CONST};};
   const readIP=a=>{const v=Number(pick(a,PATH_IP_VAL));let m=Number(pick(a,PATH_IP_MAX));if(!Number.isFinite(m)||m<=0)m=6;return{v:Number.isFinite(v)?clamp(v,0,m):0,m};};
 
-  // ===== DB party slots =====================================================
-  async function fetchPartySlots(){
-    const API = window.FUCompanion?.api;
-    if (!API?.getCurrentGameDb) return [];
-    const { db, source } = await API.getCurrentGameDb();
-    if (!db) return [];
-    const src = source ?? db;
-    return [1,2,3,4].map(i=>{
-      const rawId = pick(src,`system.props.member_id_${i}`) || pick(src,`system.props.party_member_${i}_id`);
-      const name  = pick(src,`system.props.member_name_${i}`) || pick(src,`system.props.party_member_${i}`);
-      return {slot:i, id:stripActorPrefix(rawId), name:name?String(name).trim():null};
-    }).filter(s=>s.id||s.name);
-  }
-
-  // ===== map party to combatants ===========================================
-  function mapPartyToCombat(combat, roster){
-    const sel=[]; const all=combat?.combatants?.contents??[];
-    for (const s of roster){
-      let hit=null;
-      if (s.id){
-        hit=all.find(c=>stripActorPrefix(c.actor?.id)===s.id || stripActorPrefix(c.actor?.uuid?.split(".").pop())===s.id);
-      }
-      if (!hit && s.name){
-        hit=all.find(c=> (c.actor?.name===s.name) || (c.token?.name===s.name) || (c.name===s.name));
-      }
-      if (hit?.actor) sel.push({slot:s.slot, combatant:hit, actor:hit.actor, token:hit.token});
-    }
-    sel.sort((a,b)=>a.slot-b.slot);
-    return sel.slice(0,4);
-  }
+ // ===== Friendly selection (disposition=1), excluding Summons ==============
+function pickFriendliesFromCombat(combat){
+  const all = combat?.combatants?.contents ?? [];
+  const isFriendly = c => {
+    const disp = c?.token?.disposition ?? c?.actor?.prototypeToken?.disposition;
+    return disp === 1;
+  };
+  const isNotSummon = c => {
+    const flag = (c?.actor) ? getProperty(c.actor, "system.props.isSummon") : false;
+    return !Boolean(flag);
+  };
+  return all
+    .filter(c => c?.actor)
+    .filter(isFriendly)
+    .filter(isNotSummon)
+    .map(c => ({ combatant: c, actor: c.actor, token: c.token }));
+}
 
   // ===== fonts & styles =====================================================
   function mountFonts(){
@@ -350,42 +337,41 @@
     return state;
   }
 
-  // ===== build / destroy for a specific combat ==============================
-    async function buildForCombat(combat){
-    try{
-      dlog("buildForCombat: enter", { combatId: combat?.id, existingOwners: Array.from(window[HUD_NS].byCombat.keys()) });
-      // clean any previous owner for same id just in case
-      destroyForCombat(combat);
+// ===== build / destroy for a specific combat ==============================
+async function buildForCombat(combat){
+  try{
+    dlog("buildForCombat: enter", { combatId: combat?.id, existingOwners: Array.from(window[HUD_NS].byCombat.keys()) });
+    // clean any previous owner for same id just in case
+    destroyForCombat(combat);
 
-      injectStyles();
-      const owner = makeOwnerFor(combat);
-      window[HUD_NS].byCombat.set(combat.id, owner);
-      dlog("buildForCombat: owner created", { combatId: combat.id });
+    injectStyles();
+    const owner = makeOwnerFor(combat);
+    window[HUD_NS].byCombat.set(combat.id, owner);
+    dlog("buildForCombat: owner created", { combatId: combat.id });
 
-      const slots = await fetchPartySlots();
-      dlog("buildForCombat: party slots", slots);
-      const picks = mapPartyToCombat(combat, slots);
-      dlog("buildForCombat: mapped picks", picks.map(p=>({slot:p.slot, actor:p.actor?.name, token:p.token?.name})));
-      if (!picks.length){
-        dlog("buildForCombat: no party picks, early return");
-        return;
-      }
-
-      for (const entry of picks){
-        const card = makeCard(entry.actor, entry.combatant.token ?? entry.actor?.prototypeToken);
-        if (!card){ dlog("buildForCombat: skip card (missing hp?) for actor", entry.actor?.name); continue; }
-        const setName = (nm)=>{ const el = card.el.querySelector(".oni2-name"); if (el) el.textContent = nm; };
-        owner.root.appendChild(card.el);
-        owner.cards.set(entry.actor.id, card);
-        owner.attachActorHooks(entry.actor.id, card, setName);
-      }
-      owner.scale();
-
-      dlog("buildForCombat: success", { combatId: combat.id, cardCount: owner.cards.size, mapSize: window[HUD_NS].byCombat.size });
-    }catch(e){
-      console.error("[OniHud2 buildForCombat] Error:", e);
+    // NEW: pick all Friendly, non-Summon combatants from this combat
+    const picks = pickFriendliesFromCombat(combat);
+    dlog("buildForCombat: friendlies", picks.map(p=>({ actor:p.actor?.name, token:p.token?.name })));
+    if (!picks.length){
+      dlog("buildForCombat: no friendly (non-summon) picks, early return");
+      return;
     }
+
+    for (const entry of picks){
+      const card = makeCard(entry.actor, entry.combatant.token ?? entry.actor?.prototypeToken);
+      if (!card){ dlog("buildForCombat: skip card (missing hp?) for actor", entry.actor?.name); continue; }
+      const setName = (nm)=>{ const el = card.el.querySelector(".oni2-name"); if (el) el.textContent = nm; };
+      owner.root.appendChild(card.el);
+      owner.cards.set(entry.actor.id, card);
+      owner.attachActorHooks(entry.actor.id, card, setName);
+    }
+    owner.scale();
+
+    dlog("buildForCombat: success", { combatId: combat.id, cardCount: owner.cards.size, mapSize: window[HUD_NS].byCombat.size });
+  }catch(e){
+    console.error("[OniHud2 buildForCombat] Error:", e);
   }
+}
      function destroyForCombat(combat){
     try{
       dlog("destroyForCombat: enter", { combatId: combat?.id, mapHas: window[HUD_NS].byCombat.has(combat?.id), mapKeys: Array.from(window[HUD_NS].byCombat.keys()) });
