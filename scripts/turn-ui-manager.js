@@ -54,10 +54,10 @@
     "Switch":    "Party Swap"
   };
 
-  // --- State ---------------------------------------------------------------
+    // --- State ---------------------------------------------------------------
   TurnUI.state = {
     currentTokenId: null,      // which token these buttons were spawned for
-    buttons: null,             // { root, cleanup } for the commands UI
+    buttons: null,             // command UI record (root, cleanup, items, etc.)
     indicator: null,           // indicator record { el, ticker, hookId }
     sfx: null,                 // { open: Howl|Audio, move: Howl|Audio }
   };
@@ -498,7 +498,7 @@
     const keyListener = (e) => {
       if (e.key === "ArrowLeft")  flipPage(-1);
       if (e.key === "ArrowRight") flipPage(+1);
-    };
+        };
     window.addEventListener("keydown", keyListener, true);
 
     function cleanup() {
@@ -509,14 +509,120 @@
       try { root.remove(); } catch {}
     }
 
-    TurnUI.state.buttons = { root, cleanup };
+    // Store everything we need for later animated hide
+    TurnUI.state.buttons = {
+      root,
+      cleanup,
+      items,
+      ticker,
+      tickFn,
+      h1,
+      h2,
+      keyListener,
+      isHiding: false,
+      hideRaf: null
+    };
   }
 
-  function removeButtons() {
+    function removeButtons(options = {}) {
+    const { clearToken = false, animate = false } = options;
     const b = TurnUI.state.buttons;
-    if (!b) return;
-    try { b.cleanup(); } catch {}
-    TurnUI.state.buttons = null;
+    if (!b) {
+      if (clearToken) TurnUI.state.currentTokenId = null;
+      return;
+    }
+
+    // Cancel any ongoing hide animation
+    if (b.hideRaf) {
+      try { cancelAnimationFrame(b.hideRaf); } catch {}
+      b.hideRaf = null;
+    }
+
+    // Simple hard removal (no animation)
+    if (!animate) {
+      try { b.cleanup(); } catch {}
+      TurnUI.state.buttons = null;
+      if (clearToken) TurnUI.state.currentTokenId = null;
+      return;
+    }
+
+    // Animated removal (slide-right + fade out)
+    if (b.isHiding) return;
+    b.isHiding = true;
+
+    // Stop ticking / following the token while we animate out
+    try {
+      if (b.ticker && b.tickFn) b.ticker.remove(b.tickFn);
+    } catch {}
+    try {
+      if (b.h1 != null) Hooks.off("updateToken", b.h1);
+    } catch {}
+    try {
+      if (b.h2 != null) Hooks.off("canvasPan", b.h2);
+    } catch {}
+    try {
+      if (b.keyListener) window.removeEventListener("keydown", b.keyListener, true);
+    } catch {}
+
+    const items = Array.isArray(b.items) ? b.items : [];
+    if (!items.length) {
+      try { b.cleanup(); } catch {}
+      TurnUI.state.buttons = null;
+      if (clearToken) TurnUI.state.currentTokenId = null;
+      b.isHiding = false;
+      return;
+    }
+
+    const EXIT_DURATION = 220;   // ms per button fade
+    const EXIT_STAGGER  = 40;    // ms between each button start
+    const EXIT_SHIFT_PX = 18;    // slide distance to the right
+
+    const init = items.map((it) => {
+      const left = parseFloat(it.wrap.style.left) || 0;
+      const opacity = parseFloat(it.btn.style.opacity) || 1;
+      return { left, opacity };
+    });
+
+    const startTime = performance.now();
+
+    function step(now) {
+      const elapsed = now - startTime;
+      let allDone = true;
+
+      for (let i = 0; i < items.length; i++) {
+        const it    = items[i];
+        const base  = init[i];
+        const delay = EXIT_STAGGER * i;
+        const tLocal = elapsed - delay;
+
+        if (tLocal <= 0) {
+          allDone = false;
+          continue;
+        }
+
+        const p = Math.min(1, tLocal / EXIT_DURATION);
+        if (p < 1) allDone = false;
+
+        const newLeft    = base.left + EXIT_SHIFT_PX * p;
+        const newOpacity = base.opacity * (1 - p);
+
+        it.wrap.style.left   = `${newLeft}px`;
+        it.btn.style.opacity = newOpacity.toFixed(3);
+        it.btn.style.pointerEvents = "none";
+      }
+
+      if (!allDone) {
+        b.hideRaf = requestAnimationFrame(step);
+      } else {
+        b.hideRaf = null;
+        b.isHiding = false;
+        try { b.cleanup(); } catch {}
+        TurnUI.state.buttons = null;
+        if (clearToken) TurnUI.state.currentTokenId = null;
+      }
+    }
+
+    b.hideRaf = requestAnimationFrame(step);
   }
 
   // === Orchestration per turn =============================================
@@ -563,7 +669,7 @@
     removeIndicator();
   }
 
-  // === Hooks ==============================================================
+    // === Hooks ==============================================================
 
   // 1) On combat start: warm up SFX cache
   Hooks.on("combatStart", () => { cacheSFX(); });
@@ -582,7 +688,54 @@
     handleTurnChange(combat);
   });
 
-  // 3) On ready: if there is an active combat, initialize once
+  // 3) Custom animation events: hide/show buttons during battler animations
+  Hooks.on("oni:animationStart", (payload) => {
+    try {
+      const currentTokenId = TurnUI.state.currentTokenId;
+      if (!currentTokenId) return;
+
+      // If the event reports a source token, make sure it matches the turn owner
+      let srcId = null;
+      if (payload && typeof payload === "object" && "sourceTokenId" in payload) {
+        srcId = payload.sourceTokenId;
+      }
+      if (srcId && srcId !== currentTokenId) return;
+
+      // Only hide if we actually have buttons on this client
+      if (!TurnUI.state.buttons) return;
+
+      // Fade/slide out, but keep currentTokenId so we can respawn later
+      removeButtons({ clearToken: false, animate: true });
+    } catch (err) {
+      console.error("[Turn UI Manager] Error handling oni:animationStart", err);
+    }
+  });
+
+  Hooks.on("oni:animationEnd", (payload) => {
+    try {
+      const currentTokenId = TurnUI.state.currentTokenId;
+      if (!currentTokenId) return;
+
+      let srcId = null;
+      if (payload && typeof payload === "object" && "sourceTokenId" in payload) {
+        srcId = payload.sourceTokenId;
+      }
+      if (srcId && srcId !== currentTokenId) return;
+
+      // If buttons are already up (for some reason), don't double-spawn
+      if (TurnUI.state.buttons) return;
+
+      const token = byIdOnCanvas(currentTokenId);
+      if (!token) return;
+
+      // Re-evaluate: if this client is the owner, spawn buttons again
+      forLocalClient_spawnWhat(token);
+    } catch (err) {
+      console.error("[Turn UI Manager] Error handling oni:animationEnd", err);
+    }
+  });
+
+  // 4) On ready: if there is an active combat, initialize once
   Hooks.once("ready", () => {
     cacheSFX();
     const c = game.combats?.active;
