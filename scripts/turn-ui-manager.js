@@ -54,12 +54,14 @@
     "Switch":    "Party Swap"
   };
 
-       // --- State ---------------------------------------------------------------
+     // --- State ---------------------------------------------------------------
   TurnUI.state = {
     currentTokenId: null,      // which token these buttons were spawned for
     buttons: null,             // command UI record (root, cleanup, items, etc.)
     indicator: null,           // indicator record { el, ticker, hookId }
     sfx: null,                 // { open: Howl|Audio, move: Howl|Audio }
+    hidePromise: null,         // Promise that resolves when buttons finish hiding
+    hideResolve: null,         // resolver for hidePromise
   };
 
   // === Utilities ===========================================================
@@ -479,13 +481,10 @@
       }
     }
 
-       // follow token + pan
+    // follow token + pan
     const ticker = PIXI.Ticker.shared;
     const tickFn = () => render();
-
-    // 🔧 TEMP TEST: disable per-frame render, only use hooks
-    // ticker.add(tickFn);
-
+    ticker.add(tickFn);
     const h1 = Hooks.on("updateToken", (doc) => { if (doc.id === token.document.id) render(); });
     const h2 = Hooks.on("canvasPan", render);
 
@@ -501,19 +500,18 @@
     const keyListener = (e) => {
       if (e.key === "ArrowLeft")  flipPage(-1);
       if (e.key === "ArrowRight") flipPage(+1);
-    };
+        };
     window.addEventListener("keydown", keyListener, true);
 
     function cleanup() {
-      // 🔧 TEMP TEST: we didn’t add to ticker, so don’t remove it
-      // ticker.remove(tickFn);
+      ticker.remove(tickFn);
       Hooks.off("updateToken", h1);
       Hooks.off("canvasPan", h2);
       window.removeEventListener("keydown", keyListener, true);
       try { root.remove(); } catch {}
     }
 
-    // Store everything we need for animated hide
+    // Store everything we need for later animated hide
     TurnUI.state.buttons = {
       root,
       cleanup,
@@ -528,7 +526,7 @@
     };
   }
 
-         function removeButtons(options = {}) {
+        function removeButtons(options = {}) {
     const { clearToken = false, animate = false } = options;
     const b = TurnUI.state.buttons;
     if (!b) {
@@ -536,25 +534,27 @@
       return;
     }
 
-    // Cancel any ongoing hide animation
     if (b.hideRaf) {
       try { cancelAnimationFrame(b.hideRaf); } catch {}
       b.hideRaf = null;
     }
 
-    // Simple hard removal (no animation)
     if (!animate) {
       try { b.cleanup(); } catch {}
       TurnUI.state.buttons = null;
       if (clearToken) TurnUI.state.currentTokenId = null;
+
+      if (TurnUI.state.hideResolve) {
+        TurnUI.state.hideResolve();
+        TurnUI.state.hideResolve = null;
+        TurnUI.state.hidePromise = null;
+      }
       return;
     }
 
-    // Animated removal (slide-right + fade out)
     if (b.isHiding) return;
     b.isHiding = true;
 
-    // Stop ticking / following the token while we animate out
     try {
       if (b.ticker && b.tickFn) b.ticker.remove(b.tickFn);
     } catch {}
@@ -574,13 +574,18 @@
       TurnUI.state.buttons = null;
       if (clearToken) TurnUI.state.currentTokenId = null;
       b.isHiding = false;
+
+      if (TurnUI.state.hideResolve) {
+        TurnUI.state.hideResolve();
+        TurnUI.state.hideResolve = null;
+        TurnUI.state.hidePromise = null;
+      }
       return;
     }
 
-    // Tunables for exit animation
-    const EXIT_DURATION = 220;   // ms per button fade
-    const EXIT_STAGGER  = 40;    // ms between each button start
-    const EXIT_SHIFT_PX = 18;    // slide distance to the right
+    const EXIT_DURATION = 220;
+    const EXIT_STAGGER  = 40;
+    const EXIT_SHIFT_PX = 18;
 
     const init = items.map((it) => {
       const left = parseFloat(it.wrap.style.left) || 0;
@@ -621,14 +626,47 @@
       } else {
         b.hideRaf = null;
         b.isHiding = false;
+
         try { b.cleanup(); } catch {}
         TurnUI.state.buttons = null;
         if (clearToken) TurnUI.state.currentTokenId = null;
+
+        if (TurnUI.state.hideResolve) {
+          TurnUI.state.hideResolve();
+          TurnUI.state.hideResolve = null;
+          TurnUI.state.hidePromise = null;
+        }
       }
     }
 
     b.hideRaf = requestAnimationFrame(step);
   }
+
+  // Prepare a Promise that resolves when the current buttons finish hiding.
+  function prepareHidePromise() {
+    if (!TurnUI.state.buttons) {
+      TurnUI.state.hidePromise = null;
+      TurnUI.state.hideResolve = null;
+      return null;
+    }
+    if (!TurnUI.state.hidePromise) {
+      TurnUI.state.hidePromise = new Promise((resolve) => {
+        TurnUI.state.hideResolve = resolve;
+      });
+    }
+    return TurnUI.state.hidePromise;
+  }
+
+  // Public helper for macros: wait until buttons are fully gone.
+  TurnUI.waitForButtonsHidden = function(timeoutMs = 800) {
+    const p = TurnUI.state.hidePromise;
+    if (!p) return Promise.resolve();
+    if (!timeoutMs) return p;
+    return Promise.race([
+      p,
+      new Promise((resolve) => setTimeout(resolve, timeoutMs))
+    ]);
+  };
 
   // === Orchestration per turn =============================================
   function forLocalClient_spawnWhat(token) {
@@ -695,8 +733,7 @@
   });
 
   // 3) Custom animation events: hide/show buttons during battler animations
-       Hooks.on("oni:animationStart", (payload) => {
-         console.log("[TurnUI] oni:animationStart received", payload);
+   Hooks.on("oni:animationStart", (payload) => {
     try {
       const currentTokenId = TurnUI.state.currentTokenId;
       if (!currentTokenId) return;
@@ -711,15 +748,18 @@
       // Only hide if we actually have buttons on this client
       if (!TurnUI.state.buttons) return;
 
-      // 👉 For action animations: hide instantly (no slide/fade)
-      removeButtons({ clearToken: false, animate: false });
+      // Create a Promise that resolves when the hide animation finishes,
+      // so action macros can await TurnUI.waitForButtonsHidden()
+      prepareHidePromise();
+
+      // Fade/slide out, but keep currentTokenId so we can respawn later
+      removeButtons({ clearToken: false, animate: true });
     } catch (err) {
       console.error("[Turn UI Manager] Error handling oni:animationStart", err);
     }
   });
 
   Hooks.on("oni:animationEnd", (payload) => {
-    console.log("[TurnUI] oni:animationEnd received", payload);
     try {
       const currentTokenId = TurnUI.state.currentTokenId;
       if (!currentTokenId) return;
