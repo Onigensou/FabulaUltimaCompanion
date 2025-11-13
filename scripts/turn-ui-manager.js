@@ -479,10 +479,13 @@
       }
     }
 
-    // follow token + pan
+       // follow token + pan
     const ticker = PIXI.Ticker.shared;
     const tickFn = () => render();
-    ticker.add(tickFn);
+
+    // 🔧 TEMP TEST: disable per-frame render, only use hooks
+    // ticker.add(tickFn);
+
     const h1 = Hooks.on("updateToken", (doc) => { if (doc.id === token.document.id) render(); });
     const h2 = Hooks.on("canvasPan", render);
 
@@ -498,11 +501,12 @@
     const keyListener = (e) => {
       if (e.key === "ArrowLeft")  flipPage(-1);
       if (e.key === "ArrowRight") flipPage(+1);
-        };
+    };
     window.addEventListener("keydown", keyListener, true);
 
-        function cleanup() {
-      ticker.remove(tickFn);
+    function cleanup() {
+      // 🔧 TEMP TEST: we didn’t add to ticker, so don’t remove it
+      // ticker.remove(tickFn);
       Hooks.off("updateToken", h1);
       Hooks.off("canvasPan", h2);
       window.removeEventListener("keydown", keyListener, true);
