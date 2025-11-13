@@ -691,7 +691,8 @@
   });
 
   // 3) Custom animation events: hide/show buttons during battler animations
-     Hooks.on("oni:animationStart", (payload) => {
+       Hooks.on("oni:animationStart", (payload) => {
+         console.log("[TurnUI] oni:animationStart received", payload);
     try {
       const currentTokenId = TurnUI.state.currentTokenId;
       if (!currentTokenId) return;
@@ -706,14 +707,15 @@
       // Only hide if we actually have buttons on this client
       if (!TurnUI.state.buttons) return;
 
-      // Fade/slide out, but keep currentTokenId so we can respawn later
-      removeButtons({ clearToken: false, animate: true });
+      // 👉 For action animations: hide instantly (no slide/fade)
+      removeButtons({ clearToken: false, animate: false });
     } catch (err) {
       console.error("[Turn UI Manager] Error handling oni:animationStart", err);
     }
   });
 
   Hooks.on("oni:animationEnd", (payload) => {
+    console.log("[TurnUI] oni:animationEnd received", payload);
     try {
       const currentTokenId = TurnUI.state.currentTokenId;
       if (!currentTokenId) return;
