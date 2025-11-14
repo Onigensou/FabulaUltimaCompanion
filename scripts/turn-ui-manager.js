@@ -34,7 +34,7 @@
   // --- Config --------------------------------------------------------------
   const SFX_URL = {
     open: "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/Soundboard/Book1.ogg",
-    move: "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/Klonoa/wood_pop_b.wav"
+    move: "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/BattleCursor_3.wav"
   };
   const SFX_VOL = 0.6;
   const STYLE_ID = "fu-turnui-style";
