@@ -25,18 +25,47 @@
 // ============================================================================
 
 (() => {
-    const NSKEY = "FU_TurnUI";
+
+  // ============================================================================
+  // ONI Custom Event Helper (emit) – minimal inline version
+  // This makes ONI.emit(eventName, payload) available if it isn't already.
+  // Installing it here means EVERY client (GM + players) can hear oni:* hooks.
+  // ============================================================================
+
+  globalThis.ONI = globalThis.ONI ?? {};
+
+  if (!ONI.emit) {
+    // Default: LOCAL ONLY (perfect for UI-ish things like animationStart/End)
+    ONI.emit = function(eventName, payload = {}, options = {}) {
+      const { local = true, world = false } = options;
+
+      if (local) Hooks.callAll(eventName, payload);
+      if (world) game.socket.emit("world", { action: eventName, payload });
+    };
+
+    // When you REALLY want to broadcast something across all clients
+    // (e.g. game-state changes, global cutscene flags), use this:
+    ONI.emitWorld = function(eventName, payload = {}) {
+      Hooks.callAll(eventName, payload);
+      game.socket.emit("world", { action: eventName, payload });
+    };
+
+    if (!ONI._worldRx) {
+      ONI._worldRx = (data) => {
+        if (!data?.action) return;
+        Hooks.callAll(data.action, data.payload);
+      };
+      game.socket.on("world", ONI._worldRx);
+    }
+
+    console.log("[ONI Events] Helper installed (Turn UI Manager).");
+  }
+
+  const NSKEY = "FU_TurnUI";
   if (window[NSKEY]?.installed) return; // already loaded
 
   const TurnUI = (window[NSKEY] = window[NSKEY] || {});
   TurnUI.installed = true;
-
-  // Small helper for debug logging (set DEBUG = false to turn off)
-  const DEBUG = true;
-  function dbg(...args) {
-    if (!DEBUG) return;
-    console.log("[Turn UI]", ...args);
-  }
 
   // --- Config --------------------------------------------------------------
   const SFX_URL = {
@@ -749,46 +778,25 @@
     handleTurnChange(combat);
   });
 
-   // 3) Custom animation events: hide/show turn UI during battler animations
-    // 3) Custom animation events: hide/show turn UI during battler animations
+      // 3) Custom animation events: hide/show turn UI during battler animations
   Hooks.on("oni:animationStart", (payload) => {
     try {
       const currentTokenId = TurnUI.state.currentTokenId;
-      dbg("oni:animationStart fired", {
-        payload,
-        currentTokenId,
-        hasIndicator: !!TurnUI.state.indicator,
-        hasButtons: !!TurnUI.state.buttons
-      });
-
-      if (!currentTokenId) {
-        dbg("animStart: no currentTokenId, abort");
-        return;
-      }
+      if (!currentTokenId) return;
 
       // If the event reports a source token, make sure it matches the turn owner
       let srcId = null;
       if (payload && typeof payload === "object" && "sourceTokenId" in payload) {
         srcId = payload.sourceTokenId;
       }
-      if (srcId && srcId !== currentTokenId) {
-        dbg("animStart: sourceTokenId mismatch, ignoring", { srcId, currentTokenId });
-        return;
-      }
+      if (srcId && srcId !== currentTokenId) return;
 
-      // NEW: always hide the thinking/! indicator instantly on this client
-      if (TurnUI.state.indicator) {
-        dbg("animStart: removing indicator for current token");
-      }
-      removeIndicator();
+      // --- NEW: always hide the thinking/! indicator instantly on this client ---
+      removeIndicator(); // no easing, just pop it off
 
-      // Buttons only exist on owner clients
-      if (!TurnUI.state.buttons) {
-        dbg("animStart: no buttons on this client, done after indicator removal");
-        return;
-      }
+      // --- Buttons only exist on the owner client -----------------------------
+      if (!TurnUI.state.buttons) return;
 
-      dbg("animStart: hiding buttons with animation");
       // Create a Promise that resolves when the hide animation finishes,
       // so action macros can await TurnUI.waitForButtonsHidden()
       prepareHidePromise();
@@ -803,40 +811,20 @@
   Hooks.on("oni:animationEnd", (payload) => {
     try {
       const currentTokenId = TurnUI.state.currentTokenId;
-      dbg("oni:animationEnd fired", {
-        payload,
-        currentTokenId,
-        hasIndicator: !!TurnUI.state.indicator,
-        hasButtons: !!TurnUI.state.buttons
-      });
-
-      if (!currentTokenId) {
-        dbg("animEnd: no currentTokenId, abort");
-        return;
-      }
+      if (!currentTokenId) return;
 
       let srcId = null;
       if (payload && typeof payload === "object" && "sourceTokenId" in payload) {
         srcId = payload.sourceTokenId;
       }
-      if (srcId && srcId !== currentTokenId) {
-        dbg("animEnd: sourceTokenId mismatch, ignoring", { srcId, currentTokenId });
-        return;
-      }
+      if (srcId && srcId !== currentTokenId) return;
 
-      // If we already have some UI (buttons *or* indicator), don't respawn.
-      if (TurnUI.state.buttons || TurnUI.state.indicator) {
-        dbg("animEnd: UI already present, skipping respawn");
-        return;
-      }
+      // If we already have UI (buttons or indicator), don't double-spawn
+      if (TurnUI.state.buttons || TurnUI.state.indicator) return;
 
       const token = byIdOnCanvas(currentTokenId);
-      if (!token) {
-        dbg("animEnd: token not found on canvas");
-        return;
-      }
+      if (!token) return;
 
-      dbg("animEnd: calling forLocalClient_spawnWhat(token)");
       // Re-evaluate: owner → buttons, others → thinking indicator
       forLocalClient_spawnWhat(token);
     } catch (err) {
