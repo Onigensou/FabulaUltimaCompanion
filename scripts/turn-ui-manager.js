@@ -25,11 +25,18 @@
 // ============================================================================
 
 (() => {
-  const NSKEY = "FU_TurnUI";
+    const NSKEY = "FU_TurnUI";
   if (window[NSKEY]?.installed) return; // already loaded
 
   const TurnUI = (window[NSKEY] = window[NSKEY] || {});
   TurnUI.installed = true;
+
+  // Small helper for debug logging (set DEBUG = false to turn off)
+  const DEBUG = true;
+  function dbg(...args) {
+    if (!DEBUG) return;
+    console.log("[Turn UI]", ...args);
+  }
 
   // --- Config --------------------------------------------------------------
   const SFX_URL = {
@@ -265,7 +272,12 @@
   }
 
   // === Indicator (for non-owners) =========================================
-  function showIndicatorForToken(token) {
+   function showIndicatorForToken(token) {
+    dbg("showIndicatorForToken: spawn indicator for token", token?.id, {
+      name: token?.name,
+      friendly: isFriendly(token.document)
+    });
+
     removeIndicator(); // singleton per client
     ensureIndicatorStyles();
 
@@ -282,6 +294,7 @@
       const mark  = document.createElement("div"); mark.className  = "mark"; mark.textContent = "!";
       wrap.append(burst, mark);
     }
+    wrap.dataset.tokenId = token.id;
     document.body.appendChild(wrap);
 
     // follow token
@@ -318,9 +331,13 @@
     TurnUI.state.indicator = { el: wrap, ticker, hookId };
   }
 
-  function removeIndicator() {
+    function removeIndicator() {
     const rec = TurnUI.state.indicator;
-    if (!rec) return;
+    if (!rec) {
+      dbg("removeIndicator: no indicator to remove");
+      return;
+    }
+    dbg("removeIndicator: removing indicator");
     try { rec.ticker.stop(); } catch {}
     try { Hooks.off("preDeleteToken", rec.hookId); } catch {}
     try { rec.el.remove(); } catch {}
@@ -733,27 +750,45 @@
   });
 
    // 3) Custom animation events: hide/show turn UI during battler animations
+    // 3) Custom animation events: hide/show turn UI during battler animations
   Hooks.on("oni:animationStart", (payload) => {
     try {
       const currentTokenId = TurnUI.state.currentTokenId;
-      if (!currentTokenId) return;
+      dbg("oni:animationStart fired", {
+        payload,
+        currentTokenId,
+        hasIndicator: !!TurnUI.state.indicator,
+        hasButtons: !!TurnUI.state.buttons
+      });
+
+      if (!currentTokenId) {
+        dbg("animStart: no currentTokenId, abort");
+        return;
+      }
 
       // If the event reports a source token, make sure it matches the turn owner
       let srcId = null;
       if (payload && typeof payload === "object" && "sourceTokenId" in payload) {
         srcId = payload.sourceTokenId;
       }
-      if (srcId && srcId !== currentTokenId) return;
+      if (srcId && srcId !== currentTokenId) {
+        dbg("animStart: sourceTokenId mismatch, ignoring", { srcId, currentTokenId });
+        return;
+      }
 
-      // --- NEW: always hide the thinking indicator instantly ----------------
-      // If this client is a non-owner viewer, they will have the "thinking"
-      // bubble / hostile "!" indicator. We just remove it immediately; no easing.
+      // NEW: always hide the thinking/! indicator instantly on this client
+      if (TurnUI.state.indicator) {
+        dbg("animStart: removing indicator for current token");
+      }
       removeIndicator();
 
-      // --- Existing button hide logic (owner clients only) -------------------
-      // Only hide if we actually have buttons on this client
-      if (!TurnUI.state.buttons) return;
+      // Buttons only exist on owner clients
+      if (!TurnUI.state.buttons) {
+        dbg("animStart: no buttons on this client, done after indicator removal");
+        return;
+      }
 
+      dbg("animStart: hiding buttons with animation");
       // Create a Promise that resolves when the hide animation finishes,
       // so action macros can await TurnUI.waitForButtonsHidden()
       prepareHidePromise();
@@ -768,23 +803,41 @@
   Hooks.on("oni:animationEnd", (payload) => {
     try {
       const currentTokenId = TurnUI.state.currentTokenId;
-      if (!currentTokenId) return;
+      dbg("oni:animationEnd fired", {
+        payload,
+        currentTokenId,
+        hasIndicator: !!TurnUI.state.indicator,
+        hasButtons: !!TurnUI.state.buttons
+      });
+
+      if (!currentTokenId) {
+        dbg("animEnd: no currentTokenId, abort");
+        return;
+      }
 
       let srcId = null;
       if (payload && typeof payload === "object" && "sourceTokenId" in payload) {
         srcId = payload.sourceTokenId;
       }
-      if (srcId && srcId !== currentTokenId) return;
+      if (srcId && srcId !== currentTokenId) {
+        dbg("animEnd: sourceTokenId mismatch, ignoring", { srcId, currentTokenId });
+        return;
+      }
 
-      // If buttons are already up (for some reason), don't double-spawn
-      if (TurnUI.state.buttons) return;
+      // If we already have some UI (buttons *or* indicator), don't respawn.
+      if (TurnUI.state.buttons || TurnUI.state.indicator) {
+        dbg("animEnd: UI already present, skipping respawn");
+        return;
+      }
 
       const token = byIdOnCanvas(currentTokenId);
-      if (!token) return;
+      if (!token) {
+        dbg("animEnd: token not found on canvas");
+        return;
+      }
 
-      // Re-evaluate which UI this client should see:
-      // - Turn owner / GM → command buttons
-      // - Other players    → thinking indicator
+      dbg("animEnd: calling forLocalClient_spawnWhat(token)");
+      // Re-evaluate: owner → buttons, others → thinking indicator
       forLocalClient_spawnWhat(token);
     } catch (err) {
       console.error("[Turn UI Manager] Error handling oni:animationEnd", err);
