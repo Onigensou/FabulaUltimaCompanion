@@ -732,8 +732,8 @@
     handleTurnChange(combat);
   });
 
-  // 3) Custom animation events: hide/show buttons during battler animations
-   Hooks.on("oni:animationStart", (payload) => {
+   // 3) Custom animation events: hide/show turn UI during battler animations
+  Hooks.on("oni:animationStart", (payload) => {
     try {
       const currentTokenId = TurnUI.state.currentTokenId;
       if (!currentTokenId) return;
@@ -745,6 +745,12 @@
       }
       if (srcId && srcId !== currentTokenId) return;
 
+      // --- NEW: always hide the thinking indicator instantly ----------------
+      // If this client is a non-owner viewer, they will have the "thinking"
+      // bubble / hostile "!" indicator. We just remove it immediately; no easing.
+      removeIndicator();
+
+      // --- Existing button hide logic (owner clients only) -------------------
       // Only hide if we actually have buttons on this client
       if (!TurnUI.state.buttons) return;
 
@@ -776,7 +782,9 @@
       const token = byIdOnCanvas(currentTokenId);
       if (!token) return;
 
-      // Re-evaluate: if this client is the owner, spawn buttons again
+      // Re-evaluate which UI this client should see:
+      // - Turn owner / GM → command buttons
+      // - Other players    → thinking indicator
       forLocalClient_spawnWhat(token);
     } catch (err) {
       console.error("[Turn UI Manager] Error handling oni:animationEnd", err);
