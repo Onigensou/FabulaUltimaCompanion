@@ -25,42 +25,6 @@
 // ============================================================================
 
 (() => {
-
-  // ============================================================================
-  // ONI Custom Event Helper (emit) – minimal inline version
-  // This makes ONI.emit(eventName, payload) available if it isn't already.
-  // Installing it here means EVERY client (GM + players) can hear oni:* hooks.
-  // ============================================================================
-
-  globalThis.ONI = globalThis.ONI ?? {};
-
-  if (!ONI.emit) {
-    // Default: LOCAL ONLY (perfect for UI-ish things like animationStart/End)
-    ONI.emit = function(eventName, payload = {}, options = {}) {
-      const { local = true, world = false } = options;
-
-      if (local) Hooks.callAll(eventName, payload);
-      if (world) game.socket.emit("world", { action: eventName, payload });
-    };
-
-    // When you REALLY want to broadcast something across all clients
-    // (e.g. game-state changes, global cutscene flags), use this:
-    ONI.emitWorld = function(eventName, payload = {}) {
-      Hooks.callAll(eventName, payload);
-      game.socket.emit("world", { action: eventName, payload });
-    };
-
-    if (!ONI._worldRx) {
-      ONI._worldRx = (data) => {
-        if (!data?.action) return;
-        Hooks.callAll(data.action, data.payload);
-      };
-      game.socket.on("world", ONI._worldRx);
-    }
-
-    console.log("[ONI Events] Helper installed (Turn UI Manager).");
-  }
-
   const NSKEY = "FU_TurnUI";
   if (window[NSKEY]?.installed) return; // already loaded
 
@@ -301,12 +265,7 @@
   }
 
   // === Indicator (for non-owners) =========================================
-   function showIndicatorForToken(token) {
-    dbg("showIndicatorForToken: spawn indicator for token", token?.id, {
-      name: token?.name,
-      friendly: isFriendly(token.document)
-    });
-
+  function showIndicatorForToken(token) {
     removeIndicator(); // singleton per client
     ensureIndicatorStyles();
 
@@ -323,7 +282,6 @@
       const mark  = document.createElement("div"); mark.className  = "mark"; mark.textContent = "!";
       wrap.append(burst, mark);
     }
-    wrap.dataset.tokenId = token.id;
     document.body.appendChild(wrap);
 
     // follow token
@@ -360,13 +318,9 @@
     TurnUI.state.indicator = { el: wrap, ticker, hookId };
   }
 
-    function removeIndicator() {
+  function removeIndicator() {
     const rec = TurnUI.state.indicator;
-    if (!rec) {
-      dbg("removeIndicator: no indicator to remove");
-      return;
-    }
-    dbg("removeIndicator: removing indicator");
+    if (!rec) return;
     try { rec.ticker.stop(); } catch {}
     try { Hooks.off("preDeleteToken", rec.hookId); } catch {}
     try { rec.el.remove(); } catch {}
@@ -778,8 +732,8 @@
     handleTurnChange(combat);
   });
 
-      // 3) Custom animation events: hide/show turn UI during battler animations
-  Hooks.on("oni:animationStart", (payload) => {
+  // 3) Custom animation events: hide/show buttons during battler animations
+   Hooks.on("oni:animationStart", (payload) => {
     try {
       const currentTokenId = TurnUI.state.currentTokenId;
       if (!currentTokenId) return;
@@ -791,10 +745,7 @@
       }
       if (srcId && srcId !== currentTokenId) return;
 
-      // --- NEW: always hide the thinking/! indicator instantly on this client ---
-      removeIndicator(); // no easing, just pop it off
-
-      // --- Buttons only exist on the owner client -----------------------------
+      // Only hide if we actually have buttons on this client
       if (!TurnUI.state.buttons) return;
 
       // Create a Promise that resolves when the hide animation finishes,
@@ -819,13 +770,13 @@
       }
       if (srcId && srcId !== currentTokenId) return;
 
-      // If we already have UI (buttons or indicator), don't double-spawn
-      if (TurnUI.state.buttons || TurnUI.state.indicator) return;
+      // If buttons are already up (for some reason), don't double-spawn
+      if (TurnUI.state.buttons) return;
 
       const token = byIdOnCanvas(currentTokenId);
       if (!token) return;
 
-      // Re-evaluate: owner → buttons, others → thinking indicator
+      // Re-evaluate: if this client is the owner, spawn buttons again
       forLocalClient_spawnWhat(token);
     } catch (err) {
       console.error("[Turn UI Manager] Error handling oni:animationEnd", err);
