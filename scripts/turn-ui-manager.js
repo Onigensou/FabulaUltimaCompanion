@@ -732,8 +732,8 @@
     handleTurnChange(combat);
   });
 
-   // 3) Custom animation events: hide/show UI during battler animations
-  Hooks.on("oni:animationStart", (payload) => {
+  // 3) Custom animation events: hide/show buttons during battler animations
+   Hooks.on("oni:animationStart", (payload) => {
     try {
       const currentTokenId = TurnUI.state.currentTokenId;
       if (!currentTokenId) return;
@@ -745,27 +745,15 @@
       }
       if (srcId && srcId !== currentTokenId) return;
 
-      const hasButtons   = !!TurnUI.state.buttons;
-      const hasIndicator = !!TurnUI.state.indicator;
+      // Only hide if we actually have buttons on this client
+      if (!TurnUI.state.buttons) return;
 
-      // If we have neither, nothing to hide on this client
-      if (!hasButtons && !hasIndicator) return;
+      // Create a Promise that resolves when the hide animation finishes,
+      // so action macros can await TurnUI.waitForButtonsHidden()
+      prepareHidePromise();
 
-      // OWNER VIEW: fade out the command buttons, and prepare the hide Promise
-      if (hasButtons) {
-        // Create a Promise that resolves when the hide animation finishes,
-        // so action macros can await TurnUI.waitForButtonsHidden()
-        prepareHidePromise();
-
-        // Fade/slide out, but keep currentTokenId so we can respawn later
-        removeButtons({ clearToken: false, animate: true });
-      }
-
-      // NON-OWNER VIEW: immediately despawn the thinking / "!" indicator
-      if (hasIndicator) {
-        // No easing needed; just remove it while the animation plays
-        removeIndicator();
-      }
+      // Fade/slide out, but keep currentTokenId so we can respawn later
+      removeButtons({ clearToken: false, animate: true });
     } catch (err) {
       console.error("[Turn UI Manager] Error handling oni:animationStart", err);
     }
@@ -782,15 +770,13 @@
       }
       if (srcId && srcId !== currentTokenId) return;
 
-      // If UI is already up (buttons or indicator), don't double-spawn
-      if (TurnUI.state.buttons || TurnUI.state.indicator) return;
+      // If buttons are already up (for some reason), don't double-spawn
+      if (TurnUI.state.buttons) return;
 
       const token = byIdOnCanvas(currentTokenId);
       if (!token) return;
 
-      // Re-evaluate ownership:
-      //  - If this client owns the token → respawn command buttons
-      //  - Otherwise → respawn thinking bubble / "!" indicator
+      // Re-evaluate: if this client is the owner, spawn buttons again
       forLocalClient_spawnWhat(token);
     } catch (err) {
       console.error("[Turn UI Manager] Error handling oni:animationEnd", err);
