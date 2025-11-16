@@ -910,30 +910,72 @@
     handleTurnChange(combat);
   });
 
-    // 3) Socket listener: hide/show Turn UI around animations across clients
-  if (game?.socket) {
-    game.socket.on(SOCKET_CHANNEL, (data) => {
-      if (!data || !data.type) return;
+      // === Hooks ==============================================================
 
-      console.log("[Turn UI Manager] Socket message received on user", game.user?.id, data);
+  // 1) On combat start: warm up SFX cache
+  Hooks.on("combatStart", () => { cacheSFX(); });
 
-      if (data.type === "ONI_TURNUI_HIDE_FOR_ANIMATION") {
-        console.log("[Turn UI Manager] -> handling HIDE_FOR_ANIMATION");
-        TurnUI.handleHideForAnimationPacket(data.payload || {});
-      } else if (data.type === "ONI_TURNUI_SHOW_AFTER_ANIMATION") {
-        console.log("[Turn UI Manager] -> handling SHOW_AFTER_ANIMATION");
-        TurnUI.handleShowAfterAnimationPacket(data.payload || {});
-      }
-    });
-  }
+  // 2) On combat end / delete / active=false: clear UI + uncache
+  Hooks.on("combatEnd", () => { clearAllUI(); uncacheSFX(); });
+  Hooks.on("deleteCombat", () => { clearAllUI(); uncacheSFX(); });
+  Hooks.on("updateCombat", (combat, changed) => {
+    // If combat was deactivated, treat as end
+    if (Object.prototype.hasOwnProperty.call(changed, "active") && changed.active === false) {
+      clearAllUI(); uncacheSFX(); return;
+    }
 
-  // 4) On ready: if there is an active combat, initialize once
+    // Only act when turn or round actually changes
+    if (!("turn" in changed || "round" in changed)) return;
+    handleTurnChange(combat);
+  });
+
+  // 3) On ready: initialize + install socket listeners
   Hooks.once("ready", () => {
     cacheSFX();
     const c = game.combats?.active;
     if (c && (c.started || (c.round ?? 0) > 0)) {
       // Fire once to match current state
       handleTurnChange(c);
+    }
+
+    // === Socket listeners (installed AFTER ready, on every client) ========
+    if (!game.socket) {
+      console.warn("[Turn UI Manager] game.socket is not available on user", game.user?.id);
+    } else {
+      console.log("[Turn UI Manager] Installing socket listeners on user", game.user?.id, {
+        moduleChannel: SOCKET_CHANNEL,
+        world: true
+      });
+
+      // Listen on module.<id> (primary channel)
+      game.socket.on(SOCKET_CHANNEL, (data) => {
+        if (!data || !data.type) return;
+
+        console.log("[Turn UI Manager] Socket message received on user", game.user?.id, data);
+
+        if (data.type === "ONI_TURNUI_HIDE_FOR_ANIMATION") {
+          console.log("[Turn UI Manager] -> handling HIDE_FOR_ANIMATION (module channel)");
+          TurnUI.handleHideForAnimationPacket(data.payload || {});
+        } else if (data.type === "ONI_TURNUI_SHOW_AFTER_ANIMATION") {
+          console.log("[Turn UI Manager] -> handling SHOW_AFTER_ANIMATION (module channel)");
+          TurnUI.handleShowAfterAnimationPacket(data.payload || {});
+        }
+      });
+
+      // ALSO listen on 'world' with a tagged payload, similar to your TurnIndPing demo.
+      game.socket.on("world", (data) => {
+        if (!data || data._oniTurnUI == null) return;
+
+        console.log("[Turn UI Manager] WORLD socket message on user", game.user?.id, { data });
+
+        if (data._oniTurnUI === "HIDE_FOR_ANIMATION") {
+          console.log("[Turn UI Manager] -> handling HIDE_FOR_ANIMATION (world channel)");
+          TurnUI.handleHideForAnimationPacket(data.payload || {});
+        } else if (data._oniTurnUI === "SHOW_AFTER_ANIMATION") {
+          console.log("[Turn UI Manager] -> handling SHOW_AFTER_ANIMATION (world channel)");
+          TurnUI.handleShowAfterAnimationPacket(data.payload || {});
+        }
+      });
     }
   });
 
