@@ -32,13 +32,17 @@
   TurnUI.installed = true;
 
   // --- Config --------------------------------------------------------------
-  const SFX_URL = {
+    const SFX_URL = {
     open: "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/switch_mode.wav",
     move: "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/BattleCursor_4.wav"
   };
   const SFX_VOL = 0.6;
   const STYLE_ID = "fu-turnui-style";
   const INDICATOR_STYLE_ID = "fu-turn-indicator-style";
+
+  // Socket channel for cross-client hide/show during animation
+  const MODULE_ID      = "fabula-ultima-companion";
+  const SOCKET_CHANNEL = `module.${MODULE_ID}`;
 
   // Map button label -> Macro name
   const MACRO_NAME = {
@@ -713,7 +717,7 @@
     removeIndicator();
   }
 
-  // === Animation helpers (hide/show UI around a skill animation) ===========
+    // === Animation helpers (hide/show UI around a skill animation) ===========
   // These functions are the single place that know how to hide/show:
   // - Owner command buttons (this client only)
   // - Non-owner turn indicator icon (this client only)
@@ -782,17 +786,10 @@
 
   // Expose helpers on the TurnUI namespace so other scripts (e.g. ActionAnimationHandler)
   // can call them directly using the callback pattern.
-  TurnUI.hideUIForAnimation  = hideUIForAnimation;
+  TurnUI.hideUIForAnimation   = hideUIForAnimation;
   TurnUI.showUIAfterAnimation = showUIAfterAnimation;
 
-  // Convenience: callback-style helper for your controller script.
-  // Usage idea inside ActionAnimationHandler:
-  //
-  //   const uiPayload = { sourceTokenId: SOME_ID, sceneId: canvas.scene?.id ?? null };
-  //   const result = await TurnUI.withAnimationHideShow(uiPayload, () => worker());
-  //
-  // This brackets the animation with hide/show on the right UI per client and
-  // returns the worker's result (true/false).
+  // Convenience: callback-style helper for your controller script (LOCAL ONLY).
   TurnUI.withAnimationHideShow = async function(payload, workerFn) {
     if (typeof workerFn !== "function") return;
     try {
@@ -816,7 +813,16 @@
     }
   };
 
-  // === Hooks ==============================================================
+  // Public wrappers for socket packets (so other scripts can call these too)
+  TurnUI.handleHideForAnimationPacket = function(packetPayload = {}) {
+    hideUIForAnimation(packetPayload);
+  };
+
+  TurnUI.handleShowAfterAnimationPacket = function(packetPayload = {}) {
+    showUIAfterAnimation(packetPayload);
+  };
+
+    // === Hooks ==============================================================
 
   // 1) On combat start: warm up SFX cache
   Hooks.on("combatStart", () => { cacheSFX(); });
@@ -834,6 +840,19 @@
     if (!("turn" in changed || "round" in changed)) return;
     handleTurnChange(combat);
   });
+
+  // 3) Socket listener: hide/show Turn UI around animations across clients
+  if (game?.socket) {
+    game.socket.on(SOCKET_CHANNEL, (data) => {
+      if (!data || !data.type) return;
+
+      if (data.type === "ONI_TURNUI_HIDE_FOR_ANIMATION") {
+        TurnUI.handleHideForAnimationPacket(data.payload || {});
+      } else if (data.type === "ONI_TURNUI_SHOW_AFTER_ANIMATION") {
+        TurnUI.handleShowAfterAnimationPacket(data.payload || {});
+      }
+    });
+  }
 
   // 4) On ready: if there is an active combat, initialize once
   Hooks.once("ready", () => {
