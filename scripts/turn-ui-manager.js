@@ -31,6 +31,11 @@
   const TurnUI = (window[NSKEY] = window[NSKEY] || {});
   TurnUI.installed = true;
 
+  // Expose on globalThis so other scripts (like ActionAnimationHandler) can see it
+  // as globalThis.TurnUI.
+  globalThis.TurnUI = TurnUI;
+  console.log("[Turn UI Manager] Initialized. Global TurnUI exposed on globalThis.");
+
   // --- Config --------------------------------------------------------------
     const SFX_URL = {
     open: "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/switch_mode.wav",
@@ -724,10 +729,22 @@
   //
   // They will be called from a controller script (ActionAnimationHandler) using
   // the callback pattern via TurnUI.withAnimationHideShow(...).
-  function hideUIForAnimation(payload) {
+    function hideUIForAnimation(payload) {
     try {
       const currentTokenId = TurnUI.state.currentTokenId;
-      if (!currentTokenId) return;
+      console.log("[Turn UI Manager] hideUIForAnimation called on user",
+        game.user?.id, {
+          payload,
+          currentTokenId,
+          hasButtons: !!TurnUI.state.buttons,
+          hasIndicator: !!TurnUI.state.indicator
+        }
+      );
+
+      if (!currentTokenId) {
+        console.log("[Turn UI Manager] hideUIForAnimation: no currentTokenId, abort.");
+        return;
+      }
 
       // Optional: only react if the payload declares a specific source token.
       // For now, we allow payload without sourceTokenId, so this check is soft.
@@ -735,10 +752,17 @@
       if (payload && typeof payload === "object" && "sourceTokenId" in payload) {
         srcId = payload.sourceTokenId;
       }
-      if (srcId && srcId !== currentTokenId) return;
+      if (srcId && srcId !== currentTokenId) {
+        console.log("[Turn UI Manager] hideUIForAnimation: sourceTokenId mismatch; ignoring.", {
+          srcId,
+          currentTokenId
+        });
+        return;
+      }
 
       // 1) If this client currently shows command buttons (owner), hide them with easing.
       if (TurnUI.state.buttons) {
+        console.log("[Turn UI Manager] hideUIForAnimation: Hiding command buttons with animation.");
         // Prepare a Promise so scripts can await TurnUI.waitForButtonsHidden()
         if (typeof prepareHidePromise === "function") {
           prepareHidePromise();
@@ -749,6 +773,7 @@
 
       // 2) If this client shows a turn-indicator icon (non-owner), hide it instantly.
       if (TurnUI.state.indicator) {
+        console.log("[Turn UI Manager] hideUIForAnimation: Hiding turn-indicator icon instantly.");
         // As per your request: no easing needed for the thinking / ! icon.
         removeIndicator();
       }
@@ -756,25 +781,50 @@
       console.error("[Turn UI Manager] hideUIForAnimation error:", err);
     }
   }
-
-  function showUIAfterAnimation(payload) {
+  
+    function showUIAfterAnimation(payload) {
     try {
       const currentTokenId = TurnUI.state.currentTokenId;
-      if (!currentTokenId) return;
+      console.log("[Turn UI Manager] showUIAfterAnimation called on user",
+        game.user?.id, {
+          payload,
+          currentTokenId,
+          hasButtons: !!TurnUI.state.buttons,
+          hasIndicator: !!TurnUI.state.indicator
+        }
+      );
+
+      if (!currentTokenId) {
+        console.log("[Turn UI Manager] showUIAfterAnimation: no currentTokenId, abort.");
+        return;
+      }
 
       // Optional: respect sourceTokenId if provided
       let srcId = null;
       if (payload && typeof payload === "object" && "sourceTokenId" in payload) {
         srcId = payload.sourceTokenId;
       }
-      if (srcId && srcId !== currentTokenId) return;
+      if (srcId && srcId !== currentTokenId) {
+        console.log("[Turn UI Manager] showUIAfterAnimation: sourceTokenId mismatch; ignoring.", {
+          srcId,
+          currentTokenId
+        });
+        return;
+      }
 
       // If something is already visible (buttons or indicator), don't double-spawn.
-      if (TurnUI.state.buttons || TurnUI.state.indicator) return;
+      if (TurnUI.state.buttons || TurnUI.state.indicator) {
+        console.log("[Turn UI Manager] showUIAfterAnimation: UI already visible, skipping respawn.");
+        return;
+      }
 
       const token = byIdOnCanvas(currentTokenId);
-      if (!token) return;
+      if (!token) {
+        console.log("[Turn UI Manager] showUIAfterAnimation: token not on this canvas, abort.");
+        return;
+      }
 
+      console.log("[Turn UI Manager] showUIAfterAnimation: respawning UI via forLocalClient_spawnWhat.");
       // Re-evaluate what this client should see:
       // - If this client owns the token → spawn command buttons.
       // - Otherwise → spawn the turn-indicator icon.
@@ -841,14 +891,18 @@
     handleTurnChange(combat);
   });
 
-  // 3) Socket listener: hide/show Turn UI around animations across clients
+    // 3) Socket listener: hide/show Turn UI around animations across clients
   if (game?.socket) {
     game.socket.on(SOCKET_CHANNEL, (data) => {
       if (!data || !data.type) return;
 
+      console.log("[Turn UI Manager] Socket message received on user", game.user?.id, data);
+
       if (data.type === "ONI_TURNUI_HIDE_FOR_ANIMATION") {
+        console.log("[Turn UI Manager] -> handling HIDE_FOR_ANIMATION");
         TurnUI.handleHideForAnimationPacket(data.payload || {});
       } else if (data.type === "ONI_TURNUI_SHOW_AFTER_ANIMATION") {
+        console.log("[Turn UI Manager] -> handling SHOW_AFTER_ANIMATION");
         TurnUI.handleShowAfterAnimationPacket(data.payload || {});
       }
     });
