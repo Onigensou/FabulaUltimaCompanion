@@ -732,72 +732,56 @@
     handleTurnChange(combat);
   });
 
- // 3) Custom animation events: hide/show turn UI during battler animations
-// Now both the command buttons *and* the turn indicator icon use the same timing.
-// - Buttons: fade/slide out with animation (for the owner client)
-// - Indicator (thinking / red "!"): just blinks off instantly (no easing)
-Hooks.on("oni:animationStart", (payload) => {
-  try {
-    const currentTokenId = TurnUI.state.currentTokenId;
-    if (!currentTokenId) return;
+  // 3) Custom animation events: hide/show buttons during battler animations
+   Hooks.on("oni:animationStart", (payload) => {
+    try {
+      const currentTokenId = TurnUI.state.currentTokenId;
+      if (!currentTokenId) return;
 
-    // If the event reports a source token, make sure it matches the turn owner
-    let srcId = null;
-    if (payload && typeof payload === "object" && "sourceTokenId" in payload) {
-      srcId = payload.sourceTokenId;
-    }
-    if (srcId && srcId !== currentTokenId) return;
+      // If the event reports a source token, make sure it matches the turn owner
+      let srcId = null;
+      if (payload && typeof payload === "object" && "sourceTokenId" in payload) {
+        srcId = payload.sourceTokenId;
+      }
+      if (srcId && srcId !== currentTokenId) return;
 
-    const hasButtons   = !!TurnUI.state.buttons;
-    const hasIndicator = !!TurnUI.state.indicator;
+      // Only hide if we actually have buttons on this client
+      if (!TurnUI.state.buttons) return;
 
-    // If this client has neither buttons nor indicator, nothing to hide
-    if (!hasButtons && !hasIndicator) return;
-
-    // If we have buttons (owner client), run the animated hide + Promise
-    if (hasButtons) {
       // Create a Promise that resolves when the hide animation finishes,
       // so action macros can await TurnUI.waitForButtonsHidden()
       prepareHidePromise();
 
       // Fade/slide out, but keep currentTokenId so we can respawn later
       removeButtons({ clearToken: false, animate: true });
+    } catch (err) {
+      console.error("[Turn UI Manager] Error handling oni:animationStart", err);
     }
-
-    // If we have an indicator (non-owner client), just blink it off instantly.
-    // No easing, no Promise needed.
-    if (hasIndicator) {
-      removeIndicator();
-    }
-  } catch (err) {
-    console.error("[Turn UI Manager] Error handling oni:animationStart", err);
-  }
-});
+  });
 
   Hooks.on("oni:animationEnd", (payload) => {
-  try {
-    const currentTokenId = TurnUI.state.currentTokenId;
-    if (!currentTokenId) return;
+    try {
+      const currentTokenId = TurnUI.state.currentTokenId;
+      if (!currentTokenId) return;
 
-    let srcId = null;
-    if (payload && typeof payload === "object" && "sourceTokenId" in payload) {
-      srcId = payload.sourceTokenId;
+      let srcId = null;
+      if (payload && typeof payload === "object" && "sourceTokenId" in payload) {
+        srcId = payload.sourceTokenId;
+      }
+      if (srcId && srcId !== currentTokenId) return;
+
+      // If buttons are already up (for some reason), don't double-spawn
+      if (TurnUI.state.buttons) return;
+
+      const token = byIdOnCanvas(currentTokenId);
+      if (!token) return;
+
+      // Re-evaluate: if this client is the owner, spawn buttons again
+      forLocalClient_spawnWhat(token);
+    } catch (err) {
+      console.error("[Turn UI Manager] Error handling oni:animationEnd", err);
     }
-    if (srcId && srcId !== currentTokenId) return;
-
-    // If some UI is already up (buttons or indicator), don't double-spawn
-    if (TurnUI.state.buttons || TurnUI.state.indicator) return;
-
-    const token = byIdOnCanvas(currentTokenId);
-    if (!token) return;
-
-    // Re-evaluate: if this client is the owner, spawn buttons;
-    // everyone else gets the indicator. Both share the same timing.
-    forLocalClient_spawnWhat(token);
-  } catch (err) {
-    console.error("[Turn UI Manager] Error handling oni:animationEnd", err);
-  }
-});
+  });
 
   // 4) On ready: if there is an active combat, initialize once
   Hooks.once("ready", () => {
