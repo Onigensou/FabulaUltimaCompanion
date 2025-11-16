@@ -707,36 +707,12 @@
     forLocalClient_spawnWhat(token);
   }
 
-   function clearAllUI() {
+  function clearAllUI() {
     TurnUI.state.currentTokenId = null;
     removeButtons();
     removeIndicator();
   }
 
-  // === Indicator sync via ONI (piggybacks on command buttons) =============
-  /**
-   * Emit a small world-level event so every client can hide/show the
-   * thinking icon for the current turn owner.
-   *
-   * We *only* call this from the client that actually received
-   * oni:animationStart / oni:animationEnd (i.e. the turn owner client).
-   */
-  function emitIndicatorEvent(type, tokenId) {
-    const sceneId = canvas.scene?.id ?? null;
-    const payload = { sceneId, tokenId };
-
-    try {
-      if (globalThis.ONI?.emitWorld) {
-        // Use Oni's helper if available (recommended)
-        globalThis.ONI.emitWorld(type, payload);
-      } else {
-        console.warn("[Turn UI Manager] ONI.emitWorld is not available; indicator sync will be local-only.");
-      }
-    } catch (err) {
-      console.error("[Turn UI Manager] Failed to emit indicator event", type, err);
-    }
-  }
-  
     // === Hooks ==============================================================
 
   // 1) On combat start: warm up SFX cache
@@ -756,116 +732,72 @@
     handleTurnChange(combat);
   });
 
-    // 3) Custom animation events: hide/show buttons during battler animations
-  Hooks.on("oni:animationStart", (payload) => {
-    try {
-      const currentTokenId = TurnUI.state.currentTokenId;
-      if (!currentTokenId) return;
+ // 3) Custom animation events: hide/show turn UI during battler animations
+// Now both the command buttons *and* the turn indicator icon use the same timing.
+// - Buttons: fade/slide out with animation (for the owner client)
+// - Indicator (thinking / red "!"): just blinks off instantly (no easing)
+Hooks.on("oni:animationStart", (payload) => {
+  try {
+    const currentTokenId = TurnUI.state.currentTokenId;
+    if (!currentTokenId) return;
 
-      // If the event reports a source token, make sure it matches the turn owner
-      let srcId = null;
-      if (payload && typeof payload === "object" && "sourceTokenId" in payload) {
-        srcId = payload.sourceTokenId;
-      }
-      if (srcId && srcId !== currentTokenId) return;
+    // If the event reports a source token, make sure it matches the turn owner
+    let srcId = null;
+    if (payload && typeof payload === "object" && "sourceTokenId" in payload) {
+      srcId = payload.sourceTokenId;
+    }
+    if (srcId && srcId !== currentTokenId) return;
 
-      // Only hide if we actually have buttons on this client
-      if (!TurnUI.state.buttons) return;
+    const hasButtons   = !!TurnUI.state.buttons;
+    const hasIndicator = !!TurnUI.state.indicator;
 
+    // If this client has neither buttons nor indicator, nothing to hide
+    if (!hasButtons && !hasIndicator) return;
+
+    // If we have buttons (owner client), run the animated hide + Promise
+    if (hasButtons) {
       // Create a Promise that resolves when the hide animation finishes,
       // so action macros can await TurnUI.waitForButtonsHidden()
       prepareHidePromise();
 
       // Fade/slide out, but keep currentTokenId so we can respawn later
       removeButtons({ clearToken: false, animate: true });
-
-      // NEW: tell every client to hide the thinking icon for this token
-      emitIndicatorEvent("oni:turnUI:indicatorHide", currentTokenId);
-    } catch (err) {
-      console.error("[Turn UI Manager] Error handling oni:animationStart", err);
     }
-  });
 
-     Hooks.on("oni:animationEnd", (payload) => {
-    try {
-      const currentTokenId = TurnUI.state.currentTokenId;
-      if (!currentTokenId) return;
-
-      let srcId = null;
-      if (payload && typeof payload === "object" && "sourceTokenId" in payload) {
-        srcId = payload.sourceTokenId;
-      }
-      if (srcId && srcId !== currentTokenId) return;
-
-      // If buttons are already up (for some reason), don't double-spawn
-      if (TurnUI.state.buttons) return;
-
-      const token = byIdOnCanvas(currentTokenId);
-      if (!token) return;
-
-      // Re-evaluate: if this client is the owner, spawn buttons again
-      forLocalClient_spawnWhat(token);
-
-      // NEW: tell every client to restore the thinking icon (if appropriate)
-      emitIndicatorEvent("oni:turnUI:indicatorShow", currentTokenId);
-    } catch (err) {
-      console.error("[Turn UI Manager] Error handling oni:animationEnd", err);
-    }
-  });
-
-  // 3b) Cross-client thinking icon sync (piggybacking buttons)
-  Hooks.on("oni:turnUI:indicatorHide", (payload) => {
-    try {
-      const sceneId = payload?.sceneId ?? null;
-      const tokenId = payload?.tokenId ?? null;
-      if (!tokenId) return;
-
-      // Ignore if this is for another scene
-      if (sceneId && canvas.scene?.id !== sceneId) return;
-
-      // Only act if this client is currently showing UI for that token
-      if (TurnUI.state.currentTokenId !== tokenId) return;
-
-      // Instant hide; no easing
+    // If we have an indicator (non-owner client), just blink it off instantly.
+    // No easing, no Promise needed.
+    if (hasIndicator) {
       removeIndicator();
-    } catch (err) {
-      console.error("[Turn UI Manager] Error handling oni:turnUI:indicatorHide", err);
     }
-  });
+  } catch (err) {
+    console.error("[Turn UI Manager] Error handling oni:animationStart", err);
+  }
+});
 
-  Hooks.on("oni:turnUI:indicatorShow", (payload) => {
-    try {
-      const sceneId = payload?.sceneId ?? null;
-      const tokenId = payload?.tokenId ?? null;
-      if (!tokenId) return;
+  Hooks.on("oni:animationEnd", (payload) => {
+  try {
+    const currentTokenId = TurnUI.state.currentTokenId;
+    if (!currentTokenId) return;
 
-      // Ignore if this is for another scene
-      if (sceneId && canvas.scene?.id !== sceneId) return;
-
-      // Only act if this client is currently showing UI for that token
-      if (TurnUI.state.currentTokenId !== tokenId) return;
-
-      const token = byIdOnCanvas(tokenId);
-      if (!token) return;
-
-      // Decide if THIS client is the owner or an observer
-      const friendly = isFriendly(token.document);
-      const actor    = token.actor;
-      const ownerIsLocal = friendly
-        ? isLinkedToLocalUser(actor)   // PCs -> their player
-        : game.user?.isGM;             // Monsters/Neutral -> GM
-
-      if (!ownerIsLocal) {
-        // Non-owner: re-show thinking / hostile indicator
-        showIndicatorForToken(token);
-      } else {
-        // Owner: they should have buttons, not indicator
-        removeIndicator();
-      }
-    } catch (err) {
-      console.error("[Turn UI Manager] Error handling oni:turnUI:indicatorShow", err);
+    let srcId = null;
+    if (payload && typeof payload === "object" && "sourceTokenId" in payload) {
+      srcId = payload.sourceTokenId;
     }
-  });
+    if (srcId && srcId !== currentTokenId) return;
+
+    // If some UI is already up (buttons or indicator), don't double-spawn
+    if (TurnUI.state.buttons || TurnUI.state.indicator) return;
+
+    const token = byIdOnCanvas(currentTokenId);
+    if (!token) return;
+
+    // Re-evaluate: if this client is the owner, spawn buttons;
+    // everyone else gets the indicator. Both share the same timing.
+    forLocalClient_spawnWhat(token);
+  } catch (err) {
+    console.error("[Turn UI Manager] Error handling oni:animationEnd", err);
+  }
+});
 
   // 4) On ready: if there is an active combat, initialize once
   Hooks.once("ready", () => {
