@@ -707,13 +707,116 @@
     forLocalClient_spawnWhat(token);
   }
 
-  function clearAllUI() {
+    function clearAllUI() {
     TurnUI.state.currentTokenId = null;
     removeButtons();
     removeIndicator();
   }
 
-    // === Hooks ==============================================================
+  // === Animation helpers (hide/show UI around a skill animation) ===========
+  // These functions are the single place that know how to hide/show:
+  // - Owner command buttons (this client only)
+  // - Non-owner turn indicator icon (this client only)
+  //
+  // They will be called from a controller script (ActionAnimationHandler) using
+  // the callback pattern via TurnUI.withAnimationHideShow(...).
+  function hideUIForAnimation(payload) {
+    try {
+      const currentTokenId = TurnUI.state.currentTokenId;
+      if (!currentTokenId) return;
+
+      // Optional: only react if the payload declares a specific source token.
+      // For now, we allow payload without sourceTokenId, so this check is soft.
+      let srcId = null;
+      if (payload && typeof payload === "object" && "sourceTokenId" in payload) {
+        srcId = payload.sourceTokenId;
+      }
+      if (srcId && srcId !== currentTokenId) return;
+
+      // 1) If this client currently shows command buttons (owner), hide them with easing.
+      if (TurnUI.state.buttons) {
+        // Prepare a Promise so scripts can await TurnUI.waitForButtonsHidden()
+        if (typeof prepareHidePromise === "function") {
+          prepareHidePromise();
+        }
+        // Fade/slide out but keep currentTokenId so we can respawn after the animation.
+        removeButtons({ clearToken: false, animate: true });
+      }
+
+      // 2) If this client shows a turn-indicator icon (non-owner), hide it instantly.
+      if (TurnUI.state.indicator) {
+        // As per your request: no easing needed for the thinking / ! icon.
+        removeIndicator();
+      }
+    } catch (err) {
+      console.error("[Turn UI Manager] hideUIForAnimation error:", err);
+    }
+  }
+
+  function showUIAfterAnimation(payload) {
+    try {
+      const currentTokenId = TurnUI.state.currentTokenId;
+      if (!currentTokenId) return;
+
+      // Optional: respect sourceTokenId if provided
+      let srcId = null;
+      if (payload && typeof payload === "object" && "sourceTokenId" in payload) {
+        srcId = payload.sourceTokenId;
+      }
+      if (srcId && srcId !== currentTokenId) return;
+
+      // If something is already visible (buttons or indicator), don't double-spawn.
+      if (TurnUI.state.buttons || TurnUI.state.indicator) return;
+
+      const token = byIdOnCanvas(currentTokenId);
+      if (!token) return;
+
+      // Re-evaluate what this client should see:
+      // - If this client owns the token → spawn command buttons.
+      // - Otherwise → spawn the turn-indicator icon.
+      forLocalClient_spawnWhat(token);
+    } catch (err) {
+      console.error("[Turn UI Manager] showUIAfterAnimation error:", err);
+    }
+  }
+
+  // Expose helpers on the TurnUI namespace so other scripts (e.g. ActionAnimationHandler)
+  // can call them directly using the callback pattern.
+  TurnUI.hideUIForAnimation  = hideUIForAnimation;
+  TurnUI.showUIAfterAnimation = showUIAfterAnimation;
+
+  // Convenience: callback-style helper for your controller script.
+  // Usage idea inside ActionAnimationHandler:
+  //
+  //   const uiPayload = { sourceTokenId: SOME_ID, sceneId: canvas.scene?.id ?? null };
+  //   const result = await TurnUI.withAnimationHideShow(uiPayload, () => worker());
+  //
+  // This brackets the animation with hide/show on the right UI per client and
+  // returns the worker's result (true/false).
+  TurnUI.withAnimationHideShow = async function(payload, workerFn) {
+    if (typeof workerFn !== "function") return;
+    try {
+      hideUIForAnimation(payload);
+
+      // Allow the worker to be sync or async. If it returns a Promise, await it.
+      const result = workerFn(payload);
+      if (result && typeof result.then === "function") {
+        const awaited = await result;
+        showUIAfterAnimation(payload);
+        return awaited;
+      }
+
+      showUIAfterAnimation(payload);
+      return result;
+    } catch (err) {
+      console.error("[Turn UI Manager] withAnimationHideShow worker error:", err);
+      // Still make sure the UI comes back even if the worker throws.
+      showUIAfterAnimation(payload);
+      throw err;
+    }
+  };
+
+  // === Hooks ==============================================================
 
   // 1) On combat start: warm up SFX cache
   Hooks.on("combatStart", () => { cacheSFX(); });
@@ -723,64 +826,13 @@
   Hooks.on("deleteCombat", () => { clearAllUI(); uncacheSFX(); });
   Hooks.on("updateCombat", (combat, changed) => {
     // If combat was deactivated, treat as end
-    if (Object.prototype.hasOwnProperty.call(changed,"active") && changed.active === false) {
+    if (Object.prototype.hasOwnProperty.call(changed, "active") && changed.active === false) {
       clearAllUI(); uncacheSFX(); return;
     }
 
     // Only act when turn or round actually changes
     if (!("turn" in changed || "round" in changed)) return;
     handleTurnChange(combat);
-  });
-
-  // 3) Custom animation events: hide/show buttons during battler animations
-   Hooks.on("oni:animationStart", (payload) => {
-    try {
-      const currentTokenId = TurnUI.state.currentTokenId;
-      if (!currentTokenId) return;
-
-      // If the event reports a source token, make sure it matches the turn owner
-      let srcId = null;
-      if (payload && typeof payload === "object" && "sourceTokenId" in payload) {
-        srcId = payload.sourceTokenId;
-      }
-      if (srcId && srcId !== currentTokenId) return;
-
-      // Only hide if we actually have buttons on this client
-      if (!TurnUI.state.buttons) return;
-
-      // Create a Promise that resolves when the hide animation finishes,
-      // so action macros can await TurnUI.waitForButtonsHidden()
-      prepareHidePromise();
-
-      // Fade/slide out, but keep currentTokenId so we can respawn later
-      removeButtons({ clearToken: false, animate: true });
-    } catch (err) {
-      console.error("[Turn UI Manager] Error handling oni:animationStart", err);
-    }
-  });
-
-  Hooks.on("oni:animationEnd", (payload) => {
-    try {
-      const currentTokenId = TurnUI.state.currentTokenId;
-      if (!currentTokenId) return;
-
-      let srcId = null;
-      if (payload && typeof payload === "object" && "sourceTokenId" in payload) {
-        srcId = payload.sourceTokenId;
-      }
-      if (srcId && srcId !== currentTokenId) return;
-
-      // If buttons are already up (for some reason), don't double-spawn
-      if (TurnUI.state.buttons) return;
-
-      const token = byIdOnCanvas(currentTokenId);
-      if (!token) return;
-
-      // Re-evaluate: if this client is the owner, spawn buttons again
-      forLocalClient_spawnWhat(token);
-    } catch (err) {
-      console.error("[Turn UI Manager] Error handling oni:animationEnd", err);
-    }
   });
 
   // 4) On ready: if there is an active combat, initialize once
