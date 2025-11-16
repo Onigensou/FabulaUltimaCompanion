@@ -729,41 +729,56 @@
   //
   // They will be called from a controller script (ActionAnimationHandler) using
   // the callback pattern via TurnUI.withAnimationHideShow(...).
-    function hideUIForAnimation(payload) {
+     function hideUIForAnimation(payload) {
     try {
       const currentTokenId = TurnUI.state.currentTokenId;
+      const hasButtons     = !!TurnUI.state.buttons;
+      const hasIndicator   = !!TurnUI.state.indicator;
+
       console.log("[Turn UI Manager] hideUIForAnimation called on user",
         game.user?.id, {
           payload,
           currentTokenId,
-          hasButtons: !!TurnUI.state.buttons,
-          hasIndicator: !!TurnUI.state.indicator
+          hasButtons,
+          hasIndicator
         }
       );
 
-      if (!currentTokenId) {
-        console.log("[Turn UI Manager] hideUIForAnimation: no currentTokenId, abort.");
+      // NEW: if we literally have no Turn UI at all, there is nothing to hide.
+      if (!hasButtons && !hasIndicator) {
+        console.log("[Turn UI Manager] hideUIForAnimation: no buttons/indicator present, nothing to hide.");
         return;
       }
 
-      // Optional: only react if the payload declares a specific source token.
-      // For now, we allow payload without sourceTokenId, so this check is soft.
+      // Optional: sourceTokenId only matters for deciding whether
+      // to hide the *command buttons*. For the indicator we will ALWAYS hide
+      // if it exists, regardless of currentTokenId or srcId.
       let srcId = null;
       if (payload && typeof payload === "object" && "sourceTokenId" in payload) {
         srcId = payload.sourceTokenId;
       }
-      if (srcId && srcId !== currentTokenId) {
-        console.log("[Turn UI Manager] hideUIForAnimation: sourceTokenId mismatch; ignoring.", {
-          srcId,
-          currentTokenId
-        });
-        return;
+
+      // Decide if we should affect the command buttons on this client.
+      // We require:
+      //   - buttons exist, AND
+      //   - either no srcId was given, OR srcId matches this client's currentTokenId.
+      let shouldHideButtons = false;
+      if (hasButtons) {
+        if (!srcId) {
+          shouldHideButtons = true;
+        } else if (currentTokenId && srcId === currentTokenId) {
+          shouldHideButtons = true;
+        } else {
+          console.log("[Turn UI Manager] hideUIForAnimation: buttons present but sourceTokenId mismatch; not hiding buttons.", {
+            srcId,
+            currentTokenId
+          });
+        }
       }
 
-      // 1) If this client currently shows command buttons (owner), hide them with easing.
-      if (TurnUI.state.buttons) {
+      // 1) Hide command buttons (owner) WITH easing, if applicable.
+      if (shouldHideButtons) {
         console.log("[Turn UI Manager] hideUIForAnimation: Hiding command buttons with animation.");
-        // Prepare a Promise so scripts can await TurnUI.waitForButtonsHidden()
         if (typeof prepareHidePromise === "function") {
           prepareHidePromise();
         }
@@ -771,8 +786,9 @@
         removeButtons({ clearToken: false, animate: true });
       }
 
-      // 2) If this client shows a turn-indicator icon (non-owner), hide it instantly.
-      if (TurnUI.state.indicator) {
+      // 2) ALWAYS hide the turn-indicator icon if it exists on this client.
+      //    This is the crucial bit: we no longer depend on currentTokenId.
+      if (hasIndicator) {
         console.log("[Turn UI Manager] hideUIForAnimation: Hiding turn-indicator icon instantly.");
         // As per your request: no easing needed for the thinking / ! icon.
         removeIndicator();
@@ -782,24 +798,27 @@
     }
   }
   
-    function showUIAfterAnimation(payload) {
+      function showUIAfterAnimation(payload) {
     try {
       const currentTokenId = TurnUI.state.currentTokenId;
+      const hasButtons     = !!TurnUI.state.buttons;
+      const hasIndicator   = !!TurnUI.state.indicator;
+
       console.log("[Turn UI Manager] showUIAfterAnimation called on user",
         game.user?.id, {
           payload,
           currentTokenId,
-          hasButtons: !!TurnUI.state.buttons,
-          hasIndicator: !!TurnUI.state.indicator
+          hasButtons,
+          hasIndicator
         }
       );
 
       if (!currentTokenId) {
-        console.log("[Turn UI Manager] showUIAfterAnimation: no currentTokenId, abort.");
+        console.log("[Turn UI Manager] showUIAfterAnimation: no currentTokenId, abort (no notion of whose turn this is).");
         return;
       }
 
-      // Optional: respect sourceTokenId if provided
+      // Optional: respect sourceTokenId if provided (mainly important for buttons).
       let srcId = null;
       if (payload && typeof payload === "object" && "sourceTokenId" in payload) {
         srcId = payload.sourceTokenId;
@@ -813,7 +832,7 @@
       }
 
       // If something is already visible (buttons or indicator), don't double-spawn.
-      if (TurnUI.state.buttons || TurnUI.state.indicator) {
+      if (hasButtons || hasIndicator) {
         console.log("[Turn UI Manager] showUIAfterAnimation: UI already visible, skipping respawn.");
         return;
       }
