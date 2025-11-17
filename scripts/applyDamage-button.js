@@ -62,32 +62,97 @@ if (flagged) {
   }
 }
 
-    async function spendResourcesOnApply(flaggedPayload) {
-  try {
-    const meta = flaggedPayload?.meta ?? null;
-    const costs = meta?.costsNormalized;
-    const attackerUuid = meta?.attackerUuid;
-    if (!attackerUuid || !Array.isArray(costs) || !costs.length) return true; // nothing to spend
+       async function spendResourcesOnApply(flaggedPayload) {
+      try {
+        const meta = flaggedPayload?.meta ?? null;
+        const costs = meta?.costsNormalized;
+        const attackerUuid = meta?.attackerUuid;
+        if (!attackerUuid || !Array.isArray(costs) || !costs.length) return true; // nothing to spend
 
-    const doc = await fromUuid(attackerUuid).catch(()=>null);
-    const actor = doc?.actor ?? (doc?.documentName === "Actor" ? doc : null);
-    if (!actor) { ui.notifications?.error("Apply: cannot resolve attacker to spend resource."); return false; }
+        const doc = await fromUuid(attackerUuid).catch(()=>null);
+        const actor = doc?.actor ?? (doc?.documentName === "Actor" ? doc : null);
+        if (!actor) {
+          ui.notifications?.error("Apply: cannot resolve attacker to spend resource.");
+          return false;
+        }
 
-    const patch = {};
-    for (const c of costs) {
-      const curPath = `system.props.${c.curKey}`;
-      const curVal = Number(getProperty(actor, curPath) ?? 0) || 0;
-      const next = Math.max(0, curVal - Number(c.req || 0));
-      patch[curPath] = next;
+        const patch = {};
+        for (const c of costs) {
+          const curPath = `system.props.${c.curKey}`;
+          const curVal  = Number(getProperty(actor, curPath) ?? 0) || 0;
+          const next    = Math.max(0, curVal - Number(c.req || 0));
+          patch[curPath] = next;
+        }
+
+        if (Object.keys(patch).length) await actor.update(patch);
+        return true;
+      } catch (e) {
+        console.error("[fu-chatbtn] Spend failed:", e);
+        ui.notifications?.error("Apply: resource spend failed (see console).");
+        return false;
+      }
     }
-    if (Object.keys(patch).length) await actor.update(patch);
-    return true;
-  } catch (e) {
-    console.error("[fu-chatbtn] Spend failed:", e);
-    ui.notifications?.error("Apply: resource spend failed (see console).");
-    return false;
-  }
-}
+
+    // NEW: actually consume item when this Apply comes from a consumable
+    async function consumeItemOnApply(attackerUuid, itemUsage) {
+      if (!attackerUuid || !itemUsage?.itemUuid) return;
+
+      try {
+        const doc = await fromUuid(attackerUuid).catch(() => null);
+        const actor = doc?.actor ?? (doc?.documentName === "Actor" ? doc : null);
+        if (!actor) {
+          console.warn("[fu-chatbtn] consumeItemOnApply | No actor resolved from attackerUuid", attackerUuid);
+          return;
+        }
+
+        // Try to find the item by id first, then by uuid
+        let item = null;
+        if (itemUsage.itemId && actor.items.has(itemUsage.itemId)) {
+          item = actor.items.get(itemUsage.itemId);
+        }
+        if (!item && itemUsage.itemUuid) {
+          item = actor.items.find(i => i.uuid === itemUsage.itemUuid);
+        }
+        if (!item) {
+          console.warn("[fu-chatbtn] consumeItemOnApply | Item not found on actor", { attackerUuid, itemUsage });
+          return;
+        }
+
+        const props    = item.system?.props ?? {};
+        const isUnique = !!props.isUnique;
+
+        // Unique items are never consumed
+        if (isUnique) {
+          console.log("[fu-chatbtn] consumeItemOnApply | Unique item, skipping quantity logic", item.name);
+          return;
+        }
+
+        let currentQty = Number(props.item_quantity ?? 0);
+        if (!Number.isFinite(currentQty)) currentQty = 0;
+
+        if (currentQty <= 0) {
+          ui.notifications?.warn(`You don't have any more of ${item.name}.`);
+          return;
+        }
+
+        const newQty = currentQty - 1;
+
+        if (newQty > 0) {
+          await item.update({ "system.props.item_quantity": newQty });
+          console.log("[fu-chatbtn] consumeItemOnApply | Decreased quantity", {
+            item: item.name,
+            from: currentQty,
+            to  : newQty
+          });
+        } else {
+          await actor.deleteEmbeddedDocuments("Item", [item.id]);
+          console.log("[fu-chatbtn] consumeItemOnApply | Quantity reached 0, deleting item", item.name);
+        }
+      } catch (err) {
+        console.error("[fu-chatbtn] consumeItemOnApply | Error while consuming item", err);
+        ui.notifications?.warn("Item consumption failed — see console for details.");
+      }
+    }
 
 const {
   advMacroName     = "AdvanceDamage",
@@ -110,9 +175,17 @@ const {
   chatMsgId        = msgId
 } = args;
 
+// NEW: pull itemUsage from the flagged payload (if this came from a consumable)
+const itemUsage = flagged?.itemUsage ?? null;
+
 // Spend resources now (on confirm). If it fails, stop.
 const okToProceed = await spendResourcesOnApply(flagged ? flagged : null);
 if (!okToProceed) { btn.dataset.fuLock = "0"; return; }
+
+// NEW: consume the item only after resources are successfully spent
+if (itemUsage && attackerUuid) {
+  await consumeItemOnApply(attackerUuid, itemUsage);
+}
 
     // ──────────────────────────────────────────────────────────
 // NAMECARD TRIGGER — show only for Skill / Spell / Passive
