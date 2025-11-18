@@ -55,7 +55,7 @@
     "Guard":     "Guard",
     "Skill":     "Skill",
     "Spell":     "Spell",
-    "Item":      null,           // leave for later
+    "Item":      "Item",
     "Equipment": "Equipment",
     "Study":     "Study",
     "Hinder":    "Hinder",
