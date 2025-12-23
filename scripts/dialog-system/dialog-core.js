@@ -9,6 +9,11 @@
 (() => {
   const MODULE_ID = "fabula-ultima-companion";
 
+  console.log("%c[FU Dialog:Core][BOOT] dialog-core.js loaded", "color:#a7f3d0", {
+  user: game?.user?.name,
+  userId: game?.user?.id
+});
+
   function randomID(n = 12) {
     const s = "abcdefghijklmnopqrstuvwxyz0123456789";
     let r = "";
@@ -63,11 +68,24 @@
     game.socket.emit(ui.SOCKET_CHANNEL, packet);
   }
 
-  async function renderLocal(payload) {
+  async function waitForDialogUI(timeoutMs = 2000) {
+  const start = Date.now();
+  while (true) {
     const ui = globalThis?.FU?.DialogUI;
-    if (!ui?.renderFromPayload) throw new Error("DialogUI not ready (missing renderFromPayload).");
-    return ui.renderFromPayload(payload, { remote: false });
+    if (ui?.renderFromPayload) return ui;
+    if (Date.now() - start > timeoutMs) return null;
+    await new Promise(r => setTimeout(r, 50));
   }
+}
+
+async function renderLocal(payload) {
+  const ui = await waitForDialogUI(2000);
+  if (!ui) {
+    console.warn("[FU Dialog:Core] DialogUI not ready after wait. globalThis.FU =", globalThis.FU);
+    throw new Error("DialogUI not ready (missing renderFromPayload).");
+  }
+  return ui.renderFromPayload(payload, { remote: false });
+}
 
   async function show(opts = {}) {
     const {
