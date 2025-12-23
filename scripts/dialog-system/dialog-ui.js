@@ -1,17 +1,27 @@
 // ============================================================================
-// FabulaUltimaCompanion - Dialog System (UI + Listener)
+// FabulaUltimaCompanion - Dialog System (UI + Listener) - v1
 // File: scripts/dialog-system/dialog-ui.js
 // - Installs a socket listener on startup (multi-client)
 // - Injects CSS once
 // - Renders the JRPG speech bubble UI (normal/shout/think)
+// - Adds loud console logs so we can verify it loads on every client
 // ============================================================================
 
 (() => {
   const MODULE_ID = "fabula-ultima-companion";
   const SOCKET_CHANNEL = `module.${MODULE_ID}`;
+
+  // Primary message type
   const MSG_TYPE_SHOW = "FU_DIALOG_SHOW_V1";
 
-  // --- UI defaults (keep your macro’s look/feel) ---
+  // Optional debug ping (like our test macro)
+  const MSG_TYPE_PING = "FU_DIALOG_PING_V1";
+
+  // --- Debug switches ---
+  const BOOT_LOG_ALWAYS = true; // always log that this file loaded
+  const STORE_KEY = "__FU_DIALOG_UI__";
+
+  // --- UI defaults ---
   const DEFAULT_CPS = 28;
   const HOLD_AFTER_TYPING_MS = 1600;
   const OFFSET_Y = 28;
@@ -27,25 +37,34 @@
   const BEEP_GAP_MS = 55;
   const SKIP_WHITESPACE = true;
 
-  // Remote clients playing sound is usually annoying — keep it off by default.
+  // Remote clients playing sound is usually annoying
   const REMOTE_PLAYS_SOUND = false;
 
-  // Style/layer IDs
   const STYLE_ID = "fu-dialog-speech-style";
   const LAYER_ID = "fu-dialog-speech-layer";
 
-  // Global store (per client)
-  const STORE_KEY = "__FU_DIALOG_UI__";
   const store = (globalThis[STORE_KEY] ??= {
     installed: false,
     handler: null,
-    seen: new Set(), // de-dupe bubbleId
+    seen: new Set(),
   });
 
+  const boot = (...args) => {
+    if (BOOT_LOG_ALWAYS) console.log("%c[FU Dialog:UI][BOOT]", "color:#7dd3fc", ...args);
+  };
   const debug = (...args) => {
     const d = globalThis?.FU?.Dialog?.DEBUG;
-    if (d) console.log("[FU Dialog:UI]", ...args);
+    if (d) console.log("%c[FU Dialog:UI]", "color:#7dd3fc", ...args);
   };
+  const warn = (...args) => console.warn("%c[FU Dialog:UI]", "color:#fbbf24", ...args);
+  const err  = (...args) => console.error("%c[FU Dialog:UI]", "color:#fb7185", ...args);
+
+  boot("dialog-ui.js loaded", {
+    moduleId: MODULE_ID,
+    channel: SOCKET_CHANNEL,
+    user: game?.user?.name,
+    userId: game?.user?.id
+  });
 
   const htmlEscape = (v) => {
     const d = document.createElement("div");
@@ -66,6 +85,7 @@
       await new Promise((r) => setTimeout(r, 50));
       if (Date.now() - start > timeoutMs) break;
     }
+    return !!canvas?.ready;
   }
 
   function getTokenOnCanvas(tokenId) {
@@ -170,6 +190,7 @@
 .fu-think-tail .dot.d3 { width:10px; height:10px; }
       `;
       document.head.appendChild(css);
+      debug("CSS injected", STYLE_ID);
     }
 
     let layer = document.getElementById(LAYER_ID);
@@ -177,6 +198,7 @@
       layer = document.createElement("div");
       layer.id = LAYER_ID;
       document.body.appendChild(layer);
+      debug("Layer created", LAYER_ID);
     }
     return layer;
   }
@@ -219,7 +241,6 @@
     `;
     layer.appendChild(box);
 
-    // Positioning
     function getScreenXY() {
       const gp = token.mesh.getGlobalPosition();
       const h = token.mesh.height ?? (token.w ?? 100);
@@ -241,7 +262,6 @@
       box.style.left = `${left}px`;
       box.style.top = `${top}px`;
 
-      // Tail anchor
       const leftRect = box.querySelector(".fu-left")?.getBoundingClientRect();
       const leftW = leftRect ? leftRect.width : 0;
       const tailX = 44 + leftW;
@@ -278,7 +298,6 @@
     canvas.app.ticker.add(place, undefined, PIXI.UPDATE_PRIORITY.LOW);
     place();
 
-    // Blip throttle
     let lastBeep = 0;
     function blipMaybe(char) {
       if (SKIP_WHITESPACE && /^\s$/.test(char)) return;
@@ -289,7 +308,6 @@
       if (!remote || REMOTE_PLAYS_SOUND) playOneShot(CURSOR_URL, SOUND_VOLUME);
     }
 
-    // Typewriter + auto-dismiss
     const typed = box.querySelector(".fu-typed");
     const full = String(payload.text ?? "");
     const STEP = Math.max(1, Math.round(60 / cps));
@@ -377,46 +395,67 @@
   }
 
   function installListener() {
-    if (store.installed) return;
-    if (!game?.socket?.on) return;
+    boot("installListener called", { installed: store.installed, channel: SOCKET_CHANNEL });
+
+    if (!game?.socket?.on) {
+      err("game.socket.on missing — cannot install listener");
+      return;
+    }
+
+    // if rerun somehow, remove old handler
+    if (store.installed && store.handler) {
+      try { game.socket.off(SOCKET_CHANNEL, store.handler); } catch (_) {}
+      store.installed = false;
+      store.handler = null;
+      boot("old handler removed");
+    }
 
     store.handler = async (data) => {
       try {
+        debug("SOCKET RECEIVE raw", data);
+
         if (!data || typeof data !== "object") return;
+
+        // Optional ping debug
+        if (data.type === MSG_TYPE_PING) {
+          boot("PING received ✅", data.payload);
+          return;
+        }
+
         if (data.type !== MSG_TYPE_SHOW) return;
 
         const payload = data.payload;
         if (!payload) return;
 
-        // de-dupe
         if (payload.bubbleId && store.seen.has(payload.bubbleId)) return;
         if (payload.bubbleId) store.seen.add(payload.bubbleId);
 
-        // wait canvas
         if (!canvas?.ready) await waitCanvasReady(3000);
 
-        // same-scene gate
         if (!canvas?.scene?.id || canvas.scene.id !== payload.sceneId) return;
 
         const token = getTokenOnCanvas(payload.tokenId);
         if (!token) return;
 
-        debug("receive", payload);
+        debug("receive SHOW", payload);
         await renderBubble(token, payload, { remote: true });
       } catch (e) {
-        console.warn("[FU Dialog:UI] socket handler error:", e);
+        warn("socket handler error", e);
       }
     };
 
     game.socket.on(SOCKET_CHANNEL, store.handler);
     store.installed = true;
-    debug("listener installed on", SOCKET_CHANNEL);
+
+    boot("listener installed ✅", { channel: SOCKET_CHANNEL, showType: MSG_TYPE_SHOW, pingType: MSG_TYPE_PING });
   }
 
-  // Register a UI bridge that the backend can call
+  // ✅ Overwrite-proof assignment (prevents other scripts from clobbering this object)
   globalThis.FU = globalThis.FU ?? {};
-  globalThis.FU.DialogUI = {
+  globalThis.FU.DialogUI = globalThis.FU.DialogUI ?? {};
+  Object.assign(globalThis.FU.DialogUI, {
     MSG_TYPE_SHOW,
+    MSG_TYPE_PING,
     SOCKET_CHANNEL,
     installListener,
     renderFromPayload: async (payload, { remote = false } = {}) => {
@@ -429,7 +468,12 @@
 
       return renderBubble(token, payload, { remote });
     }
-  };
+  });
 
-  // Auto-install on startup (so no “run macro to install listener” anymore)
-  Hooks.once("ready", ()
+  // Auto-install listener on startup (like our test macro installer)
+  Hooks.once("ready", () => {
+    boot("Hooks.ready fired → installing listener");
+    installListener();
+  });
+
+})();
