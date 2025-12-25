@@ -2,7 +2,7 @@
   "id": "fabula-ultima-companion",
   "title": "FabulaUltimaCompanion",
   "description": "Adds custom hooks and cool functionality.",
-  "version": "1.0.180",
+  "version": "1.0.181",
   "compatibility": {
     "minimum": "12",
     "verified": "12"
@@ -35,7 +35,7 @@
 
   "scripts/item-transfer/TransferCardUI.js",
   "scripts/item-transfer/itemTransferCore.js",
-  "scripts/item-transfer/item-trading/itemTransferQuantityUI.js",
+  "scripts/item-transfer/item-trading/ItemTransferQuantityUI.js",
   "scripts/item-transfer/item-trading/TradeWindow_Core.js",
   "scripts/item-transfer/item-trading/TradeWindow_UI.js",
   "scripts/item-transfer/item-trading/Trade_ModuleListener.js",
@@ -44,5 +44,5 @@
   "styles": ["styles/style.css"],
   "packs": [],
   "manifest": "https://raw.githubusercontent.com/Onigensou/FabulaUltimaCompanion/refs/heads/main/module.json",
-  "download": "https://codeload.github.com/Onigensou/FabulaUltimaCompanion/zip/refs/tags/v1.0.180"
+  "download": "https://codeload.github.com/Onigensou/FabulaUltimaCompanion/zip/refs/tags/v1.0.181"
 }
