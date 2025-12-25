@@ -17,629 +17,485 @@
 // ============================================================================
 
 (() => {
-  const NS         = "__OniTradeWindow__";
-  const FLAG_SCOPE = "world";
-  const FLAG_KEY   = "oniTradeSessions";  // { [requestId]: sessionData }
+  console.log("[OniTradeWindow_Core] BOOT file parsed. user:", game?.user?.id, "isGM:", game?.user?.isGM);
 
-  const MODULE_ID  = "fabula-ultima-companion";
-  const CHANNEL    = `module.${MODULE_ID}`;
+  const install = () => {
+    const NS         = "__OniTradeWindow__";
+    const FLAG_SCOPE = "world";
+    const FLAG_KEY   = "oniTradeSessions";  // { [requestId]: sessionData }
 
-  const isGM  = () => game.user?.isGM;
-  const scene = () => canvas?.scene;
+    const MODULE_ID  = "fabula-ultima-companion";
+    const CHANNEL    = `module.${MODULE_ID}`;
 
-  // Simple escaper for HTML
-  const esc = (v) =>
-    String(v ?? "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
+    const isGM  = () => game.user?.isGM;
+    const scene = () => canvas?.scene;
 
-  function normalizePositiveInt(raw, fallback = 1) {
-    let n = Number(raw);
-    if (!Number.isFinite(n) || n <= 0) n = fallback;
-    return Math.max(1, Math.floor(n));
-  }
+    // Simple escaper for HTML
+    const esc = (v) =>
+      String(v ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
 
-  // Namespace on globalThis
-  const GLOBAL = (globalThis[NS] = globalThis[NS] || {});
-  GLOBAL.apps       = GLOBAL.apps || {};
-  GLOBAL.AppClass   = GLOBAL.AppClass || null;  // set by UI script
-  GLOBAL.readAllSessions = GLOBAL.readAllSessions || null;
-  GLOBAL.requestOp       = GLOBAL.requestOp || null;
-  GLOBAL.esc             = GLOBAL.esc || esc;
-
-  console.log(
-    "=== [OniTradeWindow_Core] Install on user",
-    game.user.id,
-    "isGM:",
-    game.user.isGM,
-    "==="
-  );
-
-  // ---------------------------------------------------------------------------
-  // Helpers: read / mutate trade session flags (GM-only mutation later)
-  // ---------------------------------------------------------------------------
-
-  async function readAllSessions() {
-    const sc = scene();
-    if (!sc) return {};
-    const all = await sc.getFlag(FLAG_SCOPE, FLAG_KEY);
-    return all ?? {};
-  }
-
-  /**
-   * GM-only helper: update a single session for the given requestId.
-   * updater(current, allSessions) => nextSession or null (to delete).
-   */
-  async function updateSessionGM(requestId, updater) {
-    const sc = scene();
-    if (!sc) {
-      console.error("[OniTradeWindow_Core] Cannot update session: no active scene.");
-      return null;
+    // Guard: need socket
+    if (!game.socket) {
+      console.error("[OniTradeWindow_Core] game.socket is NOT available on user", game.user?.id);
+      ui.notifications?.error?.("OniTradeWindow_Core: game.socket is not available.");
+      return;
     }
 
-    let all = await sc.getFlag(FLAG_SCOPE, FLAG_KEY);
-    if (!all || typeof all !== "object") all = {};
+    const GLOBAL = (globalThis[NS] = globalThis[NS] || {});
+    GLOBAL.apps       = GLOBAL.apps || {};
+    GLOBAL.AppClass   = GLOBAL.AppClass || null;  // set by UI script
+    GLOBAL.readAllSessions = GLOBAL.readAllSessions || null;
+    GLOBAL.requestOp       = GLOBAL.requestOp || null;
+    GLOBAL.esc             = GLOBAL.esc || esc;
 
-    const current = all[requestId] ?? null;
-    const next = await updater(current, all);
+    console.log(
+      "=== [OniTradeWindow_Core] Install on user",
+      game.user.id,
+      "isGM:",
+      game.user.isGM,
+      "==="
+    );
 
-    const clone = foundry.utils.duplicate(all);
-    if (next == null) {
-      delete clone[requestId];
-    } else {
-      clone[requestId] = next;
+    // ---------------------------------------------------------------------------
+    // Scene flag helpers
+    // ---------------------------------------------------------------------------
+    async function readSessions() {
+      const s = scene();
+      if (!s) return {};
+      return (s.getFlag(FLAG_SCOPE, FLAG_KEY) ?? {});
     }
 
-    await sc.setFlag(FLAG_SCOPE, FLAG_KEY, clone);
-    return next;
-  }
+    async function writeSessions(sessions) {
+      const s = scene();
+      if (!s) return;
+      await s.setFlag(FLAG_SCOPE, FLAG_KEY, sessions);
+    }
 
-  /**
-   * Apply a trade window operation on the GM side.
-   * payload shape:
-   *   {
-   *     requestId,
-   *     op: "initSession" | "addOfferItem" | "setZenitOffer" | "confirm" | "cancel",
-   *     side: "initiator" | "target", // for offer/confirm/cancel
-   *     initiatorUserId, targetUserId,
-   *     initiatorName, targetName,
-   *     initiatorActorUuid?, targetActorUuid?,
-   *     item?: { itemUuid, name, img, quantity? },
-   *     amount?: number                // for setZenitOffer
-   *   }
-   */
-  async function applyOpGM(payload) {
-    if (!payload || typeof payload !== "object") return;
-    const { requestId, op } = payload;
-    if (!requestId || !op) return;
+    async function getSession(requestId) {
+      const sessions = await readSessions();
+      return sessions?.[requestId] ?? null;
+    }
 
-    console.log("[OniTradeWindow_Core] GM applyOpGM:", payload);
+    async function setSession(requestId, sessionData) {
+      const sessions = await readSessions();
+      sessions[requestId] = sessionData;
+      await writeSessions(sessions);
+    }
 
-    const nextSession = await updateSessionGM(requestId, (current) => {
-      const {
+    async function deleteSession(requestId) {
+      const sessions = await readSessions();
+      if (sessions && sessions[requestId]) {
+        delete sessions[requestId];
+        await writeSessions(sessions);
+      }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Session model
+    // ---------------------------------------------------------------------------
+    function makeEmptySession({
+      requestId,
+      initiatorUserId,
+      targetUserId,
+      initiatorName,
+      targetName,
+      initiatorActorUuid,
+      targetActorUuid
+    }) {
+      return {
+        requestId,
+        createdAt: Date.now(),
+
         initiatorUserId,
         targetUserId,
         initiatorName,
         targetName,
         initiatorActorUuid,
         targetActorUuid,
-        side,
-        item,
-        amount
-      } = payload;
 
-      let sess = current;
+        offers: {
+          initiator: [],
+          target: []
+        },
 
-      // Ensure a base session object exists
-      if (!sess) {
-        sess = {
-          requestId,
-          initiatorUserId,
-          targetUserId,
-          initiatorName: initiatorName ?? "Initiator",
-          targetName: targetName ?? "Target",
-          initiatorActorUuid: initiatorActorUuid ?? null,
-          targetActorUuid: targetActorUuid ?? null,
-          confirmInitiator: false,
-          confirmTarget: false,
-          cancelled: false,
-          cancelledBySide: null,
-          settled: false,
-          offerInitiator: [],
-          offerTarget: [],
-          // Zenit offers for each side
-          zenitOfferInitiator: 0,
-          zenitOfferTarget: 0
-        };
-      }
+        zenit: {
+          initiator: 0,
+          target: 0
+        },
 
-      const next = foundry.utils.duplicate(sess);
+        confirmed: {
+          initiator: false,
+          target: false
+        },
 
-      // Make sure arrays exist
-      if (!Array.isArray(next.offerInitiator)) next.offerInitiator = [];
-      if (!Array.isArray(next.offerTarget))    next.offerTarget    = [];
-      if (typeof next.zenitOfferInitiator !== "number") next.zenitOfferInitiator = 0;
-      if (typeof next.zenitOfferTarget    !== "number") next.zenitOfferTarget    = 0;
+        cancelledBy: null,
+        settled: false
+      };
+    }
 
-      function stackOrPushOffer(list, cleanItem) {
-        // Prefer stacking by itemUuid, fallback to name+img if needed.
-        const idx = list.findIndex(o =>
-          (o?.itemUuid && cleanItem.itemUuid && o.itemUuid === cleanItem.itemUuid) ||
-          (!o?.itemUuid && !cleanItem.itemUuid && o?.name === cleanItem.name && o?.img === cleanItem.img)
-        );
+    // ---------------------------------------------------------------------------
+    // Offer helpers (Quantity support)
+    // ---------------------------------------------------------------------------
+    function normalizePositiveInt(n, fallback = 1) {
+      const x = Number(n);
+      if (!Number.isFinite(x)) return fallback;
+      const i = Math.floor(x);
+      return i > 0 ? i : fallback;
+    }
 
-        if (idx >= 0) {
-          const cur = Number(list[idx]?.quantity ?? 1);
-          const add = Number(cleanItem.quantity ?? 1);
-          const merged = normalizePositiveInt(cur, 1) + normalizePositiveInt(add, 1);
-          list[idx].quantity = merged;
-        } else {
-          list.push(cleanItem);
+    function addOfferItem(session, side, offerItem) {
+      const qty = normalizePositiveInt(offerItem?.quantity, 1);
+
+      const list = session.offers[side] || [];
+      const itemUuid = offerItem.itemUuid ?? null;
+
+      // Stack by itemUuid when possible
+      if (itemUuid) {
+        const found = list.find((o) => o.itemUuid === itemUuid);
+        if (found) {
+          found.quantity = normalizePositiveInt(found.quantity, 1) + qty;
+          return;
         }
       }
 
+      list.push({
+        itemUuid: offerItem.itemUuid ?? null,
+        itemName: offerItem.itemName ?? "Unknown Item",
+        img: offerItem.img ?? null,
+        quantity: qty
+      });
+      session.offers[side] = list;
+    }
+
+    function removeOfferItem(session, side, idx) {
+      const list = session.offers[side] || [];
+      if (idx < 0 || idx >= list.length) return;
+      list.splice(idx, 1);
+      session.offers[side] = list;
+    }
+
+    function setZenitOffer(session, side, amount) {
+      const amt = Math.max(0, Math.floor(Number(amount) || 0));
+      session.zenit[side] = amt;
+    }
+
+    function setConfirmed(session, side, value) {
+      session.confirmed[side] = !!value;
+    }
+
+    // ---------------------------------------------------------------------------
+    // Public API: read all sessions
+    // ---------------------------------------------------------------------------
+    async function readAllSessions() {
+      return await readSessions();
+    }
+
+    // ---------------------------------------------------------------------------
+    // Operation routing (GM-as-server)
+    // ---------------------------------------------------------------------------
+    async function requestOp(payload) {
+      // Everyone sends requests to GM; GM applies authoritative changes
+      game.socket.emit(CHANNEL, {
+        type: "OniTradeWindow_Op",
+        payload
+      });
+    }
+
+    async function applyOpAsGM(payload) {
+      const {
+        requestId,
+        op,
+        side,
+        initiatorUserId,
+        targetUserId,
+        initiatorName,
+        targetName,
+        initiatorActorUuid,
+        targetActorUuid
+      } = payload;
+
+      if (!requestId || !op) return;
+
+      if (op === "initSession") {
+        const session = makeEmptySession({
+          requestId,
+          initiatorUserId,
+          targetUserId,
+          initiatorName,
+          targetName,
+          initiatorActorUuid,
+          targetActorUuid
+        });
+
+        await setSession(requestId, session);
+
+        game.socket.emit(CHANNEL, {
+          type: "OniTradeWindow_SessionUpdated",
+          payload: { requestId }
+        });
+
+        return;
+      }
+
+      // For all other ops, load existing session
+      const session = await getSession(requestId);
+      if (!session) return;
+
+      // If cancelled/settled, ignore further ops
+      if (session.cancelledBy || session.settled) {
+        return;
+      }
+
+      // Any change resets confirmations (classic MMO trade window behavior)
+      if (
+        op === "addOfferItem" ||
+        op === "removeOfferItem" ||
+        op === "setZenitOffer"
+      ) {
+        session.confirmed.initiator = false;
+        session.confirmed.target = false;
+      }
+
       switch (op) {
-        case "initSession":
-          // Update actor UUIDs if provided
-          if (initiatorActorUuid != null) next.initiatorActorUuid = initiatorActorUuid;
-          if (targetActorUuid    != null) next.targetActorUuid    = targetActorUuid;
-          break;
-
         case "addOfferItem": {
-          if (!item || !item.itemUuid) {
-            console.warn("[OniTradeWindow_Core] addOfferItem missing item.", payload);
-            break;
-          }
+          if (!side) return;
+          const offerItem = payload.offerItem;
+          if (!offerItem) return;
+          addOfferItem(session, side, offerItem);
+          break;
+        }
 
-          const cleanItem = {
-            itemUuid: item.itemUuid,
-            name: item.name ?? "Item",
-            img: item.img ?? null,
-            quantity: normalizePositiveInt(item.quantity ?? 1, 1)
-          };
-
-          if (side === "initiator") {
-            stackOrPushOffer(next.offerInitiator, cleanItem);
-          } else if (side === "target") {
-            stackOrPushOffer(next.offerTarget, cleanItem);
-          }
-
-          // Changing offered items should reset confirmations & settlement
-          next.confirmInitiator = false;
-          next.confirmTarget    = false;
-          next.settled          = false;
+        case "removeOfferItem": {
+          if (!side) return;
+          const idx = Number(payload.idx);
+          if (!Number.isFinite(idx)) return;
+          removeOfferItem(session, side, idx);
           break;
         }
 
         case "setZenitOffer": {
-          let amt = Number(amount);
-          if (!Number.isFinite(amt) || amt < 0) amt = 0;
-          amt = Math.floor(amt);
-
-          if (side === "initiator") {
-            next.zenitOfferInitiator = amt;
-          } else if (side === "target") {
-            next.zenitOfferTarget = amt;
-          }
-
-          // Changing Zenit offer should also reset confirmations & settlement
-          next.confirmInitiator = false;
-          next.confirmTarget    = false;
-          next.settled          = false;
+          if (!side) return;
+          setZenitOffer(session, side, payload.amount);
           break;
         }
 
-        case "confirm":
-          if (side === "initiator") next.confirmInitiator = true;
-          if (side === "target")    next.confirmTarget    = true;
+        case "setConfirmed": {
+          if (!side) return;
+          setConfirmed(session, side, payload.value);
           break;
+        }
 
-        case "cancel":
-          next.cancelled = true;
-          next.cancelledBySide = side ?? null;
+        case "cancel": {
+          if (!side) return;
+          session.cancelledBy = side;
           break;
+        }
+
+        case "finalize": {
+          // Only finalize if both confirmed
+          if (!(session.confirmed.initiator && session.confirmed.target)) {
+            return;
+          }
+
+          // Mark settled first to prevent double-finalize
+          session.settled = true;
+
+          // Execute transfers on GM
+          await finalizeTradeOnGM(session);
+          break;
+        }
 
         default:
-          console.warn("[OniTradeWindow_Core] Unknown op:", op);
           break;
       }
 
-      return next;
-    });
+      await setSession(requestId, session);
 
-    // After updating the session, see if we should finalize the trade
-    if (op === "confirm" && nextSession) {
-      await finalizeTradeIfReady(nextSession);
-    }
-  }
-
-  /**
-   * GM-only: if both sides confirmed and the trade is not yet settled/cancelled,
-   * call ItemTransferCore.transfer() for each offered item, and also move Zenit.
-   */
-  async function finalizeTradeIfReady(sess) {
-    if (!isGM()) return; // Safety: only GM should finalize
-    if (!sess) return;
-    if (sess.cancelled) return;
-    if (sess.settled)   return;
-    if (!sess.confirmInitiator || !sess.confirmTarget) return;
-
-    const ITC = window["oni.ItemTransferCore"];
-    if (!ITC || typeof ITC.transfer !== "function") {
-      ui.notifications?.error?.(
-        "OniTrade: ItemTransferCore is not available on the GM client. Cannot finalize trade."
-      );
-      console.error("[OniTradeWindow_Core] ItemTransferCore missing.", { sess });
-      return;
+      game.socket.emit(CHANNEL, {
+        type: "OniTradeWindow_SessionUpdated",
+        payload: { requestId }
+      });
     }
 
-    const {
-      requestId,
-      initiatorUserId,
-      targetUserId,
-      initiatorActorUuid,
-      targetActorUuid
-    } = sess;
+    // ---------------------------------------------------------------------------
+    // Finalization (GM only)
+    // ---------------------------------------------------------------------------
+    async function finalizeTradeOnGM(session) {
+      const initiatorActor = await fromUuid(session.initiatorActorUuid);
+      const targetActor    = await fromUuid(session.targetActorUuid);
 
-    const offerInitiator = Array.isArray(sess.offerInitiator) ? sess.offerInitiator : [];
-    const offerTarget    = Array.isArray(sess.offerTarget)    ? sess.offerTarget    : [];
-
-    const zenitOfferInitiator = Math.max(0, Math.floor(Number(sess.zenitOfferInitiator ?? 0)));
-    const zenitOfferTarget    = Math.max(0, Math.floor(Number(sess.zenitOfferTarget    ?? 0)));
-
-    console.log("[OniTradeWindow_Core] Finalizing trade via ItemTransferCore.", {
-      requestId,
-      initiatorActorUuid,
-      targetActorUuid,
-      offerInitiator,
-      offerTarget,
-      zenitOfferInitiator,
-      zenitOfferTarget
-    });
-
-    const ops = [];
-
-    function buildPayloadForSide(side, offer) {
-      const itemUuid = offer?.itemUuid;
-      if (!itemUuid) return null;
-
-      const qty = normalizePositiveInt(offer?.quantity ?? 1, 1);
-
-      const hasInitiatorActor = !!initiatorActorUuid;
-      const hasTargetActor    = !!targetActorUuid;
-
-      let mode = null;
-      let senderActorUuid = null;
-      let receiverActorUuid = null;
-      let requestedByUserId = side === "initiator" ? initiatorUserId : targetUserId;
-
-      if (side === "initiator") {
-        // Initiator gives to target side
-        if (hasInitiatorActor && hasTargetActor) {
-          mode = "actorToActor";
-          senderActorUuid   = initiatorActorUuid;
-          receiverActorUuid = targetActorUuid;
-        } else if (hasInitiatorActor && !hasTargetActor) {
-          mode = "actorToGm";
-          senderActorUuid   = initiatorActorUuid;
-          receiverActorUuid = null;
-        } else if (!hasInitiatorActor && hasTargetActor) {
-          mode = "gmToActor";
-          senderActorUuid   = null;
-          receiverActorUuid = targetActorUuid;
-        } else {
-          console.warn(
-            "[OniTradeWindow_Core] Cannot build payload: initiator has no actor and target has no actor.",
-            sess
-          );
-          return null;
-        }
-      } else if (side === "target") {
-        // Target gives to initiator side
-        if (hasInitiatorActor && hasTargetActor) {
-          mode = "actorToActor";
-          senderActorUuid   = targetActorUuid;
-          receiverActorUuid = initiatorActorUuid;
-        } else if (!hasInitiatorActor && hasTargetActor) {
-          mode = "actorToGm";
-          senderActorUuid   = targetActorUuid;
-          receiverActorUuid = null;
-        } else if (hasInitiatorActor && !hasTargetActor) {
-          mode = "gmToActor";
-          senderActorUuid   = null;
-          receiverActorUuid = initiatorActorUuid;
-        } else {
-          console.warn(
-            "[OniTradeWindow_Core] Cannot build payload: both sides have no actor.",
-            sess
-          );
-          return null;
-        }
-      }
-
-      if (!mode) return null;
-
-      return {
-        mode,
-        itemUuid,
-        quantity: qty,
-        senderActorUuid,
-        receiverActorUuid,
-        requestedByUserId
-      };
-    }
-
-    // 1) Item transfers
-    for (const offer of offerInitiator) {
-      const p = buildPayloadForSide("initiator", offer);
-      if (p) ops.push(p);
-    }
-    for (const offer of offerTarget) {
-      const p = buildPayloadForSide("target", offer);
-      if (p) ops.push(p);
-    }
-
-    // Perform item transfers sequentially
-    for (const payload of ops) {
-      try {
-        console.log("[OniTradeWindow_Core] Calling ItemTransferCore.transfer:", payload);
-        await ITC.transfer(payload);
-      } catch (err) {
-        console.error("[OniTradeWindow_Core] Error during ItemTransferCore.transfer.", {
-          err,
-          payload
+      if (!initiatorActor || !targetActor) {
+        console.error("[OniTradeWindow_Core] finalize failed, actors not found", {
+          initiatorActorUuid: session.initiatorActorUuid,
+          targetActorUuid: session.targetActorUuid
         });
-      }
-    }
-
-    // 2) Zenit transfers
-    const hasZenitApi =
-      typeof ITC.transferZenit === "function" &&
-      typeof ITC.adjustZenit  === "function";
-
-    if (!hasZenitApi && (zenitOfferInitiator > 0 || zenitOfferTarget > 0)) {
-      console.warn(
-        "[OniTradeWindow_Core] Zenit offers present, but transferZenit/adjustZenit API is missing."
-      );
-    }
-
-    if (hasZenitApi && (zenitOfferInitiator > 0 || zenitOfferTarget > 0)) {
-      const hasInitiatorActor = !!initiatorActorUuid;
-      const hasTargetActor    = !!targetActorUuid;
-
-      try {
-        if (hasInitiatorActor && hasTargetActor) {
-          if (zenitOfferInitiator > 0) {
-            const payload = {
-              senderActorUuid:   initiatorActorUuid,
-              receiverActorUuid: targetActorUuid,
-              amount:            zenitOfferInitiator,
-              requestedByUserId: initiatorUserId
-            };
-            console.log("[OniTradeWindow_Core] Zenit transfer (initiator → target):", payload);
-            const res = await ITC.transferZenit(payload);
-            if (!res?.ok) {
-              console.warn("[OniTradeWindow_Core] Zenit transfer (initiator → target) not ok.", res);
-              ui.notifications?.warn?.(
-                "OniTrade: There was a problem transferring Zenit from the initiator side."
-              );
-            }
-          }
-
-          if (zenitOfferTarget > 0) {
-            const payload = {
-              senderActorUuid:   targetActorUuid,
-              receiverActorUuid: initiatorActorUuid,
-              amount:            zenitOfferTarget,
-              requestedByUserId: targetUserId
-            };
-            console.log("[OniTradeWindow_Core] Zenit transfer (target → initiator):", payload);
-            const res = await ITC.transferZenit(payload);
-            if (!res?.ok) {
-              console.warn("[OniTradeWindow_Core] Zenit transfer (target → initiator) not ok.", res);
-              ui.notifications?.warn?.(
-                "OniTrade: There was a problem transferring Zenit from the target side."
-              );
-            }
-          }
-        } else if (hasInitiatorActor && !hasTargetActor) {
-          const netDelta = (zenitOfferTarget || 0) - (zenitOfferInitiator || 0);
-          if (netDelta !== 0) {
-            const payload = {
-              actorUuid:         initiatorActorUuid,
-              delta:             netDelta,
-              requestedByUserId: initiatorUserId
-            };
-            console.log("[OniTradeWindow_Core] Zenit adjust (initiator only):", payload);
-            const res = await ITC.adjustZenit(payload);
-            if (!res?.ok) console.warn("[OniTradeWindow_Core] Zenit adjust (initiator only) not ok.", res);
-          }
-        } else if (!hasInitiatorActor && hasTargetActor) {
-          const netDelta = (zenitOfferInitiator || 0) - (zenitOfferTarget || 0);
-          if (netDelta !== 0) {
-            const payload = {
-              actorUuid:         targetActorUuid,
-              delta:             netDelta,
-              requestedByUserId: targetUserId
-            };
-            console.log("[OniTradeWindow_Core] Zenit adjust (target only):", payload);
-            const res = await ITC.adjustZenit(payload);
-            if (!res?.ok) console.warn("[OniTradeWindow_Core] Zenit adjust (target only) not ok.", res);
-          }
-        } else {
-          console.log("[OniTradeWindow_Core] Zenit offers present but neither side has an actor; skipping.");
-        }
-      } catch (err) {
-        console.error("[OniTradeWindow_Core] Error during Zenit transfer/adjust.", {
-          err,
-          sess,
-          zenitOfferInitiator,
-          zenitOfferTarget
-        });
-      }
-    }
-
-    // Mark settled
-    await updateSessionGM(sess.requestId, (current) => {
-      if (!current) return null;
-      const next = foundry.utils.duplicate(current);
-      next.settled = true;
-      return next;
-    });
-
-    ui.notifications?.info?.("OniTrade: Trade finalized. Items and Zenit have been transferred.");
-  }
-
-  /**
-   * Request a trade window operation:
-   *   - If GM: apply immediately.
-   *   - If Player: emit a socket message for the GM to process.
-   */
-  async function requestOp(payload) {
-    const sc = scene();
-    if (!sc) {
-      ui.notifications?.error?.("OniTrade: No active scene for Trade Window.");
-      return;
-    }
-
-    if (!game.socket) {
-      ui.notifications?.error?.("OniTrade: game.socket is not available (Trade Window).");
-      return;
-    }
-
-    if (isGM()) {
-      await applyOpGM(payload);
-      return;
-    }
-
-    console.log("[OniTradeWindow_Core] Player sending OniTrade_TradeWindowDelta:", payload);
-
-    game.socket.emit(CHANNEL, {
-      type: "OniTrade_TradeWindowDelta",
-      payload
-    });
-  }
-
-  // Socket listener – GM listens for OniTrade_TradeWindowDelta and mutates flags
-  if (!GLOBAL.socketInstalled && game.socket) {
-    const handler = async (data) => {
-      if (!data || typeof data !== "object") return;
-      if (data.type !== "OniTrade_TradeWindowDelta") return;
-
-      console.log(
-        "[OniTradeWindow_Core] SOCKET handler fired on user",
-        game.user.id,
-        "isGM:",
-        game.user.isGM,
-        "data:",
-        data
-      );
-
-      if (!isGM()) {
-        console.log("[OniTradeWindow_Core] This user is not GM; ignoring OniTrade_TradeWindowDelta.");
         return;
       }
 
-      const payload = data.payload || {};
-      await applyOpGM(payload);
+      const ItemTransferCore = globalThis.oni?.ItemTransferCore;
+      if (!ItemTransferCore || typeof ItemTransferCore.transfer !== "function") {
+        console.error("[OniTradeWindow_Core] ItemTransferCore.transfer not available.");
+        return;
+      }
+
+      // 1) Items: initiator -> target
+      for (const offer of session.offers.initiator || []) {
+        if (!offer.itemUuid) continue;
+        await ItemTransferCore.transfer({
+          sourceActorUuid: session.initiatorActorUuid,
+          targetActorUuid: session.targetActorUuid,
+          itemUuid: offer.itemUuid,
+          quantity: normalizePositiveInt(offer.quantity, 1),
+          reason: "trade"
+        });
+      }
+
+      // 2) Items: target -> initiator
+      for (const offer of session.offers.target || []) {
+        if (!offer.itemUuid) continue;
+        await ItemTransferCore.transfer({
+          sourceActorUuid: session.targetActorUuid,
+          targetActorUuid: session.initiatorActorUuid,
+          itemUuid: offer.itemUuid,
+          quantity: normalizePositiveInt(offer.quantity, 1),
+          reason: "trade"
+        });
+      }
+
+      // 3) Zenit: initiator -> target
+      const ZenitHandler = globalThis.oni?.ZenitHandler;
+      if (ZenitHandler && typeof ZenitHandler.transferZenit === "function") {
+        const zi = Math.max(0, Math.floor(Number(session.zenit.initiator) || 0));
+        if (zi > 0) {
+          await ZenitHandler.transferZenit({
+            sourceActorUuid: session.initiatorActorUuid,
+            targetActorUuid: session.targetActorUuid,
+            amount: zi,
+            reason: "trade"
+          });
+        }
+
+        // 4) Zenit: target -> initiator
+        const zt = Math.max(0, Math.floor(Number(session.zenit.target) || 0));
+        if (zt > 0) {
+          await ZenitHandler.transferZenit({
+            sourceActorUuid: session.targetActorUuid,
+            targetActorUuid: session.initiatorActorUuid,
+            amount: zt,
+            reason: "trade"
+          });
+        }
+      } else {
+        console.warn("[OniTradeWindow_Core] ZenitHandler.transferZenit not available; skipping zenit transfer.");
+      }
+
+      // Optional: cleanup session
+      // await deleteSession(session.requestId);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Socket handler
+    // ---------------------------------------------------------------------------
+    const socketHandler = async (data) => {
+      if (!data || typeof data !== "object") return;
+      const { type, payload } = data;
+      if (!type) return;
+
+      switch (type) {
+        case "OniTradeWindow_Op": {
+          // Only GM applies ops
+          if (!isGM()) return;
+          await applyOpAsGM(payload);
+          break;
+        }
+
+        case "OniTradeWindow_SessionUpdated": {
+          const requestId = payload?.requestId;
+          if (!requestId) return;
+
+          // Notify local UI instance if open
+          const app = GLOBAL.apps?.[requestId];
+          if (app && typeof app.onSessionUpdated === "function") {
+            try {
+              await app.onSessionUpdated();
+            } catch (err) {
+              console.error("[OniTradeWindow_Core] app.onSessionUpdated error:", err);
+            }
+          }
+          break;
+        }
+
+        default:
+          break;
+      }
     };
 
-    game.socket.on(CHANNEL, handler);
-    GLOBAL.socketInstalled = true;
+    game.socket.on(CHANNEL, socketHandler);
 
-    console.log("[OniTradeWindow_Core] Socket listener installed on", CHANNEL, "for user", game.user.id);
-  }
-
-  // Hook: re-render trade windows when scene flags change
-  if (!GLOBAL.hookInstalled) {
-    Hooks.on("updateScene", (scn, data) => {
-      const currentScene = scene();
-      if (!currentScene || scn.id !== currentScene.id) return;
-
-      if (!data?.flags) return;
-      if (!foundry.utils.hasProperty(data, `flags.${FLAG_SCOPE}.${FLAG_KEY}`)) return;
-
-      console.log("[OniTradeWindow_Core] updateScene detected trade flag change; re-rendering.");
-
-      for (const app of Object.values(GLOBAL.apps)) {
-        if (app instanceof Application) app.render(false);
+    // ---------------------------------------------------------------------------
+    // Public API: open the trade window for a session (called when trade accepted)
+    // ---------------------------------------------------------------------------
+    GLOBAL.openTradeWindowForSession = async ({
+      requestId,
+      initiatorUserId,
+      targetUserId,
+      initiatorName,
+      targetName,
+      initiatorActorUuid,
+      targetActorUuid
+    }) => {
+      const AppClass = GLOBAL.AppClass;
+      if (!AppClass) {
+        ui.notifications?.warn?.("OniTradeWindow: UI not installed yet.");
+        console.warn("[OniTradeWindow_Core] GLOBAL.AppClass is null. Did TradeWindow_UI load?");
+        return;
       }
-    });
 
-    GLOBAL.hookInstalled = true;
-    console.log("[OniTradeWindow_Core] updateScene hook installed.");
-  }
+      let app = GLOBAL.apps[requestId];
+      if (app && app instanceof AppClass) {
+        app.bringToTop();
+        return;
+      }
 
-  // Public API: openTradeWindowForSession(payload)
-  GLOBAL.openTradeWindowForSession = function (payload) {
-    if (!payload || typeof payload !== "object") return;
-
-    const {
-      requestId,
-      initiatorUserId,
-      targetUserId,
-      initiatorName,
-      targetName,
-      initiatorActorUuid,
-      targetActorUuid
-    } = payload;
-
-    const localId = game.user.id;
-
-    let localSide = null;
-    if (localId === initiatorUserId) localSide = "initiator";
-    if (localId === targetUserId)    localSide = "target";
-
-    if (!localSide) {
-      console.log("[OniTradeWindow_Core] openTradeWindowForSession: local user not a participant, skipping.", {
-        localId, initiatorUserId, targetUserId
+      app = new AppClass({
+        requestId,
+        initiatorUserId,
+        targetUserId,
+        initiatorName,
+        targetName,
+        initiatorActorUuid,
+        targetActorUuid
       });
-      return;
-    }
 
-    const AppClass = GLOBAL.AppClass;
-    if (!AppClass) {
-      console.warn("[OniTradeWindow_Core] openTradeWindowForSession called, but AppClass is not registered yet.");
-      return;
-    }
+      GLOBAL.apps[requestId] = app;
+      app.render(true);
 
-    let app = GLOBAL.apps[requestId];
-    if (app && app instanceof AppClass) {
-      app.bringToTop();
-      return;
-    }
+      requestOp({
+        requestId,
+        op: "initSession",
+        initiatorUserId,
+        targetUserId,
+        initiatorName,
+        targetName,
+        initiatorActorUuid,
+        targetActorUuid
+      });
+    };
 
-    app = new AppClass({
-      requestId,
-      initiatorUserId,
-      targetUserId,
-      initiatorName,
-      targetName,
-      initiatorActorUuid,
-      targetActorUuid,
-      localSide
-    });
+    GLOBAL.readAllSessions = readAllSessions;
+    GLOBAL.requestOp       = requestOp;
+    GLOBAL.esc             = esc;
 
-    GLOBAL.apps[requestId] = app;
-    app.render(true);
-
-    requestOp({
-      requestId,
-      op: "initSession",
-      initiatorUserId,
-      targetUserId,
-      initiatorName,
-      targetName,
-      initiatorActorUuid,
-      targetActorUuid
-    });
+    console.log("[OniTradeWindow_Core] API installed at globalThis.__OniTradeWindow__.");
+    GLOBAL.installed = true;
   };
 
-  GLOBAL.readAllSessions = readAllSessions;
-  GLOBAL.requestOp       = requestOp;
-  GLOBAL.esc             = esc;
-
-  console.log("[OniTradeWindow_Core] API installed at globalThis.__OniTradeWindow__.");
+  Hooks.once("ready", () => {
+    console.log("[OniTradeWindow_Core] READY -> installing. user:", game.user?.id, "isGM:", game.user?.isGM, "hasSocket:", !!game.socket);
+    install();
+  });
 })();
