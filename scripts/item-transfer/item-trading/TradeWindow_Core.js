@@ -17,9 +17,11 @@
 // ============================================================================
 
 (() => {
-  const NS         = "__OniTradeWindow__";
-  const FLAG_SCOPE = "world";
-  const FLAG_KEY   = "oniTradeSessions";  // { [requestId]: sessionData }
+  Hooks.once("ready", () => {
+
+    const NS         = "__OniTradeWindow__";
+    const FLAG_SCOPE = "world";
+    const FLAG_KEY   = "oniTradeSessions";  // { [requestId]: sessionData }
 
   const MODULE_ID  = "fabula-ultima-companion";
   const CHANNEL    = `module.${MODULE_ID}`;
@@ -637,9 +639,14 @@
     });
   };
 
-  GLOBAL.readAllSessions = readAllSessions;
+   GLOBAL.readAllSessions = readAllSessions;
   GLOBAL.requestOp       = requestOp;
   GLOBAL.esc             = esc;
 
+  // Debug / status (does not change logic)
+  GLOBAL.coreInstalled = true;
+  GLOBAL.installed = true;
+
   console.log("[OniTradeWindow_Core] API installed at globalThis.__OniTradeWindow__.");
+  });
 })();
