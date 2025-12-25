@@ -8,6 +8,8 @@
 // ============================================================================
 
 (() => {
+  Hooks.once("ready", () => {
+
   const NS     = "__OniTradeWindow__";
   const GLOBAL = (globalThis[NS] = globalThis[NS] || {});
 
@@ -735,6 +737,12 @@
     }
   }
 
-  GLOBAL.AppClass = OniTradeWindowApp;
+   GLOBAL.AppClass = OniTradeWindowApp;
+
+  // Debug / status (does not change logic)
+  GLOBAL.uiInstalled = true;
+  GLOBAL.installed = true;
+
   console.log("[OniTradeWindow_UI] AppClass registered into __OniTradeWindow__.");
+  });
 })();
