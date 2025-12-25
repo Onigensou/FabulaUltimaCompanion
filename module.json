@@ -2,7 +2,7 @@
   "id": "fabula-ultima-companion",
   "title": "FabulaUltimaCompanion",
   "description": "Adds custom hooks and cool functionality.",
-  "version": "1.0.177",
+  "version": "1.0.178",
   "compatibility": {
     "minimum": "12",
     "verified": "12"
@@ -14,7 +14,7 @@
     }
   ],
   "socket": true,
-  "scripts": [
+    "scripts": [
     "scripts/db-resolver.js",
     "scripts/resource-ui-manager.js",
     "scripts/dialog-system/dialog-ui.js",
@@ -31,19 +31,10 @@
     "scripts/namecard-receiver.js",
     "scripts/namecard-broadcast.js",
     "scripts/custom-ui/chat-character-button.js",
-    "scripts/custom-ui/chat-party-button.js",
-    "scripts/item-transfer/TransferCardUI.js",
-    "scripts/item-transfer/ItemTransferCore.js",
-    "scripts/item-transfer/item-trading/ItemTransferQuantityUI.js",
-    "scripts/item-transfer/item-trading/TradeWindow_Core.js",
-    "scripts/item-transfer/item-trading/TradeWindow_UI.js",
-    "scripts/item-transfer/item-trading/Trade_ModuleListener.js",
-    "scripts/item-transfer/item-trading/Trade_StartTrade_API.js"
+    "scripts/custom-ui/chat-party-button.js"
   ],
-  "styles": [
-    "styles/style.css"
-  ],
+  "styles": ["styles/style.css"],
   "packs": [],
   "manifest": "https://raw.githubusercontent.com/Onigensou/FabulaUltimaCompanion/refs/heads/main/module.json",
-  "download": "https://codeload.github.com/Onigensou/FabulaUltimaCompanion/zip/refs/tags/v1.0.177"
+  "download": "https://codeload.github.com/Onigensou/FabulaUltimaCompanion/zip/refs/tags/v1.0.178"
 }
