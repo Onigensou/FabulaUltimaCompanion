@@ -4,16 +4,19 @@
 // Adds a GM-only icon button to the bottom-right of the chat input bar.
 // Click => opens "Scene Network Switcher" dialog (reads current scene links).
 //
+// NEW: Auto-dock placement to avoid overlapping other chat-bar buttons.
+// - Scans existing absolute-position UI in #chat-form
+// - Places the door button in the first free "slot" (col/row grid)
+// - Adjusts #chat-message padding-right ONLY if needed (and only for GM)
+//
 // Data source (current scene):
 // flags.fabula-ultima-companion.oniFabula.sceneNetwork  (JSON string)
 // Example: [{"name":"Overworld","id":"Scene.xxxxxx"}, ...]
 //
-// Uses Foundry default switching:
-// - await targetScene.activate()  => switches all clients
-// - await targetScene.view()      => GM convenience
-//
-// Preloads scene before switching:
-// - await game.scenes.preload(targetScene.id)
+// Switch behavior:
+// - Preload scene first: await game.scenes.preload(targetScene.id)
+// - Activate scene:      await targetScene.activate()   (switches all clients)
+// - View on GM:          await targetScene.view()
 // ============================================================================
 
 (() => {
@@ -26,21 +29,24 @@
     // Door icon requested by Oni
     IMG_URL: "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Item%20Icon/door.png",
 
-    // Button placement (chat input bar)
+    // Chat bar button size/spacing
     SIZE_PX: 30,
+    GAP_PX: 6,
 
-    // Put it left of the Character button (which uses right: 6px in your reference script)
-    RIGHT_PX: 42,
-    BOTTOM_PX: 6,
+    // Anchor (bottom-right base point)
+    BASE_RIGHT_PX: 6,
+    BASE_BOTTOM_PX: 6,
 
-    // Extra padding so typing doesn’t overlap the buttons
-    CHAT_PADDING_RIGHT_PX: 78,
+    // How many "slots" we try before giving up
+    MAX_COLS: 10,
+    MAX_ROWS: 4,
 
-    // Switcher settings
+    // Preload + switch settings
     USE_PRELOAD: true,
-    PRELOAD_NOTIFY: false, // set true if you want the toast "Preloading..."
+    PRELOAD_NOTIFY: false,
     PRELOAD_PAUSE_MS: 150,
 
+    // Dialog sizing
     DIALOG_WIDTH: 980,
     GRID_MAX_HEIGHT: 680
   };
@@ -64,9 +70,9 @@
   min-width: ${CFG.SIZE_PX}px; min-height: ${CFG.SIZE_PX}px;
 
   position: absolute;
-  right: ${CFG.RIGHT_PX}px;
-  bottom: ${CFG.BOTTOM_PX}px;
-  z-index: 5;
+  right: ${CFG.BASE_RIGHT_PX}px;   /* will be overridden by JS auto-dock */
+  bottom: ${CFG.BASE_BOTTOM_PX}px; /* will be overridden by JS auto-dock */
+  z-index: 20;
 
   display: inline-flex;
   align-items: center;
@@ -95,28 +101,148 @@
   display: block;
   pointer-events: none;
 }
-
-/* Prevent overlap with typing (GM only, applied by JS) */
 `;
     document.head.appendChild(style);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Auto-dock logic (avoid overlap)
+  // ---------------------------------------------------------------------------
+  function rectsOverlap(a, b) {
+    return !(a.right <= b.left || a.left >= b.right || a.bottom <= b.top || a.top >= b.bottom);
+  }
+
+  function getAbsoluteObstacles(chatForm, ignoreIds = new Set()) {
+    const obstacles = [];
+    const formRect = chatForm.getBoundingClientRect();
+
+    // Find elements inside chatForm that are "button-like" and absolute-positioned
+    const all = Array.from(chatForm.querySelectorAll("*"));
+
+    for (const el of all) {
+      if (!(el instanceof HTMLElement)) continue;
+
+      if (ignoreIds.has(el.id)) continue;
+
+      // Skip the input itself
+      if (el.id === "chat-message") continue;
+
+      const cs = getComputedStyle(el);
+      if (cs.display === "none" || cs.visibility === "hidden") continue;
+      if (cs.position !== "absolute") continue;
+
+      const r = el.getBoundingClientRect();
+
+      // Ignore tiny stuff / weird elements
+      const w = r.width;
+      const h = r.height;
+      if (w < 18 || h < 18) continue;
+      if (w > 80 || h > 80) continue;
+
+      // Must be near the bottom-right area of chat-form (so we don't treat random abs elements elsewhere)
+      const nearRight = (formRect.right - r.right) < 220;
+      const nearBottom = (formRect.bottom - r.bottom) < 220;
+      if (!nearRight || !nearBottom) continue;
+
+      obstacles.push({ el, rect: r });
+    }
+
+    return obstacles;
+  }
+
+  function candidateRect(chatFormRect, rightPx, bottomPx, sizePx) {
+    const left = chatFormRect.right - rightPx - sizePx;
+    const top = chatFormRect.bottom - bottomPx - sizePx;
+    return {
+      left,
+      top,
+      right: left + sizePx,
+      bottom: top + sizePx,
+      width: sizePx,
+      height: sizePx
+    };
+  }
+
+  function autoDockButton() {
+    if (!game.user?.isGM) return;
+
+    const chatForm = document.querySelector("#chat-form");
+    const btn = document.getElementById(CFG.BUTTON_ID);
+    const chatMessage = document.querySelector("#chat-message");
+    if (!chatForm || !btn || !chatMessage) return;
+
+    // Ensure the button is measurable (must be in DOM first)
+    const chatFormRect = chatForm.getBoundingClientRect();
+
+    // Collect obstacles (including other custom buttons)
+    const ignore = new Set([CFG.BUTTON_ID]);
+    const obstacles = getAbsoluteObstacles(chatForm, ignore).map(o => o.rect);
+
+    // Try parking slots from bottom-right going left, then up
+    let chosen = null;
+
+    for (let row = 0; row < CFG.MAX_ROWS && !chosen; row++) {
+      for (let col = 0; col < CFG.MAX_COLS && !chosen; col++) {
+        const rightPx = CFG.BASE_RIGHT_PX + col * (CFG.SIZE_PX + CFG.GAP_PX);
+        const bottomPx = CFG.BASE_BOTTOM_PX + row * (CFG.SIZE_PX + CFG.GAP_PX);
+        const cand = candidateRect(chatFormRect, rightPx, bottomPx, CFG.SIZE_PX);
+
+        const overlaps = obstacles.some(o => rectsOverlap(cand, o));
+        if (!overlaps) {
+          chosen = { rightPx, bottomPx, rect: cand, row, col };
+        }
+      }
+    }
+
+    // Fallback if somehow everything is packed
+    if (!chosen) {
+      chosen = {
+        rightPx: CFG.BASE_RIGHT_PX,
+        bottomPx: CFG.BASE_BOTTOM_PX + (CFG.SIZE_PX + CFG.GAP_PX),
+        rect: candidateRect(chatFormRect, CFG.BASE_RIGHT_PX, CFG.BASE_BOTTOM_PX + (CFG.SIZE_PX + CFG.GAP_PX), CFG.SIZE_PX),
+        row: 1,
+        col: 0
+      };
+    }
+
+    // Apply position
+    btn.style.right = `${chosen.rightPx}px`;
+    btn.style.bottom = `${chosen.bottomPx}px`;
+
+    // Now adjust typing padding ONLY if any obstacle overlaps the input vertically
+    // (including our button if it sits over the input)
+    const inputRect = chatMessage.getBoundingClientRect();
+    const updatedObstacles = getAbsoluteObstacles(chatForm, new Set()).map(o => o.rect);
+
+    const relevant = updatedObstacles.filter(r => {
+      const verticalOverlap = !(r.bottom <= inputRect.top || r.top >= inputRect.bottom);
+      return verticalOverlap;
+    });
+
+    let neededInset = 0;
+    for (const r of relevant) {
+      // How far from the right edge is the left side of this obstacle
+      const inset = chatFormRect.right - r.left;
+      if (inset > neededInset) neededInset = inset;
+    }
+
+    if (neededInset > 0) {
+      // Add a little breathing room
+      const finalPad = Math.ceil(neededInset + 8);
+      chatMessage.style.setProperty("padding-right", `${finalPad}px`, "important");
+    }
   }
 
   // ---------------------------------------------------------------------------
   // Button injection (GM only)
   // ---------------------------------------------------------------------------
   function ensureButton() {
-    // GM only: players never get the button
     if (!game.user?.isGM) return false;
 
-    // already exists
     if (document.getElementById(CFG.BUTTON_ID)) return true;
 
     const chatForm = document.querySelector("#chat-form");
-    const chatMessage = document.querySelector("#chat-message");
-    if (!chatForm || !chatMessage) return false;
-
-    // Add typing padding so text doesn't go under buttons
-    chatMessage.style.paddingRight = `${CFG.CHAT_PADDING_RIGHT_PX}px`;
+    if (!chatForm) return false;
 
     const btn = document.createElement("button");
     btn.type = "button";
@@ -132,23 +258,28 @@
     btn.addEventListener("click", () => openSceneNetworkSwitcher());
 
     chatForm.appendChild(btn);
+
+    // After it exists, dock it
+    autoDockButton();
     return true;
   }
 
   function installOrReattach() {
-    // GM only
     if (!game.user?.isGM) return;
-
     injectCss();
     const ok = ensureButton();
-    if (ok) log("Button ready.");
+    if (ok) {
+      // Re-dock after a tick in case other modules inject after us
+      setTimeout(() => autoDockButton(), 50);
+      setTimeout(() => autoDockButton(), 250);
+      log("Button ready (auto-docked).");
+    }
   }
 
   // ---------------------------------------------------------------------------
   // Scene Network Switcher (dialog)
   // ---------------------------------------------------------------------------
   async function openSceneNetworkSwitcher() {
-    // GM only
     if (!game.user?.isGM) return;
 
     const currentScene = canvas?.scene;
@@ -157,7 +288,6 @@
       return;
     }
 
-    // Read flags
     const fabulaData = await currentScene.getFlag(CFG.MODULE_ID, "oniFabula") || {};
     const rawNetwork = fabulaData.sceneNetwork ?? "[]";
 
@@ -171,10 +301,7 @@
     }
 
     links = (links || [])
-      .map(r => ({
-        name: String(r?.name ?? "").trim(),
-        id: String(r?.id ?? "").trim()
-      }))
+      .map(r => ({ name: String(r?.name ?? "").trim(), id: String(r?.id ?? "").trim() }))
       .filter(r => r.name || r.id);
 
     if (!links.length) {
@@ -182,26 +309,20 @@
       return;
     }
 
-    // Helpers
     async function resolveSceneById(idString) {
       const id = String(idString || "").trim();
       if (!id) return null;
 
-      // 1) UUID path
       try {
         if (id.startsWith("Scene.") || id.includes(".")) {
           const doc = await fromUuid(id);
           if (doc?.documentName === "Scene") return doc;
         }
-      } catch (e) {
-        // ignore
-      }
+      } catch (e) {}
 
-      // 2) raw scene id
       const byId = game.scenes?.get(id);
       if (byId) return byId;
 
-      // 3) exact scene name fallback
       const byName = game.scenes?.find(s => s?.name === id);
       if (byName) return byName;
 
@@ -209,10 +330,7 @@
     }
 
     function sceneThumb(scene) {
-      return scene?.thumb
-        ?? scene?.thumbnail
-        ?? scene?.img
-        ?? "icons/svg/map.svg";
+      return scene?.thumb ?? scene?.thumbnail ?? scene?.img ?? "icons/svg/map.svg";
     }
 
     function escapeHtml(str) {
@@ -226,7 +344,6 @@
 
     const wait = (ms) => new Promise(r => setTimeout(r, ms));
 
-    // Build list
     const resolved = [];
     for (const link of links) {
       const target = await resolveSceneById(link.id);
@@ -245,7 +362,6 @@
       return;
     }
 
-    // Selection state (click-to-select)
     let selectedIndex = -1;
 
     function setSelected(htmlRoot, idx) {
@@ -270,7 +386,6 @@
       return resolved[idx] ?? null;
     }
 
-    // Dialog UI (2-column grid)
     const style = `
       <style>
         .oni-net-dialog { display: flex; flex-direction: column; gap: 10px; }
@@ -322,18 +437,8 @@
           background: rgba(0,0,0,0.03);
         }
 
-        .oni-net-name {
-          font-weight: 700;
-          line-height: 1.1;
-          font-size: 14px;
-        }
-
-        .oni-net-sub {
-          opacity: .75;
-          font-size: 11px;
-          margin-top: 4px;
-          word-break: break-all;
-        }
+        .oni-net-name { font-weight: 700; line-height: 1.1; font-size: 14px; }
+        .oni-net-sub  { opacity: .75; font-size: 11px; margin-top: 4px; word-break: break-all; }
 
         @media (max-width: 820px) {
           .oni-net-grid { grid-template-columns: 1fr; }
@@ -372,33 +477,21 @@
       </div>
     `;
 
-    // Run dialog
     const dlg = new Dialog({
       title: "Scene Network — Switch Scene",
       content,
       buttons: {
-        cancel: {
-          icon: '<i class="fas fa-times"></i>',
-          label: "Cancel"
-        },
+        cancel: { icon: '<i class="fas fa-times"></i>', label: "Cancel" },
         go: {
           icon: '<i class="fas fa-exchange-alt"></i>',
           label: "Switch Scene",
           callback: async (html) => {
             const entry = getSelectedEntry(html);
-            if (!entry) {
-              ui.notifications?.warn?.("Pick a scene first.");
-              return;
-            }
-
-            if (!entry.scene) {
-              ui.notifications?.error?.("That linked scene could not be found.");
-              return;
-            }
+            if (!entry) return ui.notifications?.warn?.("Pick a scene first.");
+            if (!entry.scene) return ui.notifications?.error?.("That linked scene could not be found.");
 
             const targetScene = entry.scene;
 
-            // Preload first (smooth transition)
             if (CFG.USE_PRELOAD) {
               try {
                 if (CFG.PRELOAD_NOTIFY) ui.notifications?.info?.(`Preloading: ${targetScene.name}…`);
@@ -410,10 +503,9 @@
               }
             }
 
-            // Switch scene using Foundry defaults
             try {
-              await targetScene.activate(); // switches all clients
-              await targetScene.view();     // GM convenience
+              await targetScene.activate();
+              await targetScene.view();
               ui.notifications?.info?.(`Switched to: ${targetScene.name}`);
             } catch (e) {
               console.error("[SceneNetworkSwitcher] Activate/View failed:", e);
@@ -424,33 +516,26 @@
       },
       default: "go",
       render: (html) => {
-        // Default select first valid
         const firstOkIndex = resolved.findIndex(r => r.ok);
         if (firstOkIndex >= 0) setSelected(html, firstOkIndex);
 
-        // Click-to-select
         html.on("click", ".oni-net-item", (ev) => {
           const el = $(ev.currentTarget);
           if (el.hasClass("disabled")) return;
           const idx = Number(el.attr("data-index"));
-          if (Number.isNaN(idx)) return;
-          setSelected(html, idx);
+          if (!Number.isNaN(idx)) setSelected(html, idx);
         });
 
-        // Keyboard select (Enter/Space)
         html.on("keydown", ".oni-net-item", (ev) => {
           if (ev.key !== "Enter" && ev.key !== " ") return;
           ev.preventDefault();
           const el = $(ev.currentTarget);
           if (el.hasClass("disabled")) return;
           const idx = Number(el.attr("data-index"));
-          if (Number.isNaN(idx)) return;
-          setSelected(html, idx);
+          if (!Number.isNaN(idx)) setSelected(html, idx);
         });
       }
-    }, {
-      width: CFG.DIALOG_WIDTH
-    });
+    }, { width: CFG.DIALOG_WIDTH });
 
     dlg.render(true);
   }
@@ -459,18 +544,23 @@
   // Hooks
   // ---------------------------------------------------------------------------
   Hooks.once("ready", () => {
-    log("Module script loaded on ready.");
+    if (!game.user?.isGM) return;
     installOrReattach();
 
-    // Optional: expose for debugging / other scripts
+    // expose for debug / other scripts
     window.oni = window.oni || {};
-    window.oni.SceneNetworkSwitcher = {
-      open: openSceneNetworkSwitcher
-    };
+    window.oni.SceneNetworkSwitcher = { open: openSceneNetworkSwitcher };
   });
 
   Hooks.on("renderSidebarTab", () => {
-    // Chat sidebar can re-render; re-attach if needed
+    // Re-attach on chat re-render
+    if (!game.user?.isGM) return;
     installOrReattach();
+  });
+
+  // Also re-dock when the sidebar is resized (this prevents new overlaps)
+  window.addEventListener("resize", () => {
+    if (!game.user?.isGM) return;
+    setTimeout(() => autoDockButton(), 50);
   });
 })();
