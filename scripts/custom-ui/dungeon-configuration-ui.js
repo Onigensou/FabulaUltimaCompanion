@@ -5,9 +5,10 @@
 //
 // What it does:
 // - Adds a "Fabula Configuration" tab into Scene Configuration (Foundry v12)
-// - Inside that tab, adds 2 SUB-TABS:
-//     1) Dungeon Configuration  (your existing UI, unchanged)
-//     2) Scene Network          (NEW: dynamic Name/ID table)
+// - Inside that tab, adds 3 SUB-TABS:
+//     1) General                (NEW: general map settings)
+//     2) Dungeon Configuration  (your existing UI, unchanged)
+//     3) Scene Network          (dynamic Name/ID table)
 //
 // Stores data into Scene flags under THIS MODULE scope:
 // - Dungeon data (unchanged):
@@ -40,10 +41,15 @@
   const FABULA_ROOT_KEY   = "oniFabula";  // flags.<MODULE_ID>.oniFabula
   const SCENE_NET_KEY     = "sceneNetwork"; // stored inside oniFabula as JSON string
 
+  // General settings stored inside oniFabula.general
+  const GENERAL_KEY       = "general";
+  const CAMERA_FOLLOW_KEY = "cameraFollowToken";
+
   // Main (parent) tab in Scene Config
   const FABULA_TAB_ID     = "oni-fabula-config";
 
   // Subtabs inside the Fabula Configuration tab
+  const SUBTAB_GENERAL_ID = "subtab-general";
   const SUBTAB_DUNGEON_ID = "subtab-dungeon";
   const SUBTAB_NETWORK_ID = "subtab-network";
 
@@ -212,6 +218,17 @@
     } catch {
       return fallback;
     }
+  }
+
+  function normalizeBoolean(raw, fallback = false) {
+    if (raw === true || raw === false) return raw;
+    if (raw === 1 || raw === 0) return !!raw;
+    if (typeof raw === "string") {
+      const s = raw.trim().toLowerCase();
+      if (s === "true" || s === "1" || s === "yes" || s === "y" || s === "on") return true;
+      if (s === "false" || s === "0" || s === "no" || s === "n" || s === "off") return false;
+    }
+    return fallback;
   }
 
   // -----------------------------
@@ -462,7 +479,10 @@
 
         <!-- SUBTABS -->
         <div class="oni-fabula-subtabs">
-          <div class="oni-fabula-subtab active" data-subtab="${SUBTAB_DUNGEON_ID}">
+          <div class="oni-fabula-subtab active" data-subtab="${SUBTAB_GENERAL_ID}">
+            <i class="fas fa-sliders-h"></i> General
+          </div>
+          <div class="oni-fabula-subtab" data-subtab="${SUBTAB_DUNGEON_ID}">
             <i class="fas fa-dungeon"></i> Dungeon Configuration
           </div>
           <div class="oni-fabula-subtab" data-subtab="${SUBTAB_NETWORK_ID}">
@@ -470,8 +490,23 @@
           </div>
         </div>
 
+        <!-- SUBTAB: GENERAL (NEW) -->
+        <div class="oni-fabula-subpanel active" data-subtab="${SUBTAB_GENERAL_ID}">
+          <h3>General</h3>
+
+          <div class="form-group">
+            <label>Camera Follow Token</label>
+            <div class="form-fields">
+              <input type="checkbox" name="flags.${MODULE_ID}.${FABULA_ROOT_KEY}.${GENERAL_KEY}.${CAMERA_FOLLOW_KEY}" />
+            </div>
+            <p class="notes">If enabled, your future camera script can follow the selected token on this map.</p>
+          </div>
+
+          <p class="notes">Remember: data is saved only when you press <b>Save Changes</b>.</p>
+        </div>
+
         <!-- SUBTAB: DUNGEON (your existing UI) -->
-        <div class="oni-fabula-subpanel active" data-subtab="${SUBTAB_DUNGEON_ID}">
+        <div class="oni-fabula-subpanel" data-subtab="${SUBTAB_DUNGEON_ID}">
           <h3>Battle</h3>
 
           <div class="form-group">
@@ -591,6 +626,19 @@
     // Prefill: Dungeon + Scene Network
     // -----------------------------
     const scene = app?.object;
+    const fabulaData = readFabulaData(scene);
+
+    // Prefill General fields
+    try {
+      const generalPanel = tabPanel.querySelector(`.oni-fabula-subpanel[data-subtab="${SUBTAB_GENERAL_ID}"]`);
+      const cb = generalPanel?.querySelector(`input[name="flags.${MODULE_ID}.${FABULA_ROOT_KEY}.${GENERAL_KEY}.${CAMERA_FOLLOW_KEY}"]`);
+      if (cb) {
+        const raw = safeGet(fabulaData, `${GENERAL_KEY}.${CAMERA_FOLLOW_KEY}`, false);
+        cb.checked = normalizeBoolean(raw, false);
+      }
+    } catch (e) {
+      warn("General prefill failed:", e);
+    }
 
     // Prefill dungeon fields
     try {
@@ -602,7 +650,6 @@
 
     // Prefill scene network
     try {
-      const fabulaData = readFabulaData(scene);
       const raw = fabulaData?.[SCENE_NET_KEY];
       const rows = normalizeSceneNetwork(raw);
 
@@ -740,8 +787,17 @@
       MODULE_ID,
       DUNGEON_ROOT_KEY,
       FABULA_ROOT_KEY,
+      GENERAL_KEY,
+      CAMERA_FOLLOW_KEY,
       readDungeon(scene = canvas.scene) {
         return readDungeonData(scene);
+      },
+      readGeneral(scene = canvas.scene) {
+        const fabula = readFabulaData(scene);
+        const raw = safeGet(fabula, `${GENERAL_KEY}.${CAMERA_FOLLOW_KEY}`, false);
+        return {
+          [CAMERA_FOLLOW_KEY]: normalizeBoolean(raw, false)
+        };
       },
       readSceneNetwork(scene = canvas.scene) {
         const fabula = readFabulaData(scene);
