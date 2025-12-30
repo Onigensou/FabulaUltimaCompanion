@@ -26,11 +26,11 @@
   // Guard: avoid double-install if the file is loaded twice
   if (globalThis[GLOBAL_KEY]?.state?.installed) return;
 
-  // GM is never affected
-  if (game.user?.isGM) {
-    globalThis[GLOBAL_KEY] = { state: { installed: true, disabledBecauseGM: true } };
-    return;
-  }
+  // IMPORTANT:
+  // Do NOT perform the GM guard here at module-evaluation time.
+  // In Foundry v12, modules can be evaluated before game.user is finalized,
+  // which can cause game.user?.isGM to be undefined/false briefly.
+  // We enforce the GM guard at runtime (ready + every hook callback) instead.
 
   // ---------------------------------------------------------------------------
   // CONFIG (match your module / scene flag structure)
@@ -153,6 +153,7 @@
   const state = {
     installed: true,
     enabled: true,
+    disabledBecauseGM: false,
 
     followEnabledForScene: false,
     activeSceneId: null,
@@ -431,6 +432,7 @@
 
   function installHooks() {
     const idCanvasReady = Hooks.on("canvasReady", async () => {
+      if (game.user?.isGM) return;
       if (!state.enabled) return;
       ensureInputBlockersInstalled();
       attachTicker();
@@ -439,6 +441,7 @@
     state.hookIds.push(["canvasReady", idCanvasReady]);
 
     const idCanvasTearDown = Hooks.on("canvasTearDown", () => {
+      if (game.user?.isGM) return;
       if (!state.enabled) return;
       detachTicker();
       removeInputBlockers();
@@ -446,6 +449,7 @@
     state.hookIds.push(["canvasTearDown", idCanvasTearDown]);
 
     const idUpdateScene = Hooks.on("updateScene", async (scene) => {
+      if (game.user?.isGM) return;
       if (!state.enabled) return;
       if (!canvas?.scene) return;
       if (scene.id !== canvas.scene.id) return;
@@ -454,6 +458,7 @@
     state.hookIds.push(["updateScene", idUpdateScene]);
 
     const idCreateToken = Hooks.on("createToken", async (tokenDoc) => {
+      if (game.user?.isGM) return;
       if (!state.enabled) return;
       if (!canvas?.ready || !canvas.scene) return;
 
@@ -486,6 +491,13 @@
   }
 
   async function enable() {
+    // Player-only guard (GM should never be affected)
+    if (game.user?.isGM) {
+      state.disabledBecauseGM = true;
+      await disable();
+      return;
+    }
+
     state.enabled = true;
     installHooks();
 
@@ -521,6 +533,13 @@
 
   // Auto-enable when Foundry is ready
   Hooks.once("ready", () => {
+    // Enforce GM guard here (runtime), not at module eval time.
+    if (game.user?.isGM) {
+      state.disabledBecauseGM = true;
+      // Ensure any stray state is disabled (should be none yet).
+      disable();
+      return;
+    }
     enable();
   });
 })();
