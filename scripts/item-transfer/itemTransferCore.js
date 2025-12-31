@@ -119,18 +119,34 @@
     return doc;
   }
 
-  /**
+    /**
    * Try to find an "equivalent" item on an actor to stack with.
-   * Right now we use a simple heuristic: same name and same type.
-   * (You can refine this later with IDs, categories, rarity, etc.)
+   *
+   * IMPORTANT (Oni rule):
+   * - Only "Consumable" items are allowed to stack.
+   * - Weapons / Armor / Accessories (and everything else) should create new copies.
+   *
+   * We use your system fields:
+   * - system.props.item_type
+   * - system.props.item_quantity
    */
   function findStackableItemOnActor(actor, sourceItem) {
-    const sourceName = sourceItem.name;
-    const sourceType = sourceItem.type;
+    const sourceName = sourceItem?.name;
+    const sourceDocType = sourceItem?.type;
+
+    // Your system category (Weapon/Armor/Accessories/Consumable/etc.)
+    const sourceItemType = String(sourceItem?.system?.props?.item_type ?? "").trim().toLowerCase();
+
     if (!sourceName) return null;
 
+    // Only allow stacking for Consumables
+    if (sourceItemType !== "consumable") return null;
+
     return actor.items.find(i => {
-      return i.name === sourceName && i.type === sourceType;
+      const targetItemType = String(i?.system?.props?.item_type ?? "").trim().toLowerCase();
+      if (targetItemType !== "consumable") return false;
+
+      return i.name === sourceName && i.type === sourceDocType;
     }) ?? null;
   }
 
