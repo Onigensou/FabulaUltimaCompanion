@@ -172,48 +172,62 @@
   const users = Array.from(game.users.contents || []).filter(Boolean);
 
   // ------------------------------------------------------------
-  // 1) BEST CASE: non-GM users whose assigned character IS actor
+  // A) Collect PLAYER recipients (non-GM)
+  //    Priority:
+  //    1) non-GM linked character match
+  //    2) non-GM OWNER fallback
   // ------------------------------------------------------------
+
+  const playerLinked = [];
+  const playerOwners = [];
+
+  // 1) non-GM linked character match
   for (const u of users) {
     if (!u?.id) continue;
     if (u.isGM) continue;
 
     if (u.character?.id && actor.id && u.character.id === actor.id) {
-      ids.add(u.id);
+      playerLinked.push(u.id);
     }
   }
 
-  if (ids.size > 0) return Array.from(ids);
+  // 2) non-GM OWNER fallback (only if no linked players)
+  if (playerLinked.length === 0) {
+    for (const u of users) {
+      if (!u?.id) continue;
+      if (u.isGM) continue;
 
-  // ------------------------------------------------------------
-  // 2) FALLBACK: non-GM users with OWNER permission on actor
-  // ------------------------------------------------------------
-  for (const u of users) {
-    if (!u?.id) continue;
-    if (u.isGM) continue;
-
-    try {
-      const isOwner = actor.testUserPermission?.(u, "OWNER") || false;
-      if (isOwner) ids.add(u.id);
-    } catch (e) {
-      // ignore
+      try {
+        const isOwner = actor.testUserPermission?.(u, "OWNER") || false;
+        if (isOwner) playerOwners.push(u.id);
+      } catch (e) {
+        // ignore
+      }
     }
   }
 
-  if (ids.size > 0) return Array.from(ids);
+  // Choose which player list we’re using (linked wins)
+  const playerRecipients = playerLinked.length > 0 ? playerLinked : playerOwners;
+
+  // Add selected player recipients
+  for (const id of playerRecipients) ids.add(id);
 
   // ------------------------------------------------------------
-  // 3) GM RULE (your requested behavior)
-  //    GM can see the card ONLY if:
-  //    - they have a linked character (u.character exists)
+  // B) GM rule (your requested behavior)
+  //    Add GM ONLY if:
+  //    - GM has a linked character (u.character exists)
   //    - AND that linked character IS the receiver actor
-  //    NO "GM OWNER" fallback.
+  //    This is ADDED even if players also own the actor.
   // ------------------------------------------------------------
   for (const u of users) {
     if (!u?.id) continue;
     if (!u.isGM) continue;
 
-    if (u.character?.id && actor.id && u.character.id === actor.id) {
+    // GM must have a linked character
+    if (!u.character?.id) continue;
+
+    // And it must match the receiver actor
+    if (actor.id && u.character.id === actor.id) {
       ids.add(u.id);
     }
   }
