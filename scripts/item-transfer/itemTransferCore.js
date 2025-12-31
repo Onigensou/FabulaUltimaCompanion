@@ -164,7 +164,7 @@
    * We choose all users who have OWNER permission on that actor.
    * Also includes a user whose assigned character IS that actor.
    */
-  function getRecipientUserIdsForActor(actor) {
+ function getRecipientUserIdsForActor(actor) {
   const ids = new Set();
 
   if (!actor || !game?.users) return [];
@@ -177,6 +177,7 @@
   for (const u of users) {
     if (!u?.id) continue;
     if (u.isGM) continue;
+
     if (u.character?.id && actor.id && u.character.id === actor.id) {
       ids.add(u.id);
     }
@@ -202,9 +203,11 @@
   if (ids.size > 0) return Array.from(ids);
 
   // ------------------------------------------------------------
-  // 3) FINAL FALLBACK (GM-only campaigns)
-  //    - If a GM has this actor as assigned character, allow it
-  //    - Otherwise allow GM OWNER
+  // 3) GM RULE (your requested behavior)
+  //    GM can see the card ONLY if:
+  //    - they have a linked character (u.character exists)
+  //    - AND that linked character IS the receiver actor
+  //    NO "GM OWNER" fallback.
   // ------------------------------------------------------------
   for (const u of users) {
     if (!u?.id) continue;
@@ -212,20 +215,6 @@
 
     if (u.character?.id && actor.id && u.character.id === actor.id) {
       ids.add(u.id);
-    }
-  }
-
-  if (ids.size > 0) return Array.from(ids);
-
-  for (const u of users) {
-    if (!u?.id) continue;
-    if (!u.isGM) continue;
-
-    try {
-      const isOwner = actor.testUserPermission?.(u, "OWNER") || false;
-      if (isOwner) ids.add(u.id);
-    } catch (e) {
-      // ignore
     }
   }
 
