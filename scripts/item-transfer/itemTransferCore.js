@@ -195,7 +195,7 @@
    * Emit a socket packet that asks ONLY the receiver-owner clients to show a card.
    * Every client receives the socket message, but only recipients will display it.
    */
-  function emitTransferCardToRecipients({ receiverActor, quantity, itemName, itemImg, receiverItemUuid }) {
+   function emitTransferCardToRecipients({ receiverActor, quantity, itemName, itemImg, receiverItemUuid }) {
     try {
       if (!game?.socket) {
         console.warn("[ItemTransferCore] No game.socket; cannot emit transfer card.");
@@ -218,13 +218,24 @@
         receiverActorUuid: receiverActor?.uuid ?? null,
         receiverItemUuid: receiverItemUuid ?? null,
 
-        // Optional tuning (you can later expose these in your trade UI if desired)
+        // Optional tuning
         lingerSeconds: 3.0,
         scale: 1.1
       };
 
       console.log("[ItemTransferCore] Emitting transfer card:", payload);
 
+      // Prefer TransferCardUI helper (it includes LOCAL LOOPBACK so sender can also see the card)
+      const tUI = window["oni.TransferCardUI"];
+      if (tUI && typeof tUI.emitToRecipients === "function") {
+        tUI.emitToRecipients({
+          type: "ONI_ITEMTRANSFER_SHOW_CARD",
+          payload
+        });
+        return;
+      }
+
+      // Fallback: raw socket emit (note: sender usually won't receive its own message)
       game.socket.emit(SOCKET_CHANNEL, {
         type: MSG_TYPE_SHOW_CARD,
         payload
