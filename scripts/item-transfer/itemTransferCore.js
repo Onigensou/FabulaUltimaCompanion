@@ -226,12 +226,11 @@
       console.log("[ItemTransferCore] Emitting transfer card:", payload);
 
       // Prefer TransferCardUI helper (it includes LOCAL LOOPBACK so sender can also see the card)
-      const tUI = window["oni.TransferCardUI"];
+            const tUI = window["oni.TransferCardUI"];
       if (tUI && typeof tUI.emitToRecipients === "function") {
-        tUI.emitToRecipients({
-          type: "ONI_ITEMTRANSFER_SHOW_CARD",
-          payload
-        });
+        // IMPORTANT: TransferCardUI.emitToRecipients expects PAYLOAD ONLY.
+        // It will wrap { type, payload } by itself.
+        tUI.emitToRecipients(payload);
         return;
       }
 
