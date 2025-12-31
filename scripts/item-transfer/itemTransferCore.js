@@ -165,31 +165,72 @@
    * Also includes a user whose assigned character IS that actor.
    */
   function getRecipientUserIdsForActor(actor) {
-    const ids = new Set();
+  const ids = new Set();
 
-    // Safety
-    if (!actor || !game?.users) return [];
+  if (!actor || !game?.users) return [];
 
-    for (const u of game.users.contents) {
-      if (!u) continue;
+  const users = Array.from(game.users.contents || []).filter(Boolean);
 
-      // If the user's assigned character is the receiver actor
-      if (u.character?.id && actor.id && u.character.id === actor.id) {
-        ids.add(u.id);
-        continue;
-      }
-
-      // If the user has OWNER permission on the actor
-      try {
-        const isOwner = actor.testUserPermission?.(u, "OWNER") || false;
-        if (isOwner) ids.add(u.id);
-      } catch (e) {
-        // ignore
-      }
+  // ------------------------------------------------------------
+  // 1) BEST CASE: non-GM users whose assigned character IS actor
+  // ------------------------------------------------------------
+  for (const u of users) {
+    if (!u?.id) continue;
+    if (u.isGM) continue;
+    if (u.character?.id && actor.id && u.character.id === actor.id) {
+      ids.add(u.id);
     }
-
-    return Array.from(ids);
   }
+
+  if (ids.size > 0) return Array.from(ids);
+
+  // ------------------------------------------------------------
+  // 2) FALLBACK: non-GM users with OWNER permission on actor
+  // ------------------------------------------------------------
+  for (const u of users) {
+    if (!u?.id) continue;
+    if (u.isGM) continue;
+
+    try {
+      const isOwner = actor.testUserPermission?.(u, "OWNER") || false;
+      if (isOwner) ids.add(u.id);
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  if (ids.size > 0) return Array.from(ids);
+
+  // ------------------------------------------------------------
+  // 3) FINAL FALLBACK (GM-only campaigns)
+  //    - If a GM has this actor as assigned character, allow it
+  //    - Otherwise allow GM OWNER
+  // ------------------------------------------------------------
+  for (const u of users) {
+    if (!u?.id) continue;
+    if (!u.isGM) continue;
+
+    if (u.character?.id && actor.id && u.character.id === actor.id) {
+      ids.add(u.id);
+    }
+  }
+
+  if (ids.size > 0) return Array.from(ids);
+
+  for (const u of users) {
+    if (!u?.id) continue;
+    if (!u.isGM) continue;
+
+    try {
+      const isOwner = actor.testUserPermission?.(u, "OWNER") || false;
+      if (isOwner) ids.add(u.id);
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  return Array.from(ids);
+}
 
   /**
    * Emit a socket packet that asks ONLY the receiver-owner clients to show a card.
