@@ -19,6 +19,15 @@
  *
  * Unlock condition:
  * - The scene flag is turned off (false)
+ *
+ * NEW (2026-01-01):
+ * - Global movement lock API for cutscenes / gate-block tiles
+ *   globalThis.__ONI_CAMERA_FOLLOW_DB_MODULE__.lockMovement("SomeReason")
+ *   globalThis.__ONI_CAMERA_FOLLOW_DB_MODULE__.unlockMovement("SomeReason")
+ * - While locked:
+ *   - Right-click walk is ignored
+ *   - Pending click destination is cleared
+ *   - DB token x/y updates are blocked via preUpdateToken (unless options.oniBypassGate)
  */
 (() => {
   const GLOBAL_KEY = "__ONI_CAMERA_FOLLOW_DB_MODULE__";
@@ -42,6 +51,10 @@
 
   // Smooth follow tuning
   const SMOOTHING = 0.18; // 0.05–0.35 (higher = snappier)
+
+  // Movement lock flag stored on the DB token (optional cross-owner guard)
+  const WORLD_LOCK_SCOPE = "world";
+  const WORLD_LOCK_KEY = "oniCameraFollowMovementLocked";
 
   // ---------------------------------------------------------------------------
   // Helpers
@@ -112,10 +125,10 @@
     return null;
   }
 
-  function isDbTokenDocument(tokenDoc, dbActor) {
-    if (!tokenDoc || !dbActor) return false;
-    if (tokenDoc.actorId && tokenDoc.actorId === dbActor.id) return true;
-    if (tokenDoc.name && tokenDoc.name === dbActor.name) return true;
+  function isDbTokenDocument(tokenDoc, dbActorOrStub) {
+    if (!tokenDoc || !dbActorOrStub) return false;
+    if (tokenDoc.actorId && tokenDoc.actorId === dbActorOrStub.id) return true;
+    if (tokenDoc.name && tokenDoc.name === dbActorOrStub.name) return true;
     return false;
   }
 
@@ -145,6 +158,10 @@
       x: center.x - (token.w / 2),
       y: center.y - (token.h / 2)
     };
+  }
+
+  function hasXYChange(change) {
+    return ("x" in (change ?? {})) || ("y" in (change ?? {}));
   }
 
   // ---------------------------------------------------------------------------
@@ -177,11 +194,18 @@
     isMoving: false,
     pendingDestination: null,
 
+    // Cutscene / gate-block locks
+    movementLockIds: new Set(), // strings
+    inputLocked: false,         // quick boolean gate for input + queue
+
     tickerFn: null,
     hookIds: [],
     listeners: [],
     inputInstalled: false,
-    isApplying: false
+    isApplying: false,
+
+    // PreUpdateToken gate install flag
+    preUpdateInstalled: false
   };
 
   function getFollowToken() {
@@ -189,9 +213,118 @@
     return canvas.tokens?.get(state.followTokenId) ?? null;
   }
 
+  function getFollowTokenDoc() {
+    const t = getFollowToken();
+    return t?.document ?? null;
+  }
+
+  function isMovementLocked() {
+    if (state.movementLockIds.size > 0) return true;
+
+    // Optional: if we can identify the DB token doc, also respect the world flag
+    const doc = getFollowTokenDoc();
+    if (doc) {
+      try {
+        return !!doc.getFlag(WORLD_LOCK_SCOPE, WORLD_LOCK_KEY);
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  function clearPendingMove() {
+    state.pendingDestination = null;
+  }
+
+  function lockMovement(lockId = "default") {
+    try {
+      state.movementLockIds.add(String(lockId));
+      state.inputLocked = true;
+      clearPendingMove();
+    } catch {
+      // ignore
+    }
+  }
+
+  function unlockMovement(lockId = "default") {
+    try {
+      state.movementLockIds.delete(String(lockId));
+      if (state.movementLockIds.size === 0) {
+        state.inputLocked = false;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  async function setWorldMovementLocked(locked) {
+    const doc = getFollowTokenDoc();
+    if (!doc) return;
+    if (!doc.isOwner) return;
+
+    try {
+      if (locked) await doc.setFlag(WORLD_LOCK_SCOPE, WORLD_LOCK_KEY, true);
+      else await doc.unsetFlag(WORLD_LOCK_SCOPE, WORLD_LOCK_KEY);
+    } catch {
+      // ignore
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // PreUpdateToken movement gate (installed once per client)
+  // - Blocks DB token x/y changes while movement is locked
+  // - Allows scripted movement with options.oniBypassGate = true
+  // ---------------------------------------------------------------------------
+  function installPreUpdateGateOnce() {
+    if (state.preUpdateInstalled) return;
+    state.preUpdateInstalled = true;
+
+    Hooks.on("preUpdateToken", (doc, change, options, userId) => {
+      try {
+        // Respect bypass option (your scripted pushback uses this)
+        if (options?.oniBypassGate) return;
+
+        if (!doc) return;
+        if (!hasXYChange(change)) return;
+
+        // Only gate when we're locked
+        if (!isMovementLocked()) return;
+
+        // Only gate the DB token (best effort)
+        // 1) If we know followTokenId, use that
+        if (state.followTokenId && doc.id !== state.followTokenId) {
+          // If followTokenId not matching, allow unless we can still identify DB by actor stub
+          // (This helps during "waiting" mode when token spawns/changes)
+          const stub = (state.dbActorId && state.dbActorName) ? { id: state.dbActorId, name: state.dbActorName } : null;
+          if (!stub || !isDbTokenDocument(doc, stub)) return;
+        } else {
+          // If followTokenId is null, try actor stub match
+          const stub = (state.dbActorId && state.dbActorName) ? { id: state.dbActorId, name: state.dbActorName } : null;
+          if (!state.followTokenId && (!stub || !isDbTokenDocument(doc, stub))) return;
+        }
+
+        // Soft-block: strip x/y so update resolves but doesn't move
+        if (change && typeof change === "object") {
+          if ("x" in change) delete change.x;
+          if ("y" in change) delete change.y;
+        }
+        return;
+      } catch {
+        return;
+      }
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Right-click walk core
+  // ---------------------------------------------------------------------------
   async function attemptMoveTokenToCanvasPoint(destCanvasPoint) {
     const token = getFollowToken();
     if (!token) return;
+
+    // Movement hard-lock (cutscenes, gate blocks)
+    if (state.inputLocked || isMovementLocked()) return;
 
     // Must own token to move it
     if (!token.document?.isOwner) return;
@@ -242,6 +375,8 @@
     // Clamp inside scene
     ({ x, y } = clampToSceneTopLeft(x, y, token));
 
+    // NOTE: If something locks movement between click and update,
+    // the preUpdateToken gate will strip x/y unless options.oniBypassGate is used.
     await token.document.update({ x, y }, { animate: true });
   }
 
@@ -251,6 +386,12 @@
 
     try {
       while (state.enabled && state.pendingDestination) {
+        // If we get locked mid-queue, stop immediately
+        if (state.inputLocked || isMovementLocked()) {
+          clearPendingMove();
+          break;
+        }
+
         const dest = state.pendingDestination;
         state.pendingDestination = null;
         await attemptMoveTokenToCanvasPoint(dest);
@@ -293,6 +434,16 @@
     const onPointerDown = (ev) => {
       if (state.mode === "inactive") return;
 
+      // Movement hard-lock (cutscenes, gate blocks)
+      if (state.inputLocked || isMovementLocked()) {
+        // Still block right-click context menu feel while locked (optional)
+        if (ev.button === 2 || ev.button === 1) {
+          ev.preventDefault();
+          ev.stopPropagation();
+        }
+        return;
+      }
+
       // Right-click move
       if (ev.button === 2) {
         ev.preventDefault();
@@ -315,6 +466,16 @@
     // Block right-drag panning
     const onPointerMove = (ev) => {
       if (state.mode === "inactive") return;
+
+      // Movement hard-lock (cutscenes, gate blocks)
+      if (state.inputLocked || isMovementLocked()) {
+        if ((ev.buttons & 2) === 2) {
+          ev.preventDefault();
+          ev.stopPropagation();
+        }
+        return;
+      }
+
       if ((ev.buttons & 2) === 2) {
         ev.preventDefault();
         ev.stopPropagation();
@@ -434,6 +595,7 @@
     const idCanvasReady = Hooks.on("canvasReady", async () => {
       if (game.user?.isGM) return;
       if (!state.enabled) return;
+      installPreUpdateGateOnce();
       ensureInputBlockersInstalled();
       attachTicker();
       await applyForActiveScene("canvasReady");
@@ -500,6 +662,7 @@
 
     state.enabled = true;
     installHooks();
+    installPreUpdateGateOnce();
 
     // If already in a ready canvas, apply immediately
     if (canvas?.ready) {
@@ -526,17 +689,33 @@
     state.followTokenId = null;
     state.pendingDestination = null;
     state.isMoving = false;
+
+    // Clear locks when disabled
+    state.movementLockIds.clear();
+    state.inputLocked = false;
   }
 
-  // Expose a small handle for debugging from console if needed
-  globalThis[GLOBAL_KEY] = { state, enable, disable };
+  // Expose a handle for other scripts
+  globalThis[GLOBAL_KEY] = {
+    state,
+    enable,
+    disable,
+
+    // NEW APIs
+    lockMovement,
+    unlockMovement,
+    isMovementLocked,
+    clearPendingMove,
+
+    // Optional: if you want a "shared" lock for multi-owner situations
+    setWorldMovementLocked
+  };
 
   // Auto-enable when Foundry is ready
   Hooks.once("ready", () => {
     // Enforce GM guard here (runtime), not at module eval time.
     if (game.user?.isGM) {
       state.disabledBecauseGM = true;
-      // Ensure any stray state is disabled (should be none yet).
       disable();
       return;
     }
