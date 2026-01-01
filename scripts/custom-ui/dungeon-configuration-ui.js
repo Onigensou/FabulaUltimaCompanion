@@ -247,7 +247,7 @@
     return {};
   }
 
-  function fillDungeonFromFlags(scene, dungeonPanel) {
+    function fillDungeonFromFlags(scene, dungeonPanel) {
     const data = readDungeonData(scene);
 
     // Battle
@@ -267,6 +267,7 @@
     dungeonPanel.querySelector(`input[name="flags.${MODULE_ID}.${DUNGEON_ROOT_KEY}.loot.accessory"]`).value  = safeGet(data, "loot.accessory", "");
     dungeonPanel.querySelector(`input[name="flags.${MODULE_ID}.${DUNGEON_ROOT_KEY}.loot.consumable"]`).value = safeGet(data, "loot.consumable", "");
     dungeonPanel.querySelector(`input[name="flags.${MODULE_ID}.${DUNGEON_ROOT_KEY}.loot.item"]`).value       = safeGet(data, "loot.item", "");
+    dungeonPanel.querySelector(`input[name="flags.${MODULE_ID}.${DUNGEON_ROOT_KEY}.loot.zenit"]`).value      = safeGet(data, "loot.zenit", "");
     dungeonPanel.querySelector(`input[name="flags.${MODULE_ID}.${DUNGEON_ROOT_KEY}.loot.treasure"]`).value   = safeGet(data, "loot.treasure", "");
   }
 
@@ -563,13 +564,14 @@
             </div>
           </div>
 
-          <h3>Loot</h3>
+                    <h3>Loot</h3>
 
           <div class="form-group"><label>Weapon</label><div class="form-fields"><input type="text" name="flags.${MODULE_ID}.${DUNGEON_ROOT_KEY}.loot.weapon" placeholder="RollTable UUID" /></div></div>
           <div class="form-group"><label>Armor</label><div class="form-fields"><input type="text" name="flags.${MODULE_ID}.${DUNGEON_ROOT_KEY}.loot.armor" placeholder="RollTable UUID" /></div></div>
           <div class="form-group"><label>Accessory</label><div class="form-fields"><input type="text" name="flags.${MODULE_ID}.${DUNGEON_ROOT_KEY}.loot.accessory" placeholder="RollTable UUID" /></div></div>
           <div class="form-group"><label>Consumable</label><div class="form-fields"><input type="text" name="flags.${MODULE_ID}.${DUNGEON_ROOT_KEY}.loot.consumable" placeholder="RollTable UUID" /></div></div>
           <div class="form-group"><label>Item</label><div class="form-fields"><input type="text" name="flags.${MODULE_ID}.${DUNGEON_ROOT_KEY}.loot.item" placeholder="RollTable UUID" /></div></div>
+          <div class="form-group"><label>Zenit</label><div class="form-fields"><input type="text" name="flags.${MODULE_ID}.${DUNGEON_ROOT_KEY}.loot.zenit" placeholder="RollTable UUID" /></div></div>
           <div class="form-group"><label>Treasure</label><div class="form-fields"><input type="text" name="flags.${MODULE_ID}.${DUNGEON_ROOT_KEY}.loot.treasure" placeholder="RollTable UUID" /></div></div>
 
           <div class="oni-fabula-actions">
