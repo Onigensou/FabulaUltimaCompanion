@@ -7,7 +7,7 @@
 // Falls back to raw socket emit if Net is not installed.
 // ============================================================================
 
-(async () => {
+Hooks.once("ready", () => {
   const DEBUG = true;
   const tag = "[TreasureRoulette:UI:Listener]";
   const log = (...args) => DEBUG && console.log(tag, ...args);
@@ -83,7 +83,5 @@
       console.error(`${tag} Socket handler error:`, err);
     }
   });
-
-  ui.notifications?.info?.("TreasureRoulette UI Listener installed on this client ✅");
   log("Installed. Listening on:", SOCKET_CHANNEL);
 })();
