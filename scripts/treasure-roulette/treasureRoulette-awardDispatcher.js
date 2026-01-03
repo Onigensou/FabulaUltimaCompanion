@@ -121,13 +121,9 @@ Hooks.once("ready", () => {
     const expected = new Set(getExpectedAcks(packet));
     const finished = new Set();
 
-    const spinMs = getSpinMs(packet);
+   const spinMs = getSpinMs(packet);
+   const timeoutMs = clamp(spinMs + 2000, 2500, 650000); // spin + buffer
 
-// Match Net.js grace logic: 35% of spin, clamped 1.5s–4s
-const graceMs = clamp(Math.floor(safeInt(spinMs, 0) * 0.35), 1500, 4000);
-
-// Timeout failsafe should be AFTER spin + grace (+ tiny buffer)
-const timeoutMs = clamp(spinMs + graceMs + 250, 2500, 650000);
 
     const rec = {
       requestId: id,
