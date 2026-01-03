@@ -1,4 +1,3 @@
-
 // ============================================================================
 // [TreasureRoulette] UI • Foundry VTT v12
 // ----------------------------------------------------------------------------
@@ -105,10 +104,10 @@
   async function playSFX(url, volume = 0.8) {
     if (!url) return;
     try {
-      await foundry.audio.AudioHelper.play(
-  { src: url, volume: clamp(Number(volume) || 0.8, 0, 1), autoplay: true, loop: false },
-  true
-);
+      await AudioHelper.play(
+        { src: url, volume: clamp(Number(volume) || 0.8, 0, 1), autoplay: true, loop: false },
+        true
+      );
     } catch {}
   }
 
