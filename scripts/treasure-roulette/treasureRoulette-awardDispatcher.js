@@ -1,4 +1,3 @@
-
 // ============================================================================
 // [TreasureRoulette] AwardDispatcher • Foundry VTT v12
 // ----------------------------------------------------------------------------
@@ -38,10 +37,8 @@
   const MSG_TR_PLAY_UI = "ONI_TR_PLAY_UI";
   const MSG_TR_UI_FINISHED = "ONI_TR_UI_FINISHED";
 
-// Only GM should actually award (players can still "install" harmlessly)
-// NOTE: don't snapshot this at file-load time; module scripts can load before game.user exists.
-const isGM = () => !!game.user?.isGM;
-
+  // Only GM should actually award (players can still "install" harmlessly)
+  const IS_GM = !!game.user?.isGM;
 
   // requestId -> record
   const _records = new Map();
@@ -414,14 +411,14 @@ async function postAwardChatIP({ recipientActorUuid, hasRecipient, ipDelta, disp
   async function doAward(rec, reason) {
     const packet = rec.packet;
 
-   if (!isGM()) {
-  // Players should never mutate actor sheets for rewards.
-  console.warn("[TreasureRoulette][AwardDispatcher] Non-GM client reached award stage; skipping.", {
-    requestId: rec.requestId,
-    reason
-  });
-  return;
-}
+    if (!IS_GM) {
+      // Players should never mutate actor sheets for rewards.
+      console.warn("[TreasureRoulette][AwardDispatcher] Non-GM client reached award stage; skipping.", {
+        requestId: rec.requestId,
+        reason
+      });
+      return;
+    }
 
     // Guard: ItemTransferCore must exist
     const itc = window["oni.ItemTransferCore"];
@@ -715,26 +712,8 @@ async function postAwardChatIP({ recipientActorUuid, hasRecipient, ipDelta, disp
     let awardOk = false;
 
     try {
-           const t0 = performance.now();
-      console.log("[TreasureRoulette][AwardDispatcher] doAward START", {
-        requestId,
-        reason,
-        now: Date.now(),
-        finished: Array.from(rec.finished),
-        expected: Array.from(rec.expected)
-      });
-
       await doAward(rec, reason);
-
-      const t1 = performance.now();
-      console.log("[TreasureRoulette][AwardDispatcher] doAward END", {
-        requestId,
-        reason,
-        ms: Math.round(t1 - t0)
-      });
-
       awardOk = true;
-
     } catch (e) {
       console.error("[TreasureRoulette][AwardDispatcher] Award failed:", e);
     } finally {
@@ -764,86 +743,51 @@ async function postAwardChatIP({ recipientActorUuid, hasRecipient, ipDelta, disp
   // ----------------------------
   // Socket listeners
   // ----------------------------
-    function installSocketListener() {
+  function installSocketListener() {
+    if (!game?.socket) return;
+
     const guardKey = "oni._treasureRouletteAwardDispatcherSocketInstalled";
     if (window[guardKey]) return;
     window[guardKey] = true;
 
-    const tag = "[TreasureRoulette][AwardDispatcher]";
-    const log = (...a) => console.log(tag, ...a);
-    const warn = (...a) => console.warn(tag, ...a);
+    game.socket.on(SOCKET_CHANNEL, async (msg) => {
+      try {
+        if (!msg || !msg.type) return;
 
-    const doInstall = () => {
-      if (!game?.socket) {
-        warn("Socket not ready even at install time. Will retry on next ready tick.");
-        return false;
+        // Register packet so dispatcher knows expectedAcks + reward info
+        if (msg.type === MSG_TR_PLAY_UI) {
+          const packet = msg.payload;
+          ensureRecord(packet);
+          return;
+        }
+
+        // UI finished ack
+        if (msg.type === MSG_TR_UI_FINISHED) {
+          const ack = msg.payload;
+          const requestId = ack?.requestId;
+          const userId = ack?.userId;
+          if (!requestId) return;
+
+          // If ack arrives before we saw the packet, try to recover from Core memory
+          if (!_records.has(requestId)) {
+            const core = window["oni.TreasureRoulette.Core"];
+            const lastPacket =
+              core?._requests && core._requests instanceof Map
+                ? Array.from(core._requests.values()).find((r) => r?.packet?.requestId === requestId)?.packet
+                : null;
+
+            if (lastPacket) ensureRecord(lastPacket);
+          }
+
+          markFinished(requestId, userId);
+          return;
+        }
+      } catch (e) {
+        console.error("[TreasureRoulette][AwardDispatcher] Socket handler error:", e);
       }
+    });
 
-      game.socket.on(SOCKET_CHANNEL, async (msg) => {
-        try {
-          if (!msg || !msg.type) return;
-
-          // HARD DEBUG: prove we're receiving messages
-          if (msg.type === MSG_TR_PLAY_UI || msg.type === MSG_TR_UI_FINISHED) {
-            log("Socket recv:", msg.type, {
-              requestId: msg?.payload?.requestId,
-              userId: msg?.payload?.userId
-            });
-          }
-
-          // Register packet so dispatcher knows expectedAcks + reward info
-          if (msg.type === MSG_TR_PLAY_UI) {
-            const packet = msg.payload;
-            ensureRecord(packet);
-            return;
-          }
-
-          // UI finished ack
-          if (msg.type === MSG_TR_UI_FINISHED) {
-            const ack = msg.payload;
-            const requestId = ack?.requestId;
-            const userId = ack?.userId;
-            if (!requestId) return;
-
-            // If ack arrives before we saw the packet, try to recover from Core memory
-            if (!_records.has(requestId)) {
-              const core = window["oni.TreasureRoulette.Core"];
-              const lastPacket =
-                core?._requests && core._requests instanceof Map
-                  ? Array.from(core._requests.values()).find((r) => r?.packet?.requestId === requestId)?.packet
-                  : null;
-
-              if (lastPacket) ensureRecord(lastPacket);
-            }
-
-            markFinished(requestId, userId);
-            return;
-          }
-        } catch (e) {
-          console.error(`${tag} Socket handler error:`, e);
-        }
-      });
-
-      log("Socket listener installed on:", SOCKET_CHANNEL);
-      return true;
-    };
-
-    // If module loads before socket exists, install on ready.
-    if (!game?.socket) {
-      warn("installSocketListener() called before game.socket exists. Scheduling install on Hooks.once('ready').");
-      Hooks.once("ready", () => {
-        // Try install now that we're ready
-        const ok = doInstall();
-        if (!ok) {
-          // ultra-failsafe: try again next tick
-          setTimeout(() => doInstall(), 0);
-        }
-      });
-      return;
-    }
-
-    // Otherwise install immediately
-    doInstall();
+    console.log("[TreasureRoulette][AwardDispatcher] Socket listener installed on:", SOCKET_CHANNEL);
   }
 
   // ----------------------------
@@ -863,5 +807,5 @@ async function postAwardChatIP({ recipientActorUuid, hasRecipient, ipDelta, disp
 
   installSocketListener();
 
-   console.log(`[TreasureRoulette][AwardDispatcher] Installed as window["${KEY}"]. GM=${isGM()}`);
+  console.log(`[TreasureRoulette][AwardDispatcher] Installed as window["${KEY}"]. GM=${IS_GM}`);
 })();
