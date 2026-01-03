@@ -19,7 +19,7 @@
  * - Table UUIDs are CONFIG — set them to your RollTable UUIDs.
  */
 
-(() => {
+Hooks.once("ready", () => {
   const KEY = "oni.TreasureRoulette.TileFrontEnd";
   if (window[KEY]) return;
 
@@ -671,15 +671,16 @@ await tileDoc.setFlag(MODULE_ID, "trPromptMessageId", msg.id);
   };
 
   const resetPromptButton = (messageId) => {
-    try {
-      const el = document.querySelector(`li.chat-message[data-message-id="${messageId}"]`);
-      if (!el) return;
-      const btn = el.querySelector("button[data-oni-tr-roll]");
-      if (!btn) return;
-      btn.disabled = false;
-      btn.textContent = "Roll!";
-    } catch (_) {}
-  };
+  try {
+    const el = document.querySelector(`li.chat-message[data-message-id="${messageId}"]`);
+    if (!el) return;
+    const btn = el.querySelector("button.tr-tilefe-roll");
+    if (!btn) return;
+    btn.disabled = false;
+    btn.textContent = "Roll!";
+  } catch (_) {}
+};
+
 
   const onClaim = async (payload) => {
     if (!payload) return;
