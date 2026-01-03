@@ -1,4 +1,3 @@
-
 // ============================================================================
 // [TreasureRoulette] UI Listener • Foundry VTT v12
 // ----------------------------------------------------------------------------
@@ -8,7 +7,7 @@
 // Falls back to raw socket emit if Net is not installed.
 // ============================================================================
 
-Hooks.once("ready", () => {
+(async () => {
   const DEBUG = true;
   const tag = "[TreasureRoulette:UI:Listener]";
   const log = (...args) => DEBUG && console.log(tag, ...args);
@@ -84,5 +83,7 @@ Hooks.once("ready", () => {
       console.error(`${tag} Socket handler error:`, err);
     }
   });
+
+  ui.notifications?.info?.("TreasureRoulette UI Listener installed on this client ✅");
   log("Installed. Listening on:", SOCKET_CHANNEL);
 })();
