@@ -25,7 +25,7 @@
 // Additionally: hide the grey "speaker" header line for these messages.
 // ============================================================================
 
-(() => {
+Hooks.once("ready", () => {
   const KEY = "oni.TreasureRoulette.AwardDispatcher";
   if (window[KEY]) {
     console.warn(`[TreasureRoulette][AwardDispatcher] Already installed as window["${KEY}"].`);
@@ -38,7 +38,7 @@
   const MSG_TR_UI_FINISHED = "ONI_TR_UI_FINISHED";
 
   // Only GM should actually award (players can still "install" harmlessly)
-  const IS_GM = !!game.user?.isGM;
+  const isGM = () => !!game.user?.isGM;
 
   // requestId -> record
   const _records = new Map();
@@ -122,7 +122,12 @@
     const finished = new Set();
 
     const spinMs = getSpinMs(packet);
-    const timeoutMs = clamp(spinMs + 2000, 2500, 650000); // spin + buffer
+
+// Match Net.js grace logic: 35% of spin, clamped 1.5s–4s
+const graceMs = clamp(Math.floor(safeInt(spinMs, 0) * 0.35), 1500, 4000);
+
+// Timeout failsafe should be AFTER spin + grace (+ tiny buffer)
+const timeoutMs = clamp(spinMs + graceMs + 250, 2500, 650000);
 
     const rec = {
       requestId: id,
@@ -411,14 +416,13 @@ async function postAwardChatIP({ recipientActorUuid, hasRecipient, ipDelta, disp
   async function doAward(rec, reason) {
     const packet = rec.packet;
 
-    if (!IS_GM) {
-      // Players should never mutate actor sheets for rewards.
-      console.warn("[TreasureRoulette][AwardDispatcher] Non-GM client reached award stage; skipping.", {
-        requestId: rec.requestId,
-        reason
-      });
-      return;
-    }
+   if (!isGM()) {
+  console.warn("[TreasureRoulette][AwardDispatcher] Non-GM client reached award stage; skipping.", {
+    requestId: rec.requestId,
+    reason
+  });
+  return;
+}
 
     // Guard: ItemTransferCore must exist
     const itc = window["oni.ItemTransferCore"];
@@ -807,5 +811,5 @@ async function postAwardChatIP({ recipientActorUuid, hasRecipient, ipDelta, disp
 
   installSocketListener();
 
-  console.log(`[TreasureRoulette][AwardDispatcher] Installed as window["${KEY}"]. GM=${IS_GM}`);
-})();
+console.log(`[TreasureRoulette][AwardDispatcher] Installed as window["${KEY}"]. GM=${isGM()}`);
+});
