@@ -2,7 +2,7 @@
   "id": "fabula-ultima-companion",
   "title": "FabulaUltimaCompanion",
   "description": "Adds custom hooks and cool functionality.",
-  "version": "1.0.204",
+  "version": "1.0.205",
   "compatibility": {
     "minimum": "12",
     "verified": "12"
@@ -49,10 +49,16 @@
   "scripts/check-roller/checkRoller-dialog.js",
   "scripts/check-roller/checkRoller-cardHydrate.js",
   "scripts/check-roller/checkRoller-invokeButtons.js",
-  "scripts/check-roller/checkRoller-buttonInstall.js"
+  "scripts/check-roller/checkRoller-buttonInstall.js",
+  "scripts/treasure-roulette/treasureRoulette-core.js",
+  "scripts/treasure-roulette/treasureRoulette-UI.js",
+  "scripts/treasure-roulette/treasureRoulette-net.js",
+  "scripts/treasure-roulette/treasureRoulette-UIListener.js",
+  "scripts/treasure-roulette/treasureRoulette-awardDispatcher.js",
+  "scripts/treasure-roulette/treasureRoulette-tileLogic.js"
 ],
   "styles": ["styles/style.css"],
   "packs": [],
   "manifest": "https://raw.githubusercontent.com/Onigensou/FabulaUltimaCompanion/refs/heads/main/module.json",
-  "download": "https://codeload.github.com/Onigensou/FabulaUltimaCompanion/zip/refs/tags/v1.0.204"
+  "download": "https://codeload.github.com/Onigensou/FabulaUltimaCompanion/zip/refs/tags/v1.0.205"
 }
