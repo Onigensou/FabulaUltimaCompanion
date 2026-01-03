@@ -359,34 +359,56 @@
   }
 
   async function computeAudience(req) {
-    const gmIds = (game.users?.contents ?? []).filter(u => u?.isGM).map(u => u.id);
+  const gmIds = (game.users?.contents ?? []).filter(u => u?.isGM).map(u => u.id);
 
-    if (req.visibility === "gmOnly") {
-      return { visibility: "gmOnly", expectedAcks: gmIds };
-    }
-
-    if (req.visibility === "rollerOnly") {
-      // roller + GM (keeps GM in the loop for later award policies)
-      const ids = new Set([req.roller?.userId, ...gmIds].filter(Boolean));
-      return { visibility: "rollerOnly", expectedAcks: Array.from(ids) };
-    }
-
-    if (req.visibility === "ownersOfRecipient") {
-      const actor = await resolveActorMaybe(req.recipient?.actorUuid);
-      const owners = actor ? getOwnerUserIdsForActor(actor) : [];
-      const ids = new Set([...owners, ...gmIds]);
-      return { visibility: "ownersOfRecipient", expectedAcks: Array.from(ids) };
-    }
-
-    if (req.visibility === "custom") {
-      const ids = new Set([...(req.recipients || []), ...gmIds].filter(Boolean));
-      return { visibility: "custom", expectedAcks: Array.from(ids) };
-    }
-
-    // default: all active users
-    const allActive = (game.users?.contents ?? []).filter(u => u?.active).map(u => u.id);
-    return { visibility: "all", expectedAcks: allActive };
+  if (req.visibility === "gmOnly") {
+    return { visibility: "gmOnly", expectedAcks: gmIds };
   }
+
+  if (req.visibility === "rollerOnly") {
+    // Only wait for clients that actually PLAY the roulette UI.
+    // (GM often does not play the UI, so don't require a GM ACK.)
+    const ids = new Set([req.roller?.userId].filter(Boolean));
+
+    // Fallback: if somehow roller is missing, wait for GM so it still completes.
+    if (ids.size === 0) {
+      for (const id of gmIds) ids.add(id);
+    }
+
+    return { visibility: "rollerOnly", expectedAcks: Array.from(ids) };
+  }
+
+  if (req.visibility === "ownersOfRecipient") {
+    // Only wait for the actor owners (who would see/play the UI if you ever expand it).
+    // Do NOT automatically add GMs as required ACKs.
+    const actor = await resolveActorMaybe(req.recipient?.actorUuid);
+    const owners = actor ? getOwnerUserIdsForActor(actor) : [];
+    const ids = new Set((owners || []).filter(Boolean));
+
+    // Fallback: if no owners found, use GM so it still completes.
+    if (ids.size === 0) {
+      for (const id of gmIds) ids.add(id);
+    }
+
+    return { visibility: "ownersOfRecipient", expectedAcks: Array.from(ids) };
+  }
+
+  if (req.visibility === "custom") {
+    // Respect explicit recipients only. Don't force GMs into expectedAcks.
+    const ids = new Set([...(req.recipients || [])].filter(Boolean));
+
+    // Fallback: if empty custom recipients, use GM so it still completes.
+    if (ids.size === 0) {
+      for (const id of gmIds) ids.add(id);
+    }
+
+    return { visibility: "custom", expectedAcks: Array.from(ids) };
+  }
+
+  // default: all active users
+  const allActive = (game.users?.contents ?? []).filter(u => u?.active).map(u => u.id);
+  return { visibility: "all", expectedAcks: allActive };
+}
 
   // --------------------------------------------------------------------------
   // Reward descriptor builder (lightweight; will get smarter later)
