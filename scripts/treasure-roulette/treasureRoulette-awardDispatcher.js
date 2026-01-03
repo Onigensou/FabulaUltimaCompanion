@@ -38,8 +38,10 @@
   const MSG_TR_PLAY_UI = "ONI_TR_PLAY_UI";
   const MSG_TR_UI_FINISHED = "ONI_TR_UI_FINISHED";
 
-  // Only GM should actually award (players can still "install" harmlessly)
-  const IS_GM = !!game.user?.isGM;
+// Only GM should actually award (players can still "install" harmlessly)
+// NOTE: don't snapshot this at file-load time; module scripts can load before game.user exists.
+const isGM = () => !!game.user?.isGM;
+
 
   // requestId -> record
   const _records = new Map();
@@ -412,14 +414,14 @@ async function postAwardChatIP({ recipientActorUuid, hasRecipient, ipDelta, disp
   async function doAward(rec, reason) {
     const packet = rec.packet;
 
-    if (!IS_GM) {
-      // Players should never mutate actor sheets for rewards.
-      console.warn("[TreasureRoulette][AwardDispatcher] Non-GM client reached award stage; skipping.", {
-        requestId: rec.requestId,
-        reason
-      });
-      return;
-    }
+   if (!isGM()) {
+  // Players should never mutate actor sheets for rewards.
+  console.warn("[TreasureRoulette][AwardDispatcher] Non-GM client reached award stage; skipping.", {
+    requestId: rec.requestId,
+    reason
+  });
+  return;
+}
 
     // Guard: ItemTransferCore must exist
     const itc = window["oni.ItemTransferCore"];
