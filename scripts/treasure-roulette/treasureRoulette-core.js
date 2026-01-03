@@ -748,7 +748,13 @@ emitSocket(MSG_TR_PLAY_UI, packet);
 try {
   const uiApi = window["oni.TreasureRoulette.UI"];
   if (uiApi && typeof uiApi.play === "function") {
-    uiApi.play(packet);
+    await uiApi.play(packet);
+  }
+
+  // IMPORTANT: Authority client must also ACK UI finished
+  const net = window["oni.TreasureRoulette.Net"];
+  if (net && typeof net.sendUiFinished === "function") {
+    net.sendUiFinished(packet);
   }
 } catch (e) {
   // ignore
