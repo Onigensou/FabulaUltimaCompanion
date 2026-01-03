@@ -1,4 +1,3 @@
-
 // ============================================================================
 // [TreasureRoulette] Net • Foundry VTT v12
 // ----------------------------------------------------------------------------
@@ -17,7 +16,7 @@
 // - Run once per client (like BattleEnd FX Listener)
 // ============================================================================
 
-Hooks.once("ready", () => {
+(() => {
   const KEY = "oni.TreasureRoulette.Net";
   if (window[KEY]) {
     console.warn(`[TreasureRoulette][Net] Already installed as window["${KEY}"].`);
@@ -390,6 +389,7 @@ Hooks.once("ready", () => {
     // exposed for debugging if you want
     _records
   };
-  
+
+  ui.notifications?.info?.("TreasureRoulette Net installed on this client ✅");
   log(`Installed as window["${KEY}"]. Listening on:`, SOCKET_CHANNEL);
 })();
