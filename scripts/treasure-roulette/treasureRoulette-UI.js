@@ -101,15 +101,18 @@
   // Preload default SFX (DEMO behavior)
   warmAudio([DEFAULT_TICK_SFX, DEFAULT_FINAL_SFX]);
 
-  async function playSFX(url, volume = 0.8) {
-    if (!url) return;
-    try {
-      await AudioHelper.play(
-        { src: url, volume: clamp(Number(volume) || 0.8, 0, 1), autoplay: true, loop: false },
-        true
-      );
-    } catch {}
-  }
+ async function playSFX(url, volume = 0.8) {
+  if (!url) return;
+  try {
+    const AH = foundry?.audio?.AudioHelper ?? globalThis.AudioHelper;
+    if (!AH) return;
+
+    await AH.play(
+      { src: url, volume: clamp(Number(volume) || 0.8, 0, 1), autoplay: true, loop: false },
+      true
+    );
+  } catch {}
+}
 
   // deterministic jitter 0..1 (stable per index)
   function pseudoJitter(i, salt = 1) {
