@@ -1,6 +1,32 @@
 // scripts/main.js
 let socket;
 
+// Install/repair module API functions (robust against api being overwritten by other scripts)
+function installFUCompanionApi() {
+  const MODULE_ID = "fabula-ultima-companion";
+
+  const mod = game.modules.get(MODULE_ID);
+  if (!mod) return;
+
+  mod.api ??= {};
+  window.FUCompanion = window.FUCompanion ?? {};
+  window.FUCompanion.api = window.FUCompanion.api ?? {};
+
+  // Battle Log Clear API (calls GM handler via SocketLib)
+  mod.api.clearBattleLog = async () => {
+    if (!socket) {
+      console.warn("[FU Companion] clearBattleLog(): Socket not ready yet.");
+      return { ok: false, error: "Socket not ready" };
+    }
+    return await socket.executeAsGM("clearBattleLog", { requestorId: game.user.id });
+  };
+
+  // Also mirror into your global FUCompanion namespace (nice for consistency)
+  window.FUCompanion.api.clearBattleLog = mod.api.clearBattleLog;
+
+  console.debug("[FU Companion] API installed: clearBattleLog()");
+}
+
 /* ================================
  *  GM-side helpers (reusable)
  * ================================ */
@@ -149,6 +175,8 @@ async function gmRunMacroWithPlayerContext({
 Hooks.once("socketlib.ready", () => {
   console.log("[FU Companion] SocketLib ready");
   socket = socketlib.registerModule("fabula-ultima-companion");
+  
+  installFUCompanionApi();
 
   // --- Existing demo handlers ---
   socket.register("hello", showHelloMessage);
@@ -218,19 +246,11 @@ Hooks.once("init", () => {
     mod.api ??= {};
     mod.api.sfx ??= {};
     mod.api.speechBubble = () => runJRPGSpeechBubble();
-
-    // NEW: Battle Log Clear API (calls GM handler via SocketLib)
-    mod.api.clearBattleLog = async () => {
-      if (!socket) {
-        console.warn("[FU Companion] Socket not ready yet; try again after world is ready.");
-        return { ok: false, error: "Socket not ready" };
-      }
-      return await socket.executeAsGM("clearBattleLog", { requestorId: game.user.id });
-    };
   }
 });
 
 Hooks.once("ready", () => {
+   installFUCompanionApi();
   // ---- Preload & cache the tiny cursor sound -------------------------------
   try {
     // Foundry ships Howler. Create a single Howl instance and reuse it.
