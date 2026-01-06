@@ -5,6 +5,50 @@ let socket;
  *  GM-side helpers (reusable)
  * ================================ */
 
+/** Clear Battle Log on DB actor (runs only on GM) */
+async function gmClearBattleLog({ requestorId } = {}) {
+  if (!game.user.isGM) return { ok: false, error: "Not GM" };
+
+  // Resolve DB actor via DB_Resolver
+  async function resolveDbActor() {
+    const api = window.FUCompanion?.api;
+
+    // Preferred: DB_Resolver
+    if (api?.getCurrentGameDb) {
+      const { db } = await api.getCurrentGameDb();
+      return db ?? null;
+    }
+
+    // Fallback: Current Game -> game_id
+    console.warn("[BL-CLEAR] DB_Resolver API not found. Falling back to Current Game -> game_id lookup.");
+    try {
+      const currentGameActor = await fromUuid("Actor.DMpK5Bi119jIrCFZ");
+      const gameDbUuid = currentGameActor?.system?.props?.game_id;
+      if (!gameDbUuid) return null;
+      return await fromUuid(gameDbUuid);
+    } catch {
+      return null;
+    }
+  }
+
+  try {
+    const dbActor = await resolveDbActor();
+    if (!dbActor) return { ok: false, error: "DB actor not resolved" };
+
+    await dbActor.update({
+      "system.props.battle_log": "[]",
+      "system.props.battle_log_table": []
+    });
+
+    const by = game.users.get(requestorId)?.name ?? "Unknown User";
+    console.log(`Battle Log cleared! (requested by ${by})`);
+    return { ok: true };
+  } catch (err) {
+    console.warn("[BL-CLEAR] Failed:", err);
+    return { ok: false, error: err?.message ?? String(err) };
+  }
+}
+
 /** Decrease HP helper (runs only on GM) */
 async function gmDecreaseHP({ sceneId, tokenId, amount = 10, requestorId } = {}) {
   if (!game.user.isGM) return { ok: false, error: "Not GM" };
