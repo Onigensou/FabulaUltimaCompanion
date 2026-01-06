@@ -1,79 +1,9 @@
 // scripts/main.js
 let socket;
 
-// Install/repair module API functions (robust against api being overwritten by other scripts)
-function installFUCompanionApi() {
-  const MODULE_ID = "fabula-ultima-companion";
-
-  const mod = game.modules.get(MODULE_ID);
-  if (!mod) return;
-
-  mod.api ??= {};
-  window.FUCompanion = window.FUCompanion ?? {};
-  window.FUCompanion.api = window.FUCompanion.api ?? {};
-
-  // Battle Log Clear API (calls GM handler via SocketLib)
-  mod.api.clearBattleLog = async () => {
-    if (!socket) {
-      console.warn("[FU Companion] clearBattleLog(): Socket not ready yet.");
-      return { ok: false, error: "Socket not ready" };
-    }
-    return await socket.executeAsGM("clearBattleLog", { requestorId: game.user.id });
-  };
-
-  // Also mirror into your global FUCompanion namespace (nice for consistency)
-  window.FUCompanion.api.clearBattleLog = mod.api.clearBattleLog;
-
-  console.debug("[FU Companion] API installed: clearBattleLog()");
-}
-
 /* ================================
  *  GM-side helpers (reusable)
  * ================================ */
-
-/** Clear Battle Log on DB actor (runs only on GM) */
-async function gmClearBattleLog({ requestorId } = {}) {
-  if (!game.user.isGM) return { ok: false, error: "Not GM" };
-
-  // Resolve DB actor via DB_Resolver
-  async function resolveDbActor() {
-    const api = window.FUCompanion?.api;
-
-    // Preferred: DB_Resolver
-    if (api?.getCurrentGameDb) {
-      const { db } = await api.getCurrentGameDb();
-      return db ?? null;
-    }
-
-    // Fallback: Current Game -> game_id
-    console.warn("[BL-CLEAR] DB_Resolver API not found. Falling back to Current Game -> game_id lookup.");
-    try {
-      const currentGameActor = await fromUuid("Actor.DMpK5Bi119jIrCFZ");
-      const gameDbUuid = currentGameActor?.system?.props?.game_id;
-      if (!gameDbUuid) return null;
-      return await fromUuid(gameDbUuid);
-    } catch {
-      return null;
-    }
-  }
-
-  try {
-    const dbActor = await resolveDbActor();
-    if (!dbActor) return { ok: false, error: "DB actor not resolved" };
-
-    await dbActor.update({
-      "system.props.battle_log": "[]",
-      "system.props.battle_log_table": []
-    });
-
-    const by = game.users.get(requestorId)?.name ?? "Unknown User";
-    console.log(`Battle Log cleared! (requested by ${by})`);
-    return { ok: true };
-  } catch (err) {
-    console.warn("[BL-CLEAR] Failed:", err);
-    return { ok: false, error: err?.message ?? String(err) };
-  }
-}
 
 /** Decrease HP helper (runs only on GM) */
 async function gmDecreaseHP({ sceneId, tokenId, amount = 10, requestorId } = {}) {
@@ -175,8 +105,6 @@ async function gmRunMacroWithPlayerContext({
 Hooks.once("socketlib.ready", () => {
   console.log("[FU Companion] SocketLib ready");
   socket = socketlib.registerModule("fabula-ultima-companion");
-  
-  installFUCompanionApi();
 
   // --- Existing demo handlers ---
   socket.register("hello", showHelloMessage);
@@ -184,8 +112,6 @@ Hooks.once("socketlib.ready", () => {
 
   // --- Core GM ops ---
   socket.register("decreaseHP", gmDecreaseHP);
-
-  socket.register("clearBattleLog", async (payload) => gmClearBattleLog(payload));
 
   // Handler→Handler chaining demo
   socket.register("relayDecreaseHP", async (payload) => gmDecreaseHP(payload));
@@ -241,6 +167,7 @@ const MODULE_ID = "fabula-ultima-companion";
 const CURSOR_URL = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/Soundboard/Cursor1.ogg";
 
 Hooks.once("init", () => {
+  // Prepare api bag
   const mod = game.modules.get(MODULE_ID);
   if (mod) {
     mod.api ??= {};
@@ -250,7 +177,6 @@ Hooks.once("init", () => {
 });
 
 Hooks.once("ready", () => {
-   installFUCompanionApi();
   // ---- Preload & cache the tiny cursor sound -------------------------------
   try {
     // Foundry ships Howler. Create a single Howl instance and reuse it.
