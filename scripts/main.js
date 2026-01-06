@@ -157,6 +157,8 @@ Hooks.once("socketlib.ready", () => {
   // --- Core GM ops ---
   socket.register("decreaseHP", gmDecreaseHP);
 
+  socket.register("clearBattleLog", async (payload) => gmClearBattleLog(payload));
+
   // Handler→Handler chaining demo
   socket.register("relayDecreaseHP", async (payload) => gmDecreaseHP(payload));
 
