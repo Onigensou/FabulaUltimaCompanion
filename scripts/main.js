@@ -213,12 +213,20 @@ const MODULE_ID = "fabula-ultima-companion";
 const CURSOR_URL = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/Soundboard/Cursor1.ogg";
 
 Hooks.once("init", () => {
-  // Prepare api bag
   const mod = game.modules.get(MODULE_ID);
   if (mod) {
     mod.api ??= {};
     mod.api.sfx ??= {};
     mod.api.speechBubble = () => runJRPGSpeechBubble();
+
+    // NEW: Battle Log Clear API (calls GM handler via SocketLib)
+    mod.api.clearBattleLog = async () => {
+      if (!socket) {
+        console.warn("[FU Companion] Socket not ready yet; try again after world is ready.");
+        return { ok: false, error: "Socket not ready" };
+      }
+      return await socket.executeAsGM("clearBattleLog", { requestorId: game.user.id });
+    };
   }
 });
 
