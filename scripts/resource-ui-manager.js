@@ -6,12 +6,18 @@
   const STYLE_ID    = "oni2-hud-style";
   const FONTLINK_ID = "oni2-hud-fonts";
 
-  // ===== UI scale tuner ==========================================
+    // ===== UI scale tuner ==========================================
   // 1.00 = default size
   // 0.90 = slightly smaller
   // 1.10 = slightly bigger
   const HUD_UI_SCALE = 1.0;
 
+  // ===== Portrait scale tuner ====================================
+  // This ONLY scales the actor portrait image (not the whole card)
+  // 1.00 = default portrait size
+  // 0.85 = smaller portraits
+  // 1.15 = bigger portraits
+  const HUD_PORTRAIT_SCALE = 1.2;
 
   // NEW: module + socket action keys (to mirror GM → everyone)
   const MODULE_ID    = "fabula-ultima-companion";
@@ -114,6 +120,10 @@ function pickFriendliesFromCombat(combat){
   --ui-font: "${UI_FONT}", system-ui, sans-serif;
   --num-font: "${NUM_FONT}", "${UI_FONT}", monospace;
   --zp-font:  "${ZP_FONT}", "${UI_FONT}", monospace;
+
+  /* Portrait scale variable (from your tuner) */
+  --oni2-portrait-scale: ${HUD_PORTRAIT_SCALE};
+
   --txt: ${TONE.text};
   --txt-dim: ${TONE.textDim};
   --top: ${TONE.topRGB};
@@ -138,8 +148,8 @@ function pickFriendliesFromCombat(combat){
 }
 .oni2-portrait img{
   display:block; width:auto; height:auto; object-fit:contain;
-  max-width:  min(24vmin, 360px);   /* <-- --oni2-portrait-vmin / px */
-  max-height: min(24vmin, 360px);
+  max-width:  min(calc(24vmin * var(--oni2-portrait-scale)), calc(360px * var(--oni2-portrait-scale)));
+  max-height: min(calc(24vmin * var(--oni2-portrait-scale)), calc(360px * var(--oni2-portrait-scale)));
   background: transparent !important;
   border: none !important; outline: none !important; box-shadow: none !important;
 }
