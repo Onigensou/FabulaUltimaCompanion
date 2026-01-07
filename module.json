@@ -58,7 +58,8 @@
   "scripts/treasure-roulette/treasureRoulette-UIListener.js",
   "scripts/treasure-roulette/treasureRoulette-awardDispatcher.js",
   "scripts/treasure-roulette/treasureRoulette-tileLogic.js",
-  "scripts/battle-init/battleInit-entranceAnimation-listener.js"
+  "scripts/battle-init/battleInit-entranceAnimation-listener.js",
+  "scripts/battle-end/battleEnd-cameraReset-listener.js"
 ],
   "styles": ["styles/style.css"],
   "packs": [],
