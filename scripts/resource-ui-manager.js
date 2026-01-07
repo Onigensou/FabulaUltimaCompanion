@@ -2,9 +2,16 @@
 // Conflict-safe Player Resource HUD (per-combat owner, robust teardown)
 (() => {
   // ===== Unique namespace and per-combat registry ===========================
-  const HUD_NS      = "OniHud2"; // window[HUD_NS]
+    const HUD_NS      = "OniHud2"; // window[HUD_NS]
   const STYLE_ID    = "oni2-hud-style";
   const FONTLINK_ID = "oni2-hud-fonts";
+
+  // ===== UI scale tuner ==========================================
+  // 1.00 = default size
+  // 0.90 = slightly smaller
+  // 1.10 = slightly bigger
+  const HUD_UI_SCALE = 0.75;
+
 
   // NEW: module + socket action keys (to mirror GM → everyone)
   const MODULE_ID    = "fabula-ultima-companion";
@@ -119,7 +126,7 @@ function pickFriendliesFromCombat(combat){
   position: fixed; left:1.25rem; bottom:6rem;
   z-index: var(--z-index-canvas, 0); /* <= under #hud (z=1) */
   pointer-events:none; display:grid; grid-auto-flow:column; gap:.6rem;
-  transform-origin:bottom left; transform: scale(0.78)
+    transform-origin:bottom left; transform: scale(1)
 }
 .oni2-card{pointer-events:auto; display:inline-flex; align-items:flex-start; gap:.6rem; opacity:0; transform:translateX(-24px); transition:opacity 420ms ease, transform 420ms ease;}
 .oni2-card.oni2-appear{opacity:1; transform:translateX(0);}
@@ -212,11 +219,13 @@ function pickFriendliesFromCombat(combat){
   }
 
   // ===== DOM build helpers ===================================================
-  function scaleRoot(root, count){
+    function scaleRoot(root, count){
     const vmin=Math.min(window.innerWidth, window.innerHeight);
     let base=clamp(vmin/1080, 0.75, 1.15);
     const factor=(count>=4)?0.78:(count===3?0.85:1.00);
-    root.style.transform=`scale(${(base*factor).toFixed(4)})`;
+
+    // Master scale multiplier (your tuner)
+    root.style.transform=`scale(${(base*factor*HUD_UI_SCALE).toFixed(4)})`;
   }
   const dotRow=(m,v)=>Array.from({length:m},(_,i)=>`<i class="${i<v?'on':''}"></i>`).join("");
   function tintHp(fillEl, v, m){
