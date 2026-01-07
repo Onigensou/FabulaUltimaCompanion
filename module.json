@@ -2,7 +2,7 @@
   "id": "fabula-ultima-companion",
   "title": "FabulaUltimaCompanion",
   "description": "Adds custom hooks and cool functionality.",
-  "version": "1.0.229",
+  "version": "1.0.230",
   "compatibility": {
     "minimum": "12",
     "verified": "12"
@@ -37,6 +37,7 @@
   "scripts/custom-ui/chat-trade-button.js",
   "scripts/custom-ui/chat-scene-network-button.js",
   "scripts/custom-ui/dungeon-configuration-ui.js",
+  "scripts/custom-ui/combat-button-installer.js",
   "scripts/item-transfer/TransferCardUI.js",
   "scripts/item-transfer/itemTransferCore.js",
   "scripts/item-transfer/item-trading/ItemTransferQuantityUI.js",
@@ -66,5 +67,5 @@
   "styles": ["styles/style.css"],
   "packs": [],
   "manifest": "https://raw.githubusercontent.com/Onigensou/FabulaUltimaCompanion/refs/heads/main/module.json",
-  "download": "https://codeload.github.com/Onigensou/FabulaUltimaCompanion/zip/refs/tags/v1.0.229"
+  "download": "https://codeload.github.com/Onigensou/FabulaUltimaCompanion/zip/refs/tags/v1.0.230"
 }
