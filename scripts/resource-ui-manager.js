@@ -10,7 +10,7 @@
   // 1.00 = default size
   // 0.90 = slightly smaller
   // 1.10 = slightly bigger
-  const HUD_UI_SCALE = 0.75;
+  const HUD_UI_SCALE = 0.90;
 
 
   // NEW: module + socket action keys (to mirror GM → everyone)
