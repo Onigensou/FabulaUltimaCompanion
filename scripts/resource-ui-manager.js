@@ -10,7 +10,7 @@
   // 1.00 = default size
   // 0.90 = slightly smaller
   // 1.10 = slightly bigger
-  const HUD_UI_SCALE = 1.0;
+  const HUD_UI_SCALE = 1.3;
 
   // ===== Portrait scale tuner ====================================
   // This ONLY scales the actor portrait image (not the whole card)
