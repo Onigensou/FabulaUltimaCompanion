@@ -10,14 +10,14 @@
   // 1.00 = default size
   // 0.90 = slightly smaller
   // 1.10 = slightly bigger
-  const HUD_UI_SCALE = 1.1;
+  const HUD_UI_SCALE = 1.03;
 
   // ===== Portrait scale tuner ====================================
   // This ONLY scales the actor portrait image (not the whole card)
   // 1.00 = default portrait size
   // 0.85 = smaller portraits
   // 1.15 = bigger portraits
-  const HUD_PORTRAIT_SCALE = 1.0;
+  const HUD_PORTRAIT_SCALE = 1.1;
 
   // NEW: module + socket action keys (to mirror GM → everyone)
   const MODULE_ID    = "fabula-ultima-companion";
