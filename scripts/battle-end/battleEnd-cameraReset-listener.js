@@ -17,7 +17,7 @@
 // ============================================================================
 
 Hooks.once("ready", () => {
-  const DEBUG = true;
+  const DEBUG = false;
   const tag = "[BattleEnd:CameraReset:Listener]";
   const log = (...a) => DEBUG && console.log(tag, ...a);
 
