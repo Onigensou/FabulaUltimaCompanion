@@ -178,6 +178,14 @@ const {
 // NEW: pull itemUsage from the flagged payload (if this came from a consumable)
 const itemUsage = flagged?.itemUsage ?? null;
 
+// NEW: determine whether this card actually has a Damage/Healing section.
+// If false => this is a "non-damage" action (accuracy-only, passive, utility, etc.).
+// We still allow Active Effects and Miss logic, but we skip AdvanceDamage.
+const hasDamageSection =
+  (typeof args.hasDamageSection === "boolean") ? args.hasDamageSection :
+  (flagged?.meta?.hasDamageSection !== undefined) ? !!flagged.meta.hasDamageSection :
+  true; // fallback for older cards
+
 // Spend resources now (on confirm). If it fails, stop.
 const okToProceed = await spendResourcesOnApply(flagged ? flagged : null);
 if (!okToProceed) { btn.dataset.fuLock = "0"; return; }
@@ -316,7 +324,9 @@ const theme =
       const adv  = game.macros.getName(advMacroName);
       const miss = game.macros.getName(missMacroName);
       const ae   = game.macros.getName(aeMacroName);
-      if (!adv) {
+
+      // Only require AdvanceDamage when this card actually has a Damage/Healing section.
+      if (hasDamageSection && !adv) {
         ui.notifications?.error(`Advanced Damage macro "${advMacroName}" not found or no permission.`);
         throw new Error("AdvanceDamage not found");
       }
@@ -456,7 +466,9 @@ if (!isHealing && !treatAutoHit) {
               }
             });
           }
-          await adv.execute({ __AUTO: true, __PAYLOAD: advPayload });
+          if (hasDamageSection) {
+            await adv.execute({ __AUTO: true, __PAYLOAD: advPayload });
+          }
         }
       }
 
