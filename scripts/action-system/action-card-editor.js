@@ -11,7 +11,12 @@
   const CREATE_CARD_MACRO_NAME = "CreateActionCard";
 
   const TAG = "[ONI][ActionCardEditor]";
-  const DEBUG = false;
+
+  // Toggle:
+  // - Set globalThis.ONI_DEBUG_ACTION_CARD_EDITOR = true in console to enable logs.
+  // - Or flip DEFAULT_DEBUG below.
+  const DEFAULT_DEBUG = true;
+  const DEBUG = (globalThis?.ONI_DEBUG_ACTION_CARD_EDITOR ?? DEFAULT_DEBUG) === true;
   const dbg = (...a) => { if (DEBUG) console.log(TAG, ...a); };
 
   // ---------------------------
@@ -137,6 +142,20 @@
     // row sizing hint (like Study macro)
     const total = buckets.hostile.length + buckets.neutral.length + buckets.friendly.length + buckets.other.length;
     const rows = Math.min(10, Math.max(4, total));
+
+    dbg("TargetPicker: buildViableTargetLists", {
+      scene: canvas?.scene?.name,
+      tokenCount: tokens.length,
+      hasHpCount: total,
+      selectedCount: sel.size,
+      buckets: {
+        hostile: buckets.hostile.length,
+        neutral: buckets.neutral.length,
+        friendly: buckets.friendly.length,
+        other: buckets.other.length
+      },
+      rows
+    });
 
     return { buckets, rows };
   }
@@ -387,6 +406,7 @@
 
     if (targetsText) {
       targets = normalizeTargetList(targetsText);
+      dbg("Form: targets from textarea", { count: targets.length, targets });
     } else {
       const picked = [];
       const pickNames = ["targetsHostile", "targetsNeutral", "targetsFriendly", "targetsOther"];
@@ -399,6 +419,7 @@
         }
       }
       targets = Array.from(new Set(picked));
+      dbg("Form: targets from pickers", { pickedCount: picked.length, uniqueCount: targets.length, targets });
     }
 
     return {
@@ -454,8 +475,17 @@
 
     // --- targets ---
     const newTargets = (edits.targets?.length ? edits.targets : (originalTargets ?? [])).filter(Boolean);
+
+    // IMPORTANT:
+    // Your CreateActionCard resolves targets from:
+    //  - PAYLOAD.originalTargetUUIDs OR PAYLOAD.meta.originalTargetUUIDs
+    // But other subsystems sometimes look at PAYLOAD.targets as well.
+    // So we write ALL of them to stay compatible.
     next.originalTargetUUIDs = Array.from(newTargets);
     next.meta.originalTargetUUIDs = Array.from(newTargets);
+    next.targets = Array.from(newTargets);
+    next.meta.targets = Array.from(newTargets);
+    next.advPayload.originalTargetUUIDs = Array.from(newTargets);
 
     // --- damage ---
     const amt = Math.max(0, toNum(edits.amount, 0));
@@ -503,9 +533,16 @@
       a.isCrit = !!edits.isCrit;
       a.isFumble = !!edits.isFumble;
 
-      // If Crit, ensure Apply can treat it as auto-hit (your card already supports this hint)
+      // If Crit, ensure Apply can treat it as auto-hit
       next.advPayload.autoHit = !!a.isCrit;
     }
+
+    dbg("ApplyEdits: next payload targets", {
+      originalTargetsCount: (originalTargets ?? []).length,
+      editsTargetsCount: (edits.targets ?? []).length,
+      finalCount: newTargets.length,
+      final: newTargets
+    });
 
     return next;
   }
@@ -518,7 +555,49 @@
       return;
     }
 
-    dbg("Rebuild: nextPayload", nextPayload);
+    const beforeIds = new Set((game.messages?.contents ?? []).map(m => m.id));
+    const beforeCount = game.messages?.size ?? (game.messages?.contents?.length ?? 0);
+    const beforeLast = (game.messages?.contents ?? []).slice(-1)?.[0]?.id ?? null;
+
+    dbg("Rebuild: begin", {
+      oldMsgId: oldMsg?.id,
+      beforeCount,
+      beforeLast,
+      nextPayloadTargets: nextPayload?.originalTargetUUIDs
+    });
+
+    // IMPORTANT:
+    // Your Action Card header (Attacker vs Target) is driven by payload.targetName/targetUuid
+    // and sometimes actionContext.targets. So if GM edits targets, we also hydrate these
+    // display fields here, based on the edited UUID list.
+    try {
+      const uuids = (nextPayload?.originalTargetUUIDs ?? nextPayload?.meta?.originalTargetUUIDs ?? []).filter(Boolean);
+      const hydrated = [];
+      for (const uuid of uuids) {
+        let name = null;
+        try {
+          const doc = await fromUuid(uuid);
+          name = doc?.name ?? doc?.object?.name ?? null;
+        } catch {}
+        hydrated.push({ targetUuid: uuid, targetName: name ?? uuid });
+      }
+
+      // Primary/singular display (what your card shows in the header)
+      nextPayload.targetUuid = hydrated[0]?.targetUuid ?? (uuids[0] ?? null);
+      nextPayload.targetName = hydrated[0]?.targetName ?? null;
+
+      // Multi-target display + Apply pipelines that may look at actionContext
+      nextPayload.actionContext = nextPayload.actionContext ?? {};
+      nextPayload.actionContext.targets = hydrated;
+
+      dbg("Rebuild: hydrated target display", {
+        count: uuids.length,
+        primary: { uuid: nextPayload.targetUuid, name: nextPayload.targetName },
+        targets: hydrated
+      });
+    } catch (e) {
+      console.warn(TAG, "Target hydration failed", e);
+    }
 
     // IMPORTANT: Your CreateActionCard macro reads globals (__AUTO/__PAYLOAD)
     // (Oni convention: payload is injected as global __PAYLOAD, not via arguments)
@@ -532,6 +611,27 @@
       try { delete globalThis.__AUTO; } catch {}
       try { delete globalThis.__PAYLOAD; } catch {}
     }
+
+    const after = (game.messages?.contents ?? []);
+    const newOnes = after.filter(m => !beforeIds.has(m.id));
+    const newest = newOnes.sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0)).slice(-1)?.[0] ?? null;
+
+    // Try to decode the stored original targets attribute from the newest message
+    let newestOriginalTargets = null;
+    try {
+      const raw = extractAttrFromContent(newest?.content, "data-original-targets");
+      if (raw) newestOriginalTargets = JSON.parse(decodeURIComponent(raw));
+    } catch { /* ignore */ }
+
+    dbg("Rebuild: created messages", {
+      createdOk,
+      newCount: newOnes.length,
+      newestId: newest?.id ?? null,
+      newestContentHasTargetAttr: newest?.content?.includes?.("data-original-targets=") ?? null,
+      newestFlagHasPayload: newest?.getFlag ? !!(await newest.getFlag(MODULE_NS, FLAG_KEY)) : null,
+      newestOriginalTargets,
+      nextPayloadOriginalTargets: nextPayload?.originalTargetUUIDs ?? null
+    });
 
     // Delete old message (keep chat clean) — only if we successfully created the new one
     if (createdOk) {
@@ -580,6 +680,14 @@
     const originalTargets = extractOriginalTargets(chatMsg, payload);
     const targetData = buildViableTargetLists(originalTargets);
 
+    dbg("Open editor", {
+      msgId,
+      originalTargetsCount: originalTargets.length,
+      originalTargets,
+      payloadHasTargetsArray: Array.isArray(payload.targets),
+      payloadOriginalTargetCount: Array.isArray(payload.originalTargetUUIDs) ? payload.originalTargetUUIDs.length : null
+    });
+
     const dlgContent = buildDialogHTML(payload, originalTargets, targetData);
 
     // Helper: force listbox sizing (beats Foundry's select height rules)
@@ -608,6 +716,14 @@
           callback: async (html) => {
             const edits = readFormData(html);
             if (!edits) return;
+
+            dbg("Save: edits", {
+              elementType: edits.elementType,
+              declaresHealing: edits.declaresHealing,
+              ignoreHR: edits.ignoreHR,
+              targetCount: edits.targets?.length,
+              targets: edits.targets
+            });
 
             const nextPayload = applyEditsToPayload(payload, originalTargets, edits);
             await rebuildCardFromPayload(nextPayload, chatMsg);
