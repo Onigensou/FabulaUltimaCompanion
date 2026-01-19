@@ -466,9 +466,28 @@ if (!isHealing && !treatAutoHit) {
               }
             });
           }
-          if (hasDamageSection) {
-            await adv.execute({ __AUTO: true, __PAYLOAD: advPayload });
-          }
+         if (hasDamageSection) {
+
+  // Build a “universal” payload for AdvanceDamage:
+  // - Keep the original advPayload (so damage math stays identical)
+  // - Add deterministic targeting (targetIds)
+  // - Add full computation payload for downstream reference (actionContext)
+  // - Add provenance info (which action card message triggered this)
+  const advUniversalPayload = {
+    ...advPayload,
+
+    // IMPORTANT: this makes AdvanceDamage NOT depend on current user targets
+    targetIds: hitIds,
+
+    // Full ActionDataComputation payload (from the Action Card’s stored flag)
+    actionContext: flagged ?? null,
+
+    // Useful for debugging / provenance
+    actionCardMsgId: chatMsgId ?? null,
+  };
+
+  await adv.execute({ __AUTO: true, __PAYLOAD: advUniversalPayload });
+}
         }
       }
 
