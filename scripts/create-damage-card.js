@@ -9,18 +9,6 @@
   // Global namespace
   window.FUCompanion = window.FUCompanion || {};
 
-  // =========================
-  // DEBUG (toggle)
-  // =========================
-  // Note: This module runs on EVERY client. Keep debug OFF unless testing.
-  const CDC_DEBUG_ENABLED = false;
-  const CDC_DEBUG_LEVEL   = 2; // 0=silent 1=summary 2=verbose 3=payload dumps
-  const CDC_TAG           = "[ONI][FU CreateDamageCard]";
-  const _log  = (...a) => { if (CDC_DEBUG_ENABLED) console.log(CDC_TAG, ...a); };
-  const _warn = (...a) => { if (CDC_DEBUG_ENABLED) console.warn(CDC_TAG, ...a); };
-  const _err  = (...a) => { if (CDC_DEBUG_ENABLED) console.error(CDC_TAG, ...a); };
-  const _dbg  = (lvl, ...a) => { if (CDC_DEBUG_ENABLED && CDC_DEBUG_LEVEL >= lvl) console.log(CDC_TAG, ...a); };
-
   // ------------------------- helpers -------------------------
   const S = (v, d="(None)") => { try { const s=(v??"").toString().trim(); return s.length?s:d; } catch { return d; } };
   const N = (v, d=0) => { const n=Number(v); return Number.isFinite(n)?n:d; };
@@ -76,8 +64,6 @@ async function tokenImgFromUuid(uuid) {
     // Only proceed if this message contains our card marker
     const marker = root.querySelector(`[data-fu-card="${CARD_MARKER}"]`);
     if (!marker) return;
-
-    _dbg(2, "renderChatMessage: fu-damage-card detected", { messageId: _msg?.id ?? null });
 
     try {
       // 1) Speakerless: remove the message header everywhere
@@ -157,23 +143,13 @@ async function tokenImgFromUuid(uuid) {
         }
       }
     } catch (e) {
-      _warn("render hook error", e);
+      console.warn("[FU CreateDamageCard] render hook error:", e);
     }
   });
 
   // --------------------- CARD CREATION ---------------------
   async function createDamageCard(P_in) {
     const P = P_in ?? {};
-
-    _dbg(1, "createDamageCard START", {
-      attackerName: P.attackerName ?? null,
-      targetName: P.targetName ?? null,
-      valueType: P.valueType ?? null,
-      changeKey: P.changeKey ?? null,
-      amount: P.displayedAmount ?? P.finalValue ?? P.baseValue ?? null,
-    });
-
-    _dbg(3, "payload", P);
 
     // Parse payload (unchanged)
     const attackerName  = S(P.attackerName, "System");
@@ -330,15 +306,12 @@ async function tokenImgFromUuid(uuid) {
 
     // Post message (empty alias so there’s never a name even if header stays for some reason)
     const speaker = { alias: "" };
-    const msg = await ChatMessage.create({
+    await ChatMessage.create({
       user: game.userId,
       speaker,
       type: CONST.CHAT_MESSAGE_TYPES.OTHER,
       content: cardHTML
     });
-
-    _dbg(1, "createDamageCard END", { messageId: msg?.id ?? null });
-    return { messageId: msg?.id ?? null, messageUuid: msg?.uuid ?? null };
   }
 
   // Expose API
