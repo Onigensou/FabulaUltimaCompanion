@@ -306,12 +306,21 @@ async function tokenImgFromUuid(uuid) {
 
     // Post message (empty alias so there’s never a name even if header stays for some reason)
     const speaker = { alias: "" };
-    await ChatMessage.create({
-      user: game.userId,
-      speaker,
-      type: CONST.CHAT_MESSAGE_TYPES.OTHER,
-      content: cardHTML
-    });
+   await ChatMessage.create({
+  user: game.userId,
+  speaker,
+  type: CONST.CHAT_MESSAGE_TYPES.OTHER,
+  content: cardHTML,
+
+  // NEW: store the full payload on the message so you can inspect it later
+  flags: {
+    "fabula-ultima-companion": {
+      damageCard: {
+        payload: P
+      }
+    }
+  }
+});
   }
 
   // Expose API
