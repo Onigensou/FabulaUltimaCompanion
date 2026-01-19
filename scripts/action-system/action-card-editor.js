@@ -82,9 +82,78 @@
   }
 
   // ---------------------------
+  // Target picker (scene tokens)
+  // ---------------------------
+  function safeHpPropsFromToken(token) {
+    const props = token?.actor?.system?.props;
+    if (!props) return null;
+    const max = props?.max_hp;
+    if (max === null || typeof max === "undefined") return null;
+    const cur = props?.current_hp;
+    return { cur, max };
+  }
+
+  function buildViableTargetLists(originalTargets = []) {
+    const sel = new Set(Array.isArray(originalTargets) ? originalTargets.filter(Boolean) : []);
+
+    const buckets = {
+      hostile: [],
+      neutral: [],
+      friendly: [],
+      other: []
+    };
+
+    const tokens = canvas?.tokens?.placeables ?? [];
+    for (const t of tokens) {
+      const hp = safeHpPropsFromToken(t);
+      if (!hp) continue; // must have max_hp per your rule
+
+      const disp = Number(t?.document?.disposition ?? 0);
+      const uuid = t?.document?.uuid;
+      if (!uuid) continue;
+
+      const entry = {
+        uuid,
+        tokenId: t?.id,
+        name: t?.name ?? "(Unnamed)",
+        disp,
+        cur: hp.cur,
+        max: hp.max,
+        selected: sel.has(uuid)
+      };
+
+      if (disp === -1) buckets.hostile.push(entry);
+      else if (disp === 0) buckets.neutral.push(entry);
+      else if (disp === 1) buckets.friendly.push(entry);
+      else buckets.other.push(entry);
+    }
+
+    const byName = (a, b) => String(a?.name ?? "").localeCompare(String(b?.name ?? ""));
+    buckets.hostile.sort(byName);
+    buckets.neutral.sort(byName);
+    buckets.friendly.sort(byName);
+    buckets.other.sort(byName);
+
+    // row sizing hint (like Study macro)
+    const total = buckets.hostile.length + buckets.neutral.length + buckets.friendly.length + buckets.other.length;
+    const rows = Math.min(10, Math.max(4, total));
+
+    return { buckets, rows };
+  }
+
+  function buildTargetSelectOptions(entries = []) {
+    return entries.map(e => {
+      const cur = (typeof e.cur === "number") ? e.cur : (Number.isFinite(Number(e.cur)) ? Number(e.cur) : null);
+      const max = (typeof e.max === "number") ? e.max : (Number.isFinite(Number(e.max)) ? Number(e.max) : null);
+      const hpTxt = (cur !== null && max !== null) ? ` (HP ${cur}/${max})` : "";
+      return `<option value="${esc(e.uuid)}" ${e.selected ? "selected" : ""}>${esc(e.name)}${hpTxt}</option>`;
+    }).join("");
+  }
+
+  // ---------------------------
   // Dialog builder
   // ---------------------------
-  function buildDialogHTML(payload, originalTargets) {
+  function buildDialogHTML(payload, originalTargets, targetData) {
     const core = payload?.core ?? {};
     const meta = payload?.meta ?? {};
     const acc  = payload?.accuracy ?? null;
@@ -125,6 +194,17 @@
 
     const effectHTML = core.rawEffectHTML ?? core.effectHTML ?? meta.rawEffectHTML ?? "";
 
+    const rows = Number(targetData?.rows ?? 6);
+    const buckets = targetData?.buckets ?? { hostile: [], neutral: [], friendly: [], other: [] };
+
+    const hostileOptions  = buildTargetSelectOptions(buckets.hostile);
+    const neutralOptions  = buildTargetSelectOptions(buckets.neutral);
+    const friendlyOptions = buildTargetSelectOptions(buckets.friendly);
+    const otherOptions    = buildTargetSelectOptions(buckets.other);
+
+    const hasAnyViable =
+      (buckets.hostile.length + buckets.neutral.length + buckets.friendly.length + buckets.other.length) > 0;
+
     return `
     <form class="fu-ace" style="font-family: Signika, sans-serif;">
 
@@ -163,8 +243,67 @@
 
       <fieldset style="border:1px solid #cfa057; border-radius:10px; padding:.6rem; margin:0 0 .6rem 0; background:#f7ecd9;">
         <legend style="padding:0 .5rem; color:#8a4b22;"><b>Targets</b></legend>
-        <div style="opacity:.8; font-size:12px; margin-bottom:.35rem;">One UUID per line. This is what “Apply” will use.</div>
-        <textarea name="targets" rows="4" style="width:100%; padding:.35rem; border-radius:8px; border:1px solid #cfa057; resize:vertical;">${esc(targetsText)}</textarea>
+
+        <div style="opacity:.85; font-size:12px; margin-bottom:.35rem;">
+          Pick targets from the current scene (GM-friendly). This is what “Apply” will use.
+        </div>
+
+        ${hasAnyViable ? `
+          <div class="fu-ace-target-grid" style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:.5rem;">
+
+            <div>
+              <div style="font-weight:800; color:tomato; margin:0 0 .2rem 0;">Hostile</div>
+              <select class="fu-ace-target" name="targetsHostile" multiple size="${rows}"
+                      style="width:100%; font-size:14px; padding:6px; border-radius:8px; border:1px solid #cfa057;">
+                ${hostileOptions || ""}
+              </select>
+            </div>
+
+            <div>
+              <div style="font-weight:800; color:khaki; margin:0 0 .2rem 0;">Neutral</div>
+              <select class="fu-ace-target" name="targetsNeutral" multiple size="${rows}"
+                      style="width:100%; font-size:14px; padding:6px; border-radius:8px; border:1px solid #cfa057;">
+                ${neutralOptions || ""}
+              </select>
+            </div>
+
+            <div>
+              <div style="font-weight:800; color:dodgerblue; margin:0 0 .2rem 0;">Friendly</div>
+              <select class="fu-ace-target" name="targetsFriendly" multiple size="${rows}"
+                      style="width:100%; font-size:14px; padding:6px; border-radius:8px; border:1px solid #cfa057;">
+                ${friendlyOptions || ""}
+              </select>
+            </div>
+
+          </div>
+
+          ${otherOptions ? `
+            <div style="margin-top:.5rem;">
+              <div style="font-weight:800; opacity:.8; margin:0 0 .2rem 0;">Other Disposition</div>
+              <select class="fu-ace-target" name="targetsOther" multiple size="${Math.min(6, rows)}"
+                      style="width:100%; font-size:14px; padding:6px; border-radius:8px; border:1px solid #cfa057;">
+                ${otherOptions}
+              </select>
+            </div>
+          ` : ""}
+
+          <div style="opacity:.75; font-size:12px; margin-top:.35rem;">
+            Tip: hold <b>Ctrl</b> / <b>Cmd</b> to select multiple targets.
+          </div>
+        ` : `
+          <div style="opacity:.8; font-size:12px; margin:.25rem 0 .35rem 0;">
+            No viable tokens found (needs <code>token.actor.system.props.max_hp</code> on the current scene).
+            Use the Advanced UUID list below.
+          </div>
+        `}
+
+        <details style="margin-top:.5rem;">
+          <summary style="cursor:pointer; font-weight:800;">Advanced: UUID list override</summary>
+          <div style="opacity:.8; font-size:12px; margin:.35rem 0;">
+            One UUID per line. If this box has any text, it will override the pickers above.
+          </div>
+          <textarea name="targetsText" rows="4" style="width:100%; padding:.35rem; border-radius:8px; border:1px solid #cfa057; resize:vertical;">${esc(targetsText)}</textarea>
+        </details>
       </fieldset>
 
       <fieldset style="border:1px solid #cfa057; border-radius:10px; padding:.6rem; margin:0 0 .6rem 0; background:#f7ecd9;">
@@ -240,6 +379,28 @@
 
     const fd = new FormData(form);
 
+    // Targets:
+    // - If Advanced textarea has any text → use it.
+    // - Else use selected UUIDs from the pickers.
+    const targetsText = String(fd.get("targetsText") ?? "").trim();
+    let targets = [];
+
+    if (targetsText) {
+      targets = normalizeTargetList(targetsText);
+    } else {
+      const picked = [];
+      const pickNames = ["targetsHostile", "targetsNeutral", "targetsFriendly", "targetsOther"];
+      for (const nm of pickNames) {
+        const sel = form.querySelector(`select[name="${nm}"]`);
+        if (!sel) continue;
+        for (const opt of Array.from(sel.selectedOptions ?? [])) {
+          const v = String(opt?.value ?? "").trim();
+          if (v) picked.push(v);
+        }
+      }
+      targets = Array.from(new Set(picked));
+    }
+
     return {
       skillName: String(fd.get("skillName") ?? "").trim(),
       listType: String(fd.get("listType") ?? "").trim(),
@@ -249,7 +410,7 @@
       declaresHealing: !!fd.get("declaresHealing"),
       ignoreHR: !!fd.get("ignoreHR"),
 
-      targets: normalizeTargetList(fd.get("targets")),
+      targets,
 
       amount: toNum(fd.get("amount"), 0),
       valueType: String(fd.get("valueType") ?? "hp").trim() || "hp",
@@ -417,8 +578,25 @@
     }
 
     const originalTargets = extractOriginalTargets(chatMsg, payload);
+    const targetData = buildViableTargetLists(originalTargets);
 
-    const dlgContent = buildDialogHTML(payload, originalTargets);
+    const dlgContent = buildDialogHTML(payload, originalTargets, targetData);
+
+    // Helper: force listbox sizing (beats Foundry's select height rules)
+    const forceListboxSizing = (el, rows) => {
+      if (!el) return;
+
+      el.multiple = true;
+      el.size = rows;
+
+      const pxPerRow = 26;
+      const desired = Math.max(4, rows) * pxPerRow;
+
+      el.style.setProperty("height", `${desired}px`, "important");
+      el.style.setProperty("min-height", `${desired}px`, "important");
+      el.style.setProperty("overflow-y", "auto", "important");
+      el.style.setProperty("appearance", "auto", "important");
+    };
 
     new Dialog({
       title: "Action Card Editor (GM)",
@@ -443,10 +621,19 @@
       default: "save",
       render: (html) => {
         // Minor cosmetics
-        html.closest?.(".app")?.style?.setProperty?.("min-width", "520px");
+        html.closest?.(".app")?.style?.setProperty?.("min-width", "640px");
+
+        // Force listboxes to behave (same approach as Study macro)
+        const root = html?.[0];
+        if (!root) return;
+        const rows = Number(targetData?.rows ?? 6);
+        root.querySelectorAll?.("select.fu-ace-target")?.forEach?.(sel => {
+          const localRows = Number(sel.getAttribute("size") || rows);
+          forceListboxSizing(sel, localRows);
+        });
       }
     }, {
-      width: 560,
+      width: 680,
       height: "auto",
       resizable: true
     }).render(true);
