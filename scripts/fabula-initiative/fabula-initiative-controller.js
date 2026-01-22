@@ -25,13 +25,13 @@
   const TUNER = {
     // Positioning
     anchor: "top-left",
-    offsetX: 100,
-    offsetY: 30,
+    offsetX: 155,
+    offsetY: -40,
 
     // Layout
     maxIconsPerRow: 12,
     gap: 8,
-    currentGap: 150,
+    currentGap: 170,
     padding: 10,
 
     // Portrait framing
@@ -43,9 +43,9 @@
     defaultIconScale: 1,
 
     // Panel look
-    showBackdropBlur: false,
-    backdropBlur: 0,
-    headerBgOpacity: 0,
+    showBackdropBlur: true,
+    backdropBlur: 0.5,
+    headerBgOpacity: 0.5,
     headerTextOpacity: 0.85,
 
     // Icon sizing & style
