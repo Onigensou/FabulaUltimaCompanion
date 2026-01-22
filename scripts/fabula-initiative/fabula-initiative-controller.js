@@ -25,13 +25,13 @@
   const TUNER = {
     // Positioning
     anchor: "top-left",
-    offsetX: 155,
-    offsetY: -40,
+    offsetX: 100,
+    offsetY: 30,
 
     // Layout
     maxIconsPerRow: 12,
     gap: 8,
-    currentGap: 170,
+    currentGap: 150,
     padding: 10,
 
     // Portrait framing
@@ -43,9 +43,9 @@
     defaultIconScale: 1,
 
     // Panel look
-    showBackdropBlur: true,
-    backdropBlur: 0.5,
-    headerBgOpacity: 0.5,
+    showBackdropBlur: false,
+    backdropBlur: 0,
+    headerBgOpacity: 0,
     headerTextOpacity: 0.85,
 
     // Icon sizing & style
@@ -222,6 +222,7 @@
     hooks: [],
     ui: null,
     manualHidden: false,
+    _lastTurn: undefined,
 
     async open(reason = "open") {
       if (this.isOpen || this.manualHidden) return;
@@ -279,6 +280,10 @@
 
       this.ui.open();
       this.refresh(reason);
+
+      // Track turn changes to detect a "deactivate current" transition.
+      this._lastTurn = game.combat?.turn;
+
       this._installHooks();
     },
 
@@ -300,6 +305,57 @@
       if (!this.isOpen) return;
       const model = this._buildModel();
       this.ui?.render(model, reason);
+    },
+
+    // =========================================================
+    // End-of-round banner + GM-only Next Round button
+    // Triggered when CURRENT is deactivated AND no activations remain.
+    // =========================================================
+    _anyActivationsRemaining(combat) {
+      try {
+        for (const c of combat?.combatants ?? []) {
+          const v = Number(liGet(c, "activations.value", 0)) || 0;
+          if (v > 0) return true;
+        }
+      } catch (_) {}
+      return false;
+    },
+
+    async _announceEndOfRound(combat) {
+      if (!combat) return;
+      if (!game.user?.isGM) return; // prevent duplicates
+
+      // One message per round
+      const announcedRound = combat.getFlag?.(MODULE_ID, "fabulaInitiative.roundEndAnnounced");
+      if (announcedRound === combat.round) return;
+      await combat.setFlag?.(MODULE_ID, "fabulaInitiative.roundEndAnnounced", combat.round);
+
+      const round = Number(combat.round ?? 0) || 0;
+      const content = `
+        <div style="text-align:right; margin:2px 0 8px 0;">
+          <b><i><u>End of Round ${round}</u></i></b>
+        </div>
+        <div class="oni-fi-next-round-wrap" style="text-align:right;">
+          <button type="button" class="oni-fi-next-round" data-oni-fi-next-round="1" data-combat-id="${combat.id}">
+            Next Round
+          </button>
+        </div>
+      `;
+
+      await ChatMessage.create({
+        content,
+        type: CONST.CHAT_MESSAGE_TYPES.OTHER,
+        speaker: {},
+        flags: {
+          [MODULE_ID]: {
+            fabulaInitiative: {
+              kind: "endOfRound",
+              round,
+              combatId: combat.id,
+            },
+          },
+        },
+      });
     },
 
     async onActivate(icon) {
@@ -498,9 +554,30 @@
     },
 
     _installHooks() {
-      const h1 = Hooks.on("updateCombat", (combat) => {
+      const h1 = Hooks.on("updateCombat", (combat, changed) => {
         if (!this.isOpen) return;
         if (game.combat?.id !== combat?.id) return;
+
+        // Detect: current turn deactivated (turn becomes null)
+        // We do this here (not inside UI callbacks) so it works even if something else updates combat.
+        const prevTurn = this._lastTurn;
+        const nextTurn = combat?.turn;
+        this._lastTurn = nextTurn;
+
+        const deactivatedCurrent = prevTurn != null && nextTurn == null;
+        if (deactivatedCurrent) {
+          // If combat is not active (ended/deleted), don't announce round end.
+          if (combat?.active === false) {
+            this.refresh("updateCombat");
+            return;
+          }
+
+          // If no activations remain for anyone, announce end-of-round.
+          if (!this._anyActivationsRemaining(combat)) {
+            this._announceEndOfRound(combat);
+          }
+        }
+
         this.refresh("updateCombat");
       });
 
@@ -602,9 +679,56 @@
     Hooks.once("ready", () => openIfNeeded("ready"));
   };
 
+  // =========================================================
+  // Chat UI: GM-only "Next Round" button handling
+  // =========================================================
+  const installChatHooks = () => {
+    Hooks.on("renderChatMessage", (message, html) => {
+      const fi = message?.flags?.[MODULE_ID]?.fabulaInitiative;
+      if (!fi || fi.kind !== "endOfRound") return;
+
+      // Hide the button for non-GM clients
+      if (!game.user?.isGM) {
+        html.find(".oni-fi-next-round-wrap").remove();
+        return;
+      }
+
+      const btn = html.find("button[data-oni-fi-next-round]");
+      if (!btn?.length) return;
+
+      btn.off("click.oniFi").on("click.oniFi", async (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+
+        if (!game.user?.isGM) return;
+
+        const el = ev.currentTarget;
+        el.disabled = true;
+
+        try {
+          const combatId = el?.dataset?.combatId || fi?.combatId;
+          const combat = (combatId && game.combats?.get?.(combatId)) || game.combat;
+          if (!combat) return;
+
+          if (typeof combat.nextRound === "function") {
+            await combat.nextRound();
+          } else {
+            const next = (Number(combat.round ?? 0) || 0) + 1;
+            await combat.update({ round: next, turn: null });
+          }
+        } catch (e) {
+          console.warn(`${TAG} Next Round failed`, e);
+        } finally {
+          // leave disabled; chat can be re-rendered as needed
+        }
+      });
+    });
+  };
+
   Hooks.once("ready", () => {
     socketInstall();
     installLifecycleHooks();
+    installChatHooks();
 
     // in case combat already active at ready time
     openIfNeeded("ready");
