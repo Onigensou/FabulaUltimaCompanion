@@ -7,14 +7,6 @@
  */
 
 Hooks.once("ready", () => {
-  /**
-   * Macro: ReactionTriggerCore
-   * Id: PE1TObaoXwIY93uT
-   * Folder: Reaction System
-   * Type: script
-   * Author: GM
-   * Exported: 2026-01-09T07:11:59.483Z
-   */
   // ============================================================================
   // ONI ReactionTriggerCore – v0.1 (Foundry VTT v12)
   // ---------------------------------------------------------------------------
@@ -87,7 +79,9 @@ Hooks.once("ready", () => {
       "creature_targeted_by_action",
       "creature_hit_by_action",
       "creature_deals_damage",
-      "creature_takes_damage"
+      "creature_takes_damage",
+      "creature_enter_crisis",
+      "creature_exit_crisis"
     ]);
 
     const PHASE_TRIGGER_MAP = {
@@ -340,6 +334,23 @@ Hooks.once("ready", () => {
           }
           break;
         }
+        case "creature_enter_crisis":
+        case "creature_exit_crisis": {
+          // Crisis triggers should point at "the creature whose HP crossed the 50% threshold".
+          // We prefer token UUIDs when available; we also support actor UUID fallback.
+          addUuidish(phasePayload.tokenUuid);
+          addUuidish(phasePayload.targetUuid);
+          addManyUuidish(phasePayload.targets);
+
+          if (!subjects.length) {
+            const t1 = findTokenByActorUuidInCombat(combat, phasePayload.actorUuid);
+            const t2 = findTokenByActorUuidInCombat(combat, phasePayload.targetActorUuid);
+            addToken(t1);
+            addToken(t2);
+          }
+          break;
+        }
+
 
         default:
           // For non "creature_*" triggers we don't build subjects here.
