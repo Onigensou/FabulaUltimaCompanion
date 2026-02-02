@@ -14,7 +14,7 @@
 
 (() => {
   const TAG = "[ONI][TreasureChest]";
-  const DEBUG = true;
+  const DEBUG = false;
 
   // ─────────────────────────────────────────────────────────────
   // Global namespace + guard
