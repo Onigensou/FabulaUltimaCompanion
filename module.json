@@ -2,7 +2,7 @@
   "id": "fabula-ultima-companion",
   "title": "FabulaUltimaCompanion",
   "description": "Adds custom hooks and cool functionality.",
-  "version": "1.0.267",
+  "version": "1.0.268",
   "compatibility": {
     "minimum": "12",
     "verified": "12"
@@ -74,7 +74,9 @@
   "scripts/fabula-initiative/fabula-initiative-ui.js",
   "scripts/fabula-initiative/fabula-initiative-controller.js",
   "scripts/fabula-initiative/fabula-initiative-round-announcer.js",
-  "scripts/gacha-system/gacha-socket-banner.js"
+  "scripts/gacha-system/gacha-socket-banner.js",
+  "scripts/treasure-chest-system/treasureChest-configUI.js",
+  "scripts/treasure-chest-system/treasureChest-core.js"
 ],
 
   "esmodules": [
@@ -84,5 +86,5 @@
   "styles": ["styles/style.css"],
   "packs": [],
   "manifest": "https://raw.githubusercontent.com/Onigensou/FabulaUltimaCompanion/refs/heads/main/module.json",
-  "download": "https://codeload.github.com/Onigensou/FabulaUltimaCompanion/zip/refs/tags/v1.0.267"
+  "download": "https://codeload.github.com/Onigensou/FabulaUltimaCompanion/zip/refs/tags/v1.0.268"
 }
