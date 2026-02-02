@@ -13,7 +13,7 @@
  * - Keeps heavy debug logs (DEV)
  */
 
-export function installTreasureConfigUI() {
+function installTreasureConfigUI() {
   // ---- Guard: prevent double install (module reload / dev hot reload) ----
   const GLOBAL_KEY = "oni.TreasureConfigUI";
   if (window[GLOBAL_KEY]?.installed) {
