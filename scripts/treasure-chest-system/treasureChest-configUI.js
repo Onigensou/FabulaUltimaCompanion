@@ -31,7 +31,7 @@ function installTreasureConfigUI() {
   const ITEM_TEMPLATE_ID = "ZoiV53VaLzeRsEps";
 
   // DEV: keep heavy logs for now
-  const DEBUG = true;
+  const DEBUG = false;
   const log  = (...a) => DEBUG && console.log("[ONI][TreasureConfigUI]", ...a);
   const warn = (...a) => DEBUG && console.warn("[ONI][TreasureConfigUI]", ...a);
 
