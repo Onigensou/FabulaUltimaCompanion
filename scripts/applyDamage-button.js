@@ -8,6 +8,8 @@
 //
 // Notes:
 // - This REPLACES the old Apply(GM) logic entirely.
+// - UPDATE (2026-02-09): Supports animation for NO-DAMAGE actions by calling ActionAnimationHandler
+//   with animationPurpose="vfx_only" when hasDamageSection === false.
 
 const MODULE_ID = "fu-chatbtn";
 const MODULE_NS = "fabula-ultima-companion";
@@ -150,6 +152,9 @@ Hooks.once("ready", async () => {
   // Core resolver (GM only)
   // ------------------------------------------------------------
   async function runConfirm(chatMsg, args = {}, confirmingUserId = null) {
+    const RUN_TAG = "[fu-chatbtn][Confirm]";
+    const runId = `${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+
     const msgEl =
       document.querySelector(`#chat-log .message[data-message-id="${chatMsg.id}"]`) ||
       document.querySelector(`.chat-popout .message[data-message-id="${chatMsg.id}"]`) ||
@@ -161,12 +166,30 @@ Hooks.once("ready", async () => {
     if (btn?.dataset?.fuLock === "1") return;
     if (btn) lockButton(btn, "Confirming…");
 
+    console.groupCollapsed(`${RUN_TAG} START runId=${runId} msgId=${chatMsg.id}`);
+    console.log(`${RUN_TAG} meta`, {
+      runId,
+      msgId: chatMsg.id,
+      confirmingUserId,
+      gm: !!game.user?.isGM,
+      argsKeys: Object.keys(args || {})
+    });
+
     try {
       const flagged = chatMsg.getFlag(MODULE_NS, "actionCard")?.payload ?? null;
 
+      console.log(`${RUN_TAG} flagged payload`, {
+        hasFlagged: !!flagged,
+        hasMeta: !!flagged?.meta,
+        hasCore: !!flagged?.core
+      });
+
       // Prevent double-confirm (server-side-ish)
       const already = await chatMsg.getFlag(MODULE_NS, "actionApplied");
-      if (already) return;
+      if (already) {
+        console.warn(`${RUN_TAG} already applied, abort`, already);
+        return;
+      }
 
       // Backfill args from flag payload when needed
       if (flagged) {
@@ -196,7 +219,10 @@ Hooks.once("ready", async () => {
         aeDirectives     = [],
         attackerUuid     = null,
         originalTargetUUIDs = [],
-        chatMsgId        = chatMsg.id
+        chatMsgId        = chatMsg.id,
+
+        // NEW (optional): animation macro name
+        animMacroName    = "ActionAnimationHandler",
       } = args;
 
       const itemUsage = flagged?.itemUsage ?? flagged?.meta?.itemUsage ?? null;
@@ -206,12 +232,34 @@ Hooks.once("ready", async () => {
         (flagged?.meta?.hasDamageSection !== undefined) ? !!flagged.meta.hasDamageSection :
         true;
 
+      console.log(`${RUN_TAG} core args`, {
+        runId,
+        attackerUuid,
+        attackerName,
+        elementType,
+        isSpellish: !!isSpellish,
+        hasAccuracy: !!hasAccuracy,
+        accuracyTotal,
+        weaponType,
+        attackRange,
+        hasDamageSection,
+        advMacroName,
+        missMacroName,
+        aeMacroName,
+        animMacroName,
+        originalTargetUUIDsCount: Array.isArray(originalTargetUUIDs) ? originalTargetUUIDs.length : 0
+      });
+
       // Spend resources now (commit point). If fail, stop.
       const okToProceed = await spendResourcesOnConfirm(flagged ? flagged : null);
+      console.log(`${RUN_TAG} spendResourcesOnConfirm`, { runId, okToProceed });
       if (!okToProceed) return;
 
       // Consume item only after resource spend succeeds
-      if (itemUsage && attackerUuid) await consumeItemOnConfirm(attackerUuid, itemUsage);
+      if (itemUsage && attackerUuid) {
+        console.log(`${RUN_TAG} consumeItemOnConfirm begin`, { runId, itemUsage });
+        await consumeItemOnConfirm(attackerUuid, itemUsage);
+      }
 
       // NAMECARD TRIGGER — show only for Skill / Spell / Passive
       try {
@@ -312,6 +360,15 @@ Hooks.once("ready", async () => {
       const adv  = game.macros.getName(advMacroName);
       const miss = game.macros.getName(missMacroName);
       const ae   = game.macros.getName(aeMacroName);
+      const anim = game.macros.getName(animMacroName);
+
+      console.log(`${RUN_TAG} macros`, {
+        runId,
+        advFound: !!adv,
+        missFound: !!miss,
+        aeFound: !!ae,
+        animFound: !!anim
+      });
 
       if (hasDamageSection && !adv) {
         ui.notifications?.error(`AdvanceDamage macro "${advMacroName}" not found or no permission.`);
@@ -321,6 +378,7 @@ Hooks.once("ready", async () => {
       const savedUUIDs = Array.isArray(originalTargetUUIDs) ? originalTargetUUIDs : [];
       if (!savedUUIDs.length) {
         ui.notifications?.warn("No saved targets on this card.");
+        console.warn(`${RUN_TAG} abort: no savedUUIDs`, { runId });
         return;
       }
 
@@ -350,10 +408,21 @@ Hooks.once("ready", async () => {
         hitUUIDs.push(...savedUUIDs);
       }
 
+      console.log(`${RUN_TAG} hit/miss split`, {
+        runId,
+        savedCount: savedUUIDs.length,
+        hitCount: hitUUIDs.length,
+        missCount: missUUIDs.length,
+        isHealing,
+        treatAutoHit,
+        accTotal
+      });
+
       const prevTargets = Array.from(game.user?.targets ?? []).map(t => t.id);
 
       // Active Effects: On Attack (all targets)
       if (ae && aeDirectives.length && savedUUIDs.length) {
+        console.log(`${RUN_TAG} AE on_attack begin`, { runId, directives: aeDirectives.length, targets: savedUUIDs.length });
         await ae.execute({
           __AUTO: true,
           __PAYLOAD: {
@@ -366,6 +435,7 @@ Hooks.once("ready", async () => {
             weaponType
           }
         });
+        console.log(`${RUN_TAG} AE on_attack done`, { runId });
       }
 
       // Miss cards
@@ -376,6 +446,7 @@ Hooks.once("ready", async () => {
         }))).filter(Boolean);
 
         if (missIds.length) {
+          console.log(`${RUN_TAG} MISS targeting`, { runId, missIds });
           await game.user.updateTokenTargets(missIds, { releaseOthers: true });
           await miss.execute({
             __AUTO: true,
@@ -388,10 +459,11 @@ Hooks.once("ready", async () => {
               accuracyTotal: accTotal
             }
           });
+          console.log(`${RUN_TAG} MISS macro done`, { runId });
         }
       }
 
-      // Hit → AE on_hit + AdvanceDamage
+      // Hit → AE on_hit + AdvanceDamage OR (NEW) VFX-only animation
       if (hitUUIDs.length) {
         const hitIds = (await Promise.all(hitUUIDs.map(async u => {
           const d = await fromUuid(u).catch(()=>null);
@@ -399,10 +471,12 @@ Hooks.once("ready", async () => {
         }))).filter(Boolean);
 
         if (hitIds.length) {
+          console.log(`${RUN_TAG} HIT targeting`, { runId, hitIdsCount: hitIds.length });
           await game.user.updateTokenTargets(hitIds, { releaseOthers: true });
 
           // Active Effects: On Hit (hit-only)
           if (ae && aeDirectives.length && hitUUIDs.length) {
+            console.log(`${RUN_TAG} AE on_hit begin`, { runId, directives: aeDirectives.length, targets: hitUUIDs.length });
             await ae.execute({
               __AUTO: true,
               __PAYLOAD: {
@@ -415,9 +489,11 @@ Hooks.once("ready", async () => {
                 weaponType
               }
             });
+            console.log(`${RUN_TAG} AE on_hit done`, { runId });
           }
 
           if (hasDamageSection) {
+            console.log(`${RUN_TAG} AdvanceDamage begin`, { runId, advMacroName });
             const advUniversalPayload = {
               ...advPayload,
               targetIds: hitIds,
@@ -425,6 +501,70 @@ Hooks.once("ready", async () => {
               actionCardMsgId: chatMsgId ?? null,
             };
             await adv.execute({ __AUTO: true, __PAYLOAD: advUniversalPayload });
+            console.log(`${RUN_TAG} AdvanceDamage done`, { runId });
+          } else {
+            // ========================= NEW: VFX-only animation path =========================
+            // If the action has NO damage numbers at all, we still allow animation to run here.
+            // The updated ActionAnimationHandler expects:
+            //   - targets: UUIDs or token-ish objects (UUID strings are fine)
+            //   - animationPurpose: "vfx_only"
+            //   - animationScriptRaw / animation_damage_timing_* fields (handler will validate placeholder/empty)
+            //
+            // Priority: take explicit animation fields from advPayload first (if you store them there),
+            // then fall back to flagged.meta.* (your action context).
+            const animScriptRaw =
+              String(advPayload?.animationScriptRaw ?? flagged?.meta?.animationScriptRaw ?? advPayload?.animationScript ?? flagged?.meta?.animationScript ?? "").trim();
+
+            const animTimingOpt =
+              (advPayload?.animation_damage_timing_options ?? flagged?.meta?.animation_damage_timing_options ?? "default");
+
+            const animTimingOffset =
+              (advPayload?.animation_damage_timing_offset ?? flagged?.meta?.animation_damage_timing_offset ?? 0);
+
+            console.log(`${RUN_TAG} VFX-only branch`, {
+              runId,
+              hasDamageSection,
+              animFound: !!anim,
+              animMacroName,
+              hasAnimScriptRaw: !!animScriptRaw,
+              timingOpt: animTimingOpt,
+              timingOffset: animTimingOffset,
+              targetsUuidCount: hitUUIDs.length
+            });
+
+            if (anim) {
+              // Even if script is empty/placeholder, handler returns false safely.
+              const vfxPayload = {
+                // Keep any extra fields animation scripts might rely on
+                ...advPayload,
+                attackerUuid,
+                targets: hitUUIDs,                 // UUID strings; handler will normalize
+                animationPurpose: "vfx_only",
+                animationScriptRaw: animScriptRaw,
+                animation_damage_timing_options: animTimingOpt,
+                animation_damage_timing_offset: animTimingOffset,
+
+                // Optional context for custom scripts
+                actionContext: flagged ?? null,
+                actionCardMsgId: chatMsgId ?? null,
+              };
+
+              console.log(`${RUN_TAG} ActionAnimationHandler execute begin`, { runId, animMacroName, vfxPayloadPreview: {
+                attackerUuid: vfxPayload.attackerUuid,
+                targetsCount: vfxPayload.targets?.length ?? 0,
+                animationPurpose: vfxPayload.animationPurpose,
+                timingOpt: vfxPayload.animation_damage_timing_options,
+                timingOffset: vfxPayload.animation_damage_timing_offset,
+                scriptPreview: String(vfxPayload.animationScriptRaw || "").slice(0, 120)
+              }});
+
+              const used = await anim.execute({ __AUTO: true, __PAYLOAD: vfxPayload });
+              console.log(`${RUN_TAG} ActionAnimationHandler execute done`, { runId, used });
+
+            } else {
+              console.warn(`${RUN_TAG} VFX-only animation macro not found; skipping animation`, { runId, animMacroName });
+            }
+            // ======================= END NEW: VFX-only animation path =======================
           }
         }
       }
@@ -432,7 +572,7 @@ Hooks.once("ready", async () => {
       // Restore prior targets
       await game.user.updateTokenTargets(prevTargets, { releaseOthers: true });
 
-            // Stamp + disable button (GM client)
+      // Stamp + disable button (GM client)
       if (btn) {
         btn.disabled = true;
         btn.textContent = "Confirmed ✔";
@@ -463,10 +603,11 @@ Hooks.once("ready", async () => {
       if (btn) unlockButton(btn);
     } finally {
       if (btn) btn.dataset.fuLock = "0";
+      console.groupEnd();
     }
   }
 
-    // ------------------------------------------------------------
+  // ------------------------------------------------------------
   // Socket receiver
   // ------------------------------------------------------------
   game.socket.on(SOCKET_NS, async (data) => {
