@@ -261,6 +261,36 @@ document.addEventListener("click", (ev) => {
       root.querySelectorAll("[data-gm-only]").forEach(el => el.style.display = "none");
     }
 
+    // ------------------------------------------------------------
+    // Confirm state hydration (fix for GM button "reset" on re-render)
+    // ------------------------------------------------------------
+    // Foundry re-renders chat messages when flags update. If we only
+    // grey-out the Confirm button via DOM mutation, a re-render will
+    // recreate the original yellow button. So we re-apply the confirmed
+    // UI on EVERY render based on the message flag.
+    try {
+      const applied = await chatMsg.getFlag(MODULE_NS, "actionApplied");
+      if (applied) {
+        const btn = root.querySelector?.("[data-fu-confirm]");
+        if (btn) {
+          btn.disabled = true;
+          btn.textContent = "Confirmed ✔";
+          btn.style.filter = "grayscale(1)";
+          btn.dataset.fuLock = "1";
+        }
+
+        const stamp = root.querySelector?.("[data-fu-stamp]");
+        if (stamp) {
+          const byName = game.users?.get(applied?.by)?.name ?? "GM";
+          stamp.textContent = `Confirmed by: ${byName}`;
+          stamp.style.opacity = ".9";
+        }
+      }
+    } catch (e) {
+      console.warn("[fu-card-hydrate] actionApplied hydration failed:", e);
+    }
+
+
 
 // Gate owner-only buttons (Confirm / Invoke) using the saved payload on the message
 let canAct = false;
@@ -289,24 +319,6 @@ try {
 
 if (!canAct) {
   root.querySelectorAll("[data-fu-confirm],[data-fu-trait],[data-fu-bond]").forEach(el => el.style.display = "none");
-
-// If the action was already confirmed/applied, lock the Confirm button visually for ALL clients.
-// (This prevents the button from reverting after re-render / chat refresh.)
-try {
-  const already = await chatMsg.getFlag(MODULE_NS, "actionApplied");
-  if (already) {
-    const btn = root.querySelector?.("[data-fu-confirm]");
-    if (btn) {
-      btn.disabled = true;
-      btn.textContent = "Confirmed ✔";
-      btn.style.filter = "grayscale(1)";
-      btn.dataset.fuLock = "1";
-    }
-  }
-} catch (err) {
-  console.warn("[fu-card-hydrate] Could not read actionApplied flag:", err);
-}
-
 }
 
     // Initialize the Effect preview once for this message
