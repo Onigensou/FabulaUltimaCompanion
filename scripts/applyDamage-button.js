@@ -432,7 +432,7 @@ Hooks.once("ready", async () => {
       // Restore prior targets
       await game.user.updateTokenTargets(prevTargets, { releaseOthers: true });
 
-      // Stamp + disable button
+            // Stamp + disable button (GM client)
       if (btn) {
         btn.disabled = true;
         btn.textContent = "Confirmed ✔";
@@ -447,6 +447,13 @@ Hooks.once("ready", async () => {
 
       await chatMsg.setFlag(MODULE_NS, "actionApplied", { by: confirmingUserId ?? game.userId, at: Date.now() });
 
+      // NEW: broadcast to all clients so their Confirm button greys out too
+      game.socket.emit(SOCKET_NS, {
+        type: "fu.actionConfirmed",
+        messageId: chatMsg.id,
+        by: confirmingUserId ?? game.userId
+      });
+
       ui.notifications?.info("Action confirmed.");
       console.log(`[${MODULE_ID}] Confirm resolved`, { chatMsgId: chatMsg.id, hitUUIDs, missUUIDs });
 
@@ -459,13 +466,14 @@ Hooks.once("ready", async () => {
     }
   }
 
+    // ------------------------------------------------------------
+  // Socket receiver
   // ------------------------------------------------------------
-  // Socket receiver (GM only)
-  // ------------------------------------------------------------
-  if (game.user?.isGM) {
-    game.socket.on(SOCKET_NS, async (data) => {
-      try {
-        if (!data || data.type !== "fu.actionConfirm") return;
+  game.socket.on(SOCKET_NS, async (data) => {
+    try {
+      // GM-only: player requests confirm
+      if (data?.type === "fu.actionConfirm") {
+        if (!game.user?.isGM) return;
 
         const chatMsg = data.messageId ? game.messages.get(data.messageId) : null;
         if (!chatMsg) return;
@@ -490,11 +498,33 @@ Hooks.once("ready", async () => {
         if (!ok) return;
 
         await runConfirm(chatMsg, data.args ?? {}, data.userId);
-      } catch (err) {
-        console.error("[fu-chatbtn] GM socket confirm failed:", err);
+        return;
       }
-    });
-  }
+
+      // ALL clients: GM broadcasts that this action is confirmed
+      if (data?.type === "fu.actionConfirmed") {
+        const msgId = data.messageId;
+        if (!msgId) return;
+
+        const msgEl =
+          document.querySelector(`#chat-log .message[data-message-id="${msgId}"]`) ||
+          document.querySelector(`.chat-popout .message[data-message-id="${msgId}"]`) ||
+          null;
+
+        const btn = msgEl?.querySelector?.("[data-fu-confirm]") ?? null;
+        if (btn) {
+          btn.disabled = true;
+          btn.textContent = "Confirmed ✔";
+          btn.style.filter = "grayscale(1)";
+          btn.dataset.fuLock = "1";
+        }
+
+        return;
+      }
+    } catch (err) {
+      console.error("[fu-chatbtn] socket handler failed:", err);
+    }
+  });
 
   // ------------------------------------------------------------
   // Click handler (all clients)
