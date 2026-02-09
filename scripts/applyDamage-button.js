@@ -13,9 +13,16 @@ const MODULE_ID = "fu-chatbtn";
 const MODULE_NS = "fabula-ultima-companion";
 const SOCKET_NS = "module.fabula-ultima-companion";
 
-// Toggle heavy debug logs
+
+// ------------------------------------------------------------
+// Debug toggle (set to false to silence logs)
+// ------------------------------------------------------------
 const DEBUG_FU_CONFIRM = true;
-const DLOG = (...a)=>{ if (DEBUG_FU_CONFIRM) console.log("[fu-chatbtn][DEBUG]", ...a); };
+const FU_TAG = "[fu-chatbtn][DEBUG]";
+const dlog  = (...a)=>{ if (DEBUG_FU_CONFIRM) console.log(FU_TAG, ...a); };
+const dwarn = (...a)=>{ if (DEBUG_FU_CONFIRM) console.warn(FU_TAG, ...a); };
+const derr  = (...a)=>{ if (DEBUG_FU_CONFIRM) console.error(FU_TAG, ...a); };
+
 
 Hooks.once("ready", async () => {
   const root = document.querySelector("#chat-log") || document.body;
@@ -223,9 +230,6 @@ Hooks.once("ready", async () => {
           if (/insert your sequencer animation here/i.test(raw)) return false;
           return true;
         })();
-
-      DLOG("Computed flags", { hasDamageSection, hasAnimationScript, savedUUIDs_len: Array.isArray(originalTargetUUIDs)? originalTargetUUIDs.length: null, attackerUuid, elementType, isSpellish, hasAccuracy, accuracyTotal });
-
 
       // Spend resources now (commit point). If fail, stop.
       const okToProceed = await spendResourcesOnConfirm(flagged ? flagged : null);
@@ -461,14 +465,39 @@ Hooks.once("ready", async () => {
         }
       }
       // Animation-only (no damage/heal): still play the Action animation script.
-      DLOG("Post-damage: deciding animation", {hasDamageSection, hasAnimationScript, hitUUIDs_len: hitUUIDs.length, savedUUIDs_len: savedUUIDs.length});
-
-      if (( !hasDamageSection || (hasDamageSection && !hitUUIDs.length && !savedUUIDs.length) ) && hasAnimationScript && anim) {
+      if (!hasDamageSection && hasAnimationScript && anim) {
         // Prefer hit targets; otherwise fall back to saved targets; otherwise let handler fall back to attacker.
         const targetUUIDsForAnim =
           (hitUUIDs?.length ? hitUUIDs : (savedUUIDs?.length ? savedUUIDs : []));
 
-        DLOG("Calling ActionAnimationHandler", {targetUUIDsForAnim, attackerUuid});
+
+        // --- Ensure animationScriptRaw is present (non-damage actions sometimes lose it) ---
+        let animScriptRaw = String((flagged ?? {})?.animationScriptRaw ?? (flagged ?? {})?.meta?.animationScriptRaw ?? "").trim();
+
+        if (!animScriptRaw) {
+          const skillUuid = (flagged?.skillUuid ?? flagged?.meta?.skillUuid ?? flagged?.meta?.actionUuid ?? null);
+          dlog("Animation-only: animationScriptRaw missing on card payload; attempting to fetch from item", { skillUuid });
+
+          if (skillUuid) {
+            try {
+              const doc = await fromUuid(skillUuid);
+              const rawFromItem = String(doc?.system?.props?.animation_script ?? "").trim();
+              if (rawFromItem) {
+                animScriptRaw = rawFromItem;
+                dlog("Animation-only: fetched animation_script from item.system.props.animation_script", { chars: animScriptRaw.length, itemName: doc?.name });
+              } else {
+                dwarn("Animation-only: item resolved but has no system.props.animation_script", { itemName: doc?.name });
+              }
+            } catch (e) {
+              derr("Animation-only: fromUuid(skillUuid) failed", e);
+            }
+          } else {
+            dwarn("Animation-only: no skillUuid/actionUuid found on payload; cannot fetch animation_script");
+          }
+        } else {
+          dlog("Animation-only: animationScriptRaw present on payload", { chars: animScriptRaw.length });
+        }
+
 
         await anim.execute({
           __AUTO: true,
@@ -483,6 +512,8 @@ Hooks.once("ready", async () => {
             },
             targetUUIDs: targetUUIDsForAnim,
             originalTargetUUIDs: targetUUIDsForAnim
+            },
+            animationScriptRaw: animScriptRaw || ((flagged ?? {})?.animationScriptRaw ?? ((flagged ?? {})?.meta?.animationScriptRaw ?? ""))
           }
         });
       }
