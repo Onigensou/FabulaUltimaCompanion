@@ -177,10 +177,14 @@ Hooks.once("ready", async () => {
         if (typeof args.hasDamageSection !== "boolean" && flagged.meta?.hasDamageSection !== undefined) {
           args.hasDamageSection = !!flagged.meta.hasDamageSection;
         }
+        if (typeof args.hasAnimationScript !== "boolean" && flagged.meta?.hasAnimationScript !== undefined) {
+          args.hasAnimationScript = !!flagged.meta.hasAnimationScript;
+        }
       }
 
       const {
         advMacroName     = "AdvanceDamage",
+        animMacroName    = "ActionAnimationHandler",
         missMacroName    = "Miss",
         advPayload       = {},
         elementType      = "physical",
@@ -205,6 +209,16 @@ Hooks.once("ready", async () => {
         (typeof args.hasDamageSection === "boolean") ? args.hasDamageSection :
         (flagged?.meta?.hasDamageSection !== undefined) ? !!flagged.meta.hasDamageSection :
         true;
+
+      const hasAnimationScript =
+        (typeof args.hasAnimationScript === "boolean") ? args.hasAnimationScript :
+        (flagged?.meta?.hasAnimationScript !== undefined) ? !!flagged.meta.hasAnimationScript :
+        (() => {
+          const raw = String(flagged?.animationScriptRaw ?? flagged?.meta?.animationScriptRaw ?? "").trim();
+          if (!raw) return false;
+          if (/insert your sequencer animation here/i.test(raw)) return false;
+          return true;
+        })();
 
       // Spend resources now (commit point). If fail, stop.
       const okToProceed = await spendResourcesOnConfirm(flagged ? flagged : null);
@@ -313,15 +327,26 @@ Hooks.once("ready", async () => {
       const miss = game.macros.getName(missMacroName);
       const ae   = game.macros.getName(aeMacroName);
 
+      const anim = game.macros.getName(animMacroName);
+
       if (hasDamageSection && !adv) {
         ui.notifications?.error(`AdvanceDamage macro "${advMacroName}" not found or no permission.`);
         throw new Error("AdvanceDamage not found");
       }
 
+      if (!hasDamageSection && hasAnimationScript && !anim) {
+        ui.notifications?.error(`ActionAnimationHandler macro "${animMacroName}" not found or no permission.`);
+        throw new Error("ActionAnimationHandler not found");
+      }
+
       const savedUUIDs = Array.isArray(originalTargetUUIDs) ? originalTargetUUIDs : [];
       if (!savedUUIDs.length) {
-        ui.notifications?.warn("No saved targets on this card.");
-        return;
+        // For animation-only actions (e.g., passive/buff utilities), allow zero targets.
+        // We'll let ActionAnimationHandler fall back to the attacker token.
+        if (!( !hasDamageSection && hasAnimationScript )) {
+          ui.notifications?.warn("No saved targets on this card.");
+          return;
+        }
       }
 
       const elemKey   = String(elementType || "physical").toLowerCase();
@@ -428,6 +453,29 @@ Hooks.once("ready", async () => {
           }
         }
       }
+      // Animation-only (no damage/heal): still play the Action animation script.
+      if (!hasDamageSection && hasAnimationScript && anim) {
+        // Prefer hit targets; otherwise fall back to saved targets; otherwise let handler fall back to attacker.
+        const targetUUIDsForAnim =
+          (hitUUIDs?.length ? hitUUIDs : (savedUUIDs?.length ? savedUUIDs : []));
+
+        await anim.execute({
+          __AUTO: true,
+          __PAYLOAD: {
+            ...(flagged ?? {}),
+            // provide common fields expected by animation scripts/handler
+            meta: {
+              ...((flagged ?? {})?.meta ?? {}),
+              attackerUuid: attackerUuid ?? (flagged?.meta?.attackerUuid ?? null),
+              targetUUIDs: targetUUIDsForAnim,
+              originalTargetUUIDs: targetUUIDsForAnim
+            },
+            targetUUIDs: targetUUIDsForAnim,
+            originalTargetUUIDs: targetUUIDsForAnim
+          }
+        });
+      }
+
 
       // Restore prior targets
       await game.user.updateTokenTargets(prevTargets, { releaseOthers: true });
