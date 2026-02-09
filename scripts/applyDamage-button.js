@@ -13,17 +13,6 @@ const MODULE_ID = "fu-chatbtn";
 const MODULE_NS = "fabula-ultima-companion";
 const SOCKET_NS = "module.fabula-ultima-companion";
 
-
-// ------------------------------------------------------------
-// Debug toggle (set to false to silence logs)
-// ------------------------------------------------------------
-const DEBUG_FU_CONFIRM = true;
-const FU_TAG = "[fu-chatbtn][DEBUG]";
-const dlog  = (...a)=>{ if (DEBUG_FU_CONFIRM) console.log(FU_TAG, ...a); };
-const dwarn = (...a)=>{ if (DEBUG_FU_CONFIRM) console.warn(FU_TAG, ...a); };
-const derr  = (...a)=>{ if (DEBUG_FU_CONFIRM) console.error(FU_TAG, ...a); };
-
-
 Hooks.once("ready", async () => {
   const root = document.querySelector("#chat-log") || document.body;
   if (!root) return;
@@ -188,14 +177,10 @@ Hooks.once("ready", async () => {
         if (typeof args.hasDamageSection !== "boolean" && flagged.meta?.hasDamageSection !== undefined) {
           args.hasDamageSection = !!flagged.meta.hasDamageSection;
         }
-        if (typeof args.hasAnimationScript !== "boolean" && flagged.meta?.hasAnimationScript !== undefined) {
-          args.hasAnimationScript = !!flagged.meta.hasAnimationScript;
-        }
       }
 
       const {
         advMacroName     = "AdvanceDamage",
-        animMacroName    = "ActionAnimationHandler",
         missMacroName    = "Miss",
         advPayload       = {},
         elementType      = "physical",
@@ -220,16 +205,6 @@ Hooks.once("ready", async () => {
         (typeof args.hasDamageSection === "boolean") ? args.hasDamageSection :
         (flagged?.meta?.hasDamageSection !== undefined) ? !!flagged.meta.hasDamageSection :
         true;
-
-      const hasAnimationScript =
-        (typeof args.hasAnimationScript === "boolean") ? args.hasAnimationScript :
-        (flagged?.meta?.hasAnimationScript !== undefined) ? !!flagged.meta.hasAnimationScript :
-        (() => {
-          const raw = String(flagged?.animationScriptRaw ?? flagged?.meta?.animationScriptRaw ?? "").trim();
-          if (!raw) return false;
-          if (/insert your sequencer animation here/i.test(raw)) return false;
-          return true;
-        })();
 
       // Spend resources now (commit point). If fail, stop.
       const okToProceed = await spendResourcesOnConfirm(flagged ? flagged : null);
@@ -338,26 +313,15 @@ Hooks.once("ready", async () => {
       const miss = game.macros.getName(missMacroName);
       const ae   = game.macros.getName(aeMacroName);
 
-      const anim = game.macros.getName(animMacroName);
-
       if (hasDamageSection && !adv) {
         ui.notifications?.error(`AdvanceDamage macro "${advMacroName}" not found or no permission.`);
         throw new Error("AdvanceDamage not found");
       }
 
-      if (!hasDamageSection && hasAnimationScript && !anim) {
-        ui.notifications?.error(`ActionAnimationHandler macro "${animMacroName}" not found or no permission.`);
-        throw new Error("ActionAnimationHandler not found");
-      }
-
       const savedUUIDs = Array.isArray(originalTargetUUIDs) ? originalTargetUUIDs : [];
       if (!savedUUIDs.length) {
-        // For animation-only actions (e.g., passive/buff utilities), allow zero targets.
-        // We'll let ActionAnimationHandler fall back to the attacker token.
-        if (!( !hasDamageSection && hasAnimationScript )) {
-          ui.notifications?.warn("No saved targets on this card.");
-          return;
-        }
+        ui.notifications?.warn("No saved targets on this card.");
+        return;
       }
 
       const elemKey   = String(elementType || "physical").toLowerCase();
@@ -464,60 +428,6 @@ Hooks.once("ready", async () => {
           }
         }
       }
-      // Animation-only (no damage/heal): still play the Action animation script.
-      if (!hasDamageSection && hasAnimationScript && anim) {
-        // Prefer hit targets; otherwise fall back to saved targets; otherwise let handler fall back to attacker.
-        const targetUUIDsForAnim =
-          (hitUUIDs?.length ? hitUUIDs : (savedUUIDs?.length ? savedUUIDs : []));
-
-
-        // --- Ensure animationScriptRaw is present (non-damage actions sometimes lose it) ---
-        let animScriptRaw = String((flagged ?? {})?.animationScriptRaw ?? (flagged ?? {})?.meta?.animationScriptRaw ?? "").trim();
-
-        if (!animScriptRaw) {
-          const skillUuid = (flagged?.skillUuid ?? flagged?.meta?.skillUuid ?? flagged?.meta?.actionUuid ?? null);
-          dlog("Animation-only: animationScriptRaw missing on card payload; attempting to fetch from item", { skillUuid });
-
-          if (skillUuid) {
-            try {
-              const doc = await fromUuid(skillUuid);
-              const rawFromItem = String(doc?.system?.props?.animation_script ?? "").trim();
-              if (rawFromItem) {
-                animScriptRaw = rawFromItem;
-                dlog("Animation-only: fetched animation_script from item.system.props.animation_script", { chars: animScriptRaw.length, itemName: doc?.name });
-              } else {
-                dwarn("Animation-only: item resolved but has no system.props.animation_script", { itemName: doc?.name });
-              }
-            } catch (e) {
-              derr("Animation-only: fromUuid(skillUuid) failed", e);
-            }
-          } else {
-            dwarn("Animation-only: no skillUuid/actionUuid found on payload; cannot fetch animation_script");
-          }
-        } else {
-          dlog("Animation-only: animationScriptRaw present on payload", { chars: animScriptRaw.length });
-        }
-
-
-        await anim.execute({
-          __AUTO: true,
-          __PAYLOAD: {
-            ...(flagged ?? {}),
-            // provide common fields expected by animation scripts/handler
-            meta: {
-              ...((flagged ?? {})?.meta ?? {}),
-              attackerUuid: attackerUuid ?? (flagged?.meta?.attackerUuid ?? null),
-              targetUUIDs: targetUUIDsForAnim,
-              originalTargetUUIDs: targetUUIDsForAnim
-            },
-            targetUUIDs: targetUUIDsForAnim,
-            originalTargetUUIDs: targetUUIDsForAnim
-            },
-            animationScriptRaw: animScriptRaw || ((flagged ?? {})?.animationScriptRaw ?? ((flagged ?? {})?.meta?.animationScriptRaw ?? ""))
-          }
-        });
-      }
-
 
       // Restore prior targets
       await game.user.updateTokenTargets(prevTargets, { releaseOthers: true });
