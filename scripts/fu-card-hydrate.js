@@ -261,23 +261,35 @@ document.addEventListener("click", (ev) => {
       root.querySelectorAll("[data-gm-only]").forEach(el => el.style.display = "none");
     }
 
-    // Gate owner-only buttons using the saved payload on the message
-    let canInvoke = false;
-    try {
-      const saved = await chatMsg.getFlag(MODULE_NS, "actionCard");
-      const attackerUuid = saved?.payload?.meta?.attackerUuid || saved?.payload?.core?.attackerUuid;
-      if (game.user?.isGM) canInvoke = true;
-      else if (attackerUuid) {
-        const actor = await fromUuid(attackerUuid);
-        if (actor) canInvoke = actor.isOwner;  // current user owns the attacker?
-      }
-    } catch (err) {
-      console.warn("[fu-card-hydrate] Could not resolve attacker ownership:", err);
-    }
 
-    if (!canInvoke) {
-      root.querySelectorAll("[data-fu-trait],[data-fu-bond]").forEach(el => el.style.display = "none");
-    }
+// Gate owner-only buttons (Confirm / Invoke) using the saved payload on the message
+let canAct = false;
+try {
+  const saved = await chatMsg.getFlag(MODULE_NS, "actionCard");
+  const payload = saved?.payload ?? null;
+
+  const attackerUuid = payload?.meta?.attackerUuid || payload?.core?.attackerUuid || null;
+  const ownerUserId  = payload?.meta?.ownerUserId ?? null;
+
+  if (game.user?.isGM) canAct = true;
+  else if (ownerUserId && ownerUserId === game.userId) canAct = true;
+  else if (attackerUuid) {
+    const doc = await fromUuid(attackerUuid).catch(()=>null);
+    const actor =
+      doc?.actor ??
+      (doc?.documentName === "Actor" ? doc : null) ??
+      (doc?.documentName === "Token" ? doc.actor : null) ??
+      (doc?.documentName === "TokenDocument" ? doc.actor : null);
+
+    canAct = !!actor?.isOwner;
+  }
+} catch (err) {
+  console.warn("[fu-card-hydrate] Could not resolve attacker ownership:", err);
+}
+
+if (!canAct) {
+  root.querySelectorAll("[data-fu-confirm],[data-fu-trait],[data-fu-bond]").forEach(el => el.style.display = "none");
+}
 
     // Initialize the Effect preview once for this message
     initEffectPreviewOnce(root);
