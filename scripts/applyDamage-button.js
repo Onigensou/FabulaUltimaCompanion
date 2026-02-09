@@ -13,6 +13,10 @@ const MODULE_ID = "fu-chatbtn";
 const MODULE_NS = "fabula-ultima-companion";
 const SOCKET_NS = "module.fabula-ultima-companion";
 
+// Toggle heavy debug logs
+const DEBUG_FU_CONFIRM = true;
+const DLOG = (...a)=>{ if (DEBUG_FU_CONFIRM) console.log("[fu-chatbtn][DEBUG]", ...a); };
+
 Hooks.once("ready", async () => {
   const root = document.querySelector("#chat-log") || document.body;
   if (!root) return;
@@ -219,6 +223,9 @@ Hooks.once("ready", async () => {
           if (/insert your sequencer animation here/i.test(raw)) return false;
           return true;
         })();
+
+      DLOG("Computed flags", { hasDamageSection, hasAnimationScript, savedUUIDs_len: Array.isArray(originalTargetUUIDs)? originalTargetUUIDs.length: null, attackerUuid, elementType, isSpellish, hasAccuracy, accuracyTotal });
+
 
       // Spend resources now (commit point). If fail, stop.
       const okToProceed = await spendResourcesOnConfirm(flagged ? flagged : null);
@@ -454,10 +461,14 @@ Hooks.once("ready", async () => {
         }
       }
       // Animation-only (no damage/heal): still play the Action animation script.
-      if (!hasDamageSection && hasAnimationScript && anim) {
+      DLOG("Post-damage: deciding animation", {hasDamageSection, hasAnimationScript, hitUUIDs_len: hitUUIDs.length, savedUUIDs_len: savedUUIDs.length});
+
+      if (( !hasDamageSection || (hasDamageSection && !hitUUIDs.length && !savedUUIDs.length) ) && hasAnimationScript && anim) {
         // Prefer hit targets; otherwise fall back to saved targets; otherwise let handler fall back to attacker.
         const targetUUIDsForAnim =
           (hitUUIDs?.length ? hitUUIDs : (savedUUIDs?.length ? savedUUIDs : []));
+
+        DLOG("Calling ActionAnimationHandler", {targetUUIDsForAnim, attackerUuid});
 
         await anim.execute({
           __AUTO: true,
