@@ -594,9 +594,6 @@ Hooks.once("ready", async () => {
         by: confirmingUserId ?? game.userId
       });
 
-
-      // Mirror the confirmed UI immediately on this client (GM included)
-      applyConfirmedUI(chatMsg.id, confirmingUserId ?? game.userId);
       ui.notifications?.info("Action confirmed.");
       console.log(`[${MODULE_ID}] Confirm resolved`, { chatMsgId: chatMsg.id, hitUUIDs, missUUIDs });
 
@@ -609,29 +606,6 @@ Hooks.once("ready", async () => {
       console.groupEnd();
     }
   }
-
-
-function applyConfirmedUI(messageId, byUserId = null) {
-  const msgEl =
-    document.querySelector(`#chat-log .message[data-message-id="${messageId}"]`) ||
-    document.querySelector(`.chat-popout .message[data-message-id="${messageId}"]`) ||
-    null;
-
-  const btn = msgEl?.querySelector?.("[data-fu-confirm]") ?? null;
-  if (btn) {
-    btn.disabled = true;
-    btn.textContent = "Confirmed ✔";
-    btn.style.filter = "grayscale(1)";
-    btn.dataset.fuLock = "1";
-  }
-
-  const stamp = msgEl?.querySelector?.("[data-fu-stamp]") ?? null;
-  if (stamp) {
-    const by = byUserId ? (game.users.get(byUserId)?.name ?? "Player") : (game.user?.name ?? "GM");
-    stamp.textContent = `Confirmed by: ${by}`;
-    stamp.style.opacity = ".9";
-  }
-}
 
   // ------------------------------------------------------------
   // Socket receiver
@@ -672,7 +646,20 @@ function applyConfirmedUI(messageId, byUserId = null) {
       if (data?.type === "fu.actionConfirmed") {
         const msgId = data.messageId;
         if (!msgId) return;
-        applyConfirmedUI(msgId, data.by ?? null);
+
+        const msgEl =
+          document.querySelector(`#chat-log .message[data-message-id="${msgId}"]`) ||
+          document.querySelector(`.chat-popout .message[data-message-id="${msgId}"]`) ||
+          null;
+
+        const btn = msgEl?.querySelector?.("[data-fu-confirm]") ?? null;
+        if (btn) {
+          btn.disabled = true;
+          btn.textContent = "Confirmed ✔";
+          btn.style.filter = "grayscale(1)";
+          btn.dataset.fuLock = "1";
+        }
+
         return;
       }
     } catch (err) {
