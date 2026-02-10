@@ -1,10 +1,9 @@
 // scripts/warehouse-system/warehouse-dnd.js
 // ----------------------------------------------------------------------------
 // ONI Warehouse — Drag & Drop (Planning only)
-// - Custom ghost drag (no HTML5 drag)
-// - Drop to opposite side -> quantity prompt
-// - Writes planned move into payload.plan.itemMoves[]
-// - Calls onChange() to rerender UI preview
+// FIXES:
+// - Preserve item meta (img/desc) in planned moves so preview keeps icon+tooltip
+// - Bind guard is per-DOM-root (rerender creates new DOM, so DnD rebinds)
 // ----------------------------------------------------------------------------
 
 import { WarehouseDebug } from "./warehouse-debug.js";
@@ -13,20 +12,19 @@ export class WarehouseDnD {
   static init(root, payload, { onChange } = {}) {
     if (!root) return;
 
-    // Prevent double-binding
-    if (payload.ui._dndBound) return;
-    payload.ui._dndBound = true;
-
-    payload.ui.activeTab = payload.ui.activeTab ?? { actor: "weapon", storage: "weapon" };
+    // DOM-level guard (important: rerender replaces DOM, so new root must bind again)
+    if (root.dataset.whDndBound === "1") return;
+    root.dataset.whDndBound = "1";
 
     const state = {
       dragging: false,
-      originSlot: null,
       originSide: null,
       originUuid: null,
       originName: null,
       originType: null,
       originQty: 1,
+      originImg: null,
+      originDesc: null,
       ghostEl: null
     };
 
@@ -58,11 +56,6 @@ export class WarehouseDnD {
       state.ghostEl = null;
     };
 
-    const isValidDropTarget = (el) => {
-      // We accept dropping anywhere inside the other side panel
-      return !!el?.closest?.(".wh-panel");
-    };
-
     const findDropSide = (ev) => {
       const el = document.elementFromPoint(ev.clientX, ev.clientY);
       const panel = el?.closest?.(".wh-panel");
@@ -71,7 +64,6 @@ export class WarehouseDnD {
     };
 
     const getVirtualQty = (side, itemUuid) => {
-      // Start from snapshot, then apply planned moves
       const snapList = side === "actor" ? (payload.snapshot.actorItems ?? []) : (payload.snapshot.storageItems ?? []);
       const base = snapList.find(it => (it.itemUuid ?? it.uuid) === itemUuid);
       const baseQty = Number(base?.qty ?? 1);
@@ -81,7 +73,6 @@ export class WarehouseDnD {
 
       for (const m of moves) {
         if (m.itemUuid !== itemUuid) continue;
-
         if (m.from === side) delta -= Number(m.qty ?? 0);
         if (m.to === side) delta += Number(m.qty ?? 0);
       }
@@ -89,18 +80,24 @@ export class WarehouseDnD {
       return Math.max(0, baseQty + delta);
     };
 
-    const pushPlannedMove = ({ from, to, itemUuid, itemName, itemType, qty }) => {
+    const pushPlannedMove = ({ from, to, itemUuid, itemName, itemType, itemImg, itemDesc, qty }) => {
       payload.plan.itemMoves = payload.plan.itemMoves ?? [];
 
       payload.plan.itemMoves.push({
         id: crypto.randomUUID?.() ?? Math.random().toString(16).slice(2),
         ts: Date.now(),
         userId: payload.ctx.userId,
+
         from,
         to,
         itemUuid,
         itemName,
         itemType,
+
+        // ✅ preserve meta for preview
+        itemImg,
+        itemDesc,
+
         qty
       });
 
@@ -109,6 +106,8 @@ export class WarehouseDnD {
 
       WarehouseDebug.log(payload, "DND", "Planned move added", {
         from, to, itemName, itemUuid, qty,
+        hasImg: !!itemImg,
+        hasDesc: !!itemDesc,
         totalMoves: payload.plan.itemMoves.length
       });
     };
@@ -159,7 +158,6 @@ export class WarehouseDnD {
       const name = slot.dataset.itemName;
       const type = slot.dataset.itemType;
 
-      // Determine current available qty in planning space
       const available = getVirtualQty(side, uuid);
       if (available <= 0) {
         WarehouseDebug.warn(payload, "DND", "Drag blocked (qty=0)", { side, uuid, name });
@@ -167,24 +165,24 @@ export class WarehouseDnD {
       }
 
       state.dragging = true;
-      state.originSlot = slot;
       state.originSide = side;
       state.originUuid = uuid;
       state.originName = name;
       state.originType = type;
       state.originQty = available;
 
+      // ✅ capture meta from the slot itself (always correct)
       const imgEl = slot.querySelector("img");
-      const imgSrc = imgEl?.src ?? "";
+      state.originImg = imgEl?.src ?? null;
+      state.originDesc = slot.dataset.itemDesc ?? null;
 
-      state.ghostEl = makeGhost(imgSrc);
+      state.ghostEl = makeGhost(state.originImg || "icons/svg/item-bag.svg");
       moveGhost(ev);
 
       WarehouseDebug.log(payload, "DND", "Drag start", {
-        side,
-        uuid,
-        name,
-        available
+        side, uuid, name, available,
+        hasImg: !!state.originImg,
+        hasDesc: !!state.originDesc
       });
     };
 
@@ -200,10 +198,8 @@ export class WarehouseDnD {
       killGhost();
       state.dragging = false;
 
-      // Drop invalid or same side -> do nothing
       if (!to || to === from) return;
 
-      // Gate: compute max from the planning inventory
       const max = getVirtualQty(from, state.originUuid);
       if (max <= 0) {
         WarehouseDebug.warn(payload, "DND", "Drop blocked: no qty left in planning space", {
@@ -212,26 +208,24 @@ export class WarehouseDnD {
         return;
       }
 
-      // Prompt quantity
       const q = await promptQuantity({ max, defaultValue: 1 });
       if (!q.ok) {
         WarehouseDebug.log(payload, "DND", "Quantity cancelled", {});
         return;
       }
 
-      // Add planned move
       pushPlannedMove({
         from,
         to,
         itemUuid: state.originUuid,
         itemName: state.originName,
         itemType: state.originType,
+        itemImg: state.originImg,
+        itemDesc: state.originDesc,
         qty: q.qty
       });
 
-      // Notify rerender
       onChange?.();
-
       ui.notifications?.info?.(`Planned: Move ${q.qty} × ${state.originName}`);
     };
 
@@ -239,13 +233,9 @@ export class WarehouseDnD {
     root.addEventListener("pointerdown", (ev) => {
       const slot = ev.target?.closest?.(".oni-inv-slot.oni-item");
       if (!slot) return;
-
-      // Left click only
       if (ev.button !== 0) return;
 
-      // Prevent selecting text / dragging images
       ev.preventDefault();
-
       beginDrag(ev, slot);
       root.setPointerCapture?.(ev.pointerId);
     });
@@ -268,7 +258,6 @@ export class WarehouseDnD {
       WarehouseDebug.warn(payload, "DND", "Drag cancelled", {});
     });
 
-    // Safety cleanup if user closes dialog mid-drag
     window.addEventListener("blur", () => {
       if (!state.dragging) return;
       killGhost();
