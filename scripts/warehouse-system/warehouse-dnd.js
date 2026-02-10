@@ -1,9 +1,11 @@
 // scripts/warehouse-system/warehouse-dnd.js
 // ----------------------------------------------------------------------------
 // ONI Warehouse — Drag & Drop (Planning only)
-// FIXES:
-// - Preserve item meta (img/desc) in planned moves so preview keeps icon+tooltip
-// - Bind guard is per-DOM-root (rerender creates new DOM, so DnD rebinds)
+//
+// PATCH:
+// - Tight quantity logic: live clamp while typing (prevents "9999 but stays 2" confusion)
+// - Shows a small "clamped" hint when user exceeds max/min
+// - Prevents keyboard events from bubbling to Foundry while typing in the qty dialog
 // ----------------------------------------------------------------------------
 
 import { WarehouseDebug } from "./warehouse-debug.js";
@@ -87,14 +89,13 @@ export class WarehouseDnD {
         id: crypto.randomUUID?.() ?? Math.random().toString(16).slice(2),
         ts: Date.now(),
         userId: payload.ctx.userId,
-
         from,
         to,
         itemUuid,
         itemName,
         itemType,
 
-        // ✅ preserve meta for preview
+        // preserve meta for preview
         itemImg,
         itemDesc,
 
@@ -112,19 +113,32 @@ export class WarehouseDnD {
       });
     };
 
+    // ✅ Tight quantity prompt (live clamp + clear feedback)
     const promptQuantity = async ({ max, defaultValue = 1 }) => {
-      const safeMax = Math.max(1, Number(max ?? 1));
-      const safeDefault = Math.min(safeMax, Math.max(1, Number(defaultValue ?? 1)));
+      const safeMax = Math.max(1, Math.floor(Number(max ?? 1)));
+      const safeDefault = Math.min(safeMax, Math.max(1, Math.floor(Number(defaultValue ?? 1))));
 
       return await new Promise((resolve) => {
+        let resolved = false;
+        const finish = (result) => {
+          if (resolved) return;
+          resolved = true;
+          resolve(result);
+        };
+
         const dlg = new Dialog({
           title: "Move Quantity",
           content: `
             <div style="display:flex; flex-direction:column; gap:10px;">
               <div>How many do you want to move?</div>
+
               <input class="wh-qty-input" type="number" min="1" max="${safeMax}" step="1" value="${safeDefault}"
                      style="width: 120px; padding: 6px 8px; border-radius: 8px;">
-              <div style="opacity:0.75; font-size:12px;">Max: ${safeMax}</div>
+
+              <div class="wh-qty-hint" style="opacity:0.75; font-size:12px;">Max: ${safeMax}</div>
+              <div class="wh-qty-clamp" style="display:none; opacity:0.85; font-size:12px; color:#ffd1d1;">
+                Value clamped to allowed range.
+              </div>
             </div>
           `,
           buttons: {
@@ -133,20 +147,59 @@ export class WarehouseDnD {
               label: "Confirm",
               callback: (html) => {
                 const el = html[0].querySelector(".wh-qty-input");
-                const v = Math.floor(Number(el?.value ?? safeDefault));
-                const finalV = Math.max(1, Math.min(safeMax, Number.isFinite(v) ? v : safeDefault));
-                resolve({ ok: true, qty: finalV });
+                const raw = Math.floor(Number(el?.value ?? safeDefault));
+                const numeric = Number.isFinite(raw) ? raw : safeDefault;
+
+                const finalV = Math.max(1, Math.min(safeMax, numeric));
+                finish({ ok: true, qty: finalV });
               }
             },
             cancel: {
               icon: '<i class="fas fa-times"></i>',
               label: "Cancel",
-              callback: () => resolve({ ok: false })
+              callback: () => finish({ ok: false })
             }
           },
           default: "ok",
-          close: () => resolve({ ok: false })
-        }, { width: 360 });
+          close: () => finish({ ok: false }),
+          render: (html) => {
+            const input = html[0].querySelector(".wh-qty-input");
+            const clampMsg = html[0].querySelector(".wh-qty-clamp");
+
+            if (!input) return;
+
+            // Stop Foundry keybinds while typing
+            const stop = (ev) => ev.stopPropagation();
+            input.addEventListener("keydown", stop);
+            input.addEventListener("keyup", stop);
+            input.addEventListener("keypress", stop);
+            input.addEventListener("mousedown", stop);
+
+            const clampNow = () => {
+              const raw = Math.floor(Number(input.value ?? safeDefault));
+              const numeric = Number.isFinite(raw) ? raw : safeDefault;
+
+              const clamped = Math.max(1, Math.min(safeMax, numeric));
+
+              // If user exceeded range, immediately clamp the visible value
+              if (String(clamped) !== String(numeric)) {
+                input.value = String(clamped);
+                if (clampMsg) clampMsg.style.display = "block";
+              } else {
+                if (clampMsg) clampMsg.style.display = "none";
+              }
+            };
+
+            input.addEventListener("input", clampNow);
+            input.addEventListener("blur", clampNow);
+
+            // Autofocus for speed
+            setTimeout(() => {
+              input.focus();
+              input.select();
+            }, 10);
+          }
+        }, { width: 380 });
 
         dlg.render(true);
       });
@@ -171,7 +224,7 @@ export class WarehouseDnD {
       state.originType = type;
       state.originQty = available;
 
-      // ✅ capture meta from the slot itself (always correct)
+      // capture meta from slot (always correct)
       const imgEl = slot.querySelector("img");
       state.originImg = imgEl?.src ?? null;
       state.originDesc = slot.dataset.itemDesc ?? null;
