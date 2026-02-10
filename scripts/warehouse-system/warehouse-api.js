@@ -35,7 +35,7 @@ export class WarehouseAPI {
     const itemType = item?.system?.props?.item_type ?? item?.system?.item_type ?? item?.type ?? "";
     const rawQty = item?.system?.props?.item_quantity ?? item?.system?.item_quantity ?? null;
 
-    // Stack rule assumption (based on your ecosystem):
+    // Stack rule assumption:
     // - "consumable" stacks via item_quantity
     // - everything else is treated as qty = 1 in the UI planning layer
     const isConsumable = String(itemType).toLowerCase() === "consumable";
@@ -70,6 +70,47 @@ export class WarehouseAPI {
     return null;
   }
 
+  /**
+   * Coerce many possible DB Resolver return shapes into an Actor UUID string.
+   * Accepts:
+   * - Actor document
+   * - UUID string ("Actor.xxxxx", "Compendium....", "Scene....")
+   * - Actor ID string (we will look up game.actors.get(id))
+   * - object with uuid/id/_id/actorId/actorID
+   */
+  static async coerceToActorUuid(ref) {
+    if (!ref) return null;
+
+    // Actor doc
+    if (ref?.documentName === "Actor" || ref?.constructor?.name === "Actor") {
+      return ref.uuid ?? (ref.id ? `Actor.${ref.id}` : null);
+    }
+
+    // UUID string or ID string
+    if (typeof ref === "string") {
+      if (ref.startsWith("Actor.") || ref.startsWith("Scene.") || ref.startsWith("Compendium.")) return ref;
+
+      const actor = game.actors?.get(ref);
+      if (actor) return actor.uuid ?? `Actor.${actor.id}`;
+
+      return null;
+    }
+
+    // Object with uuid
+    const uuid = ref.uuid;
+    if (typeof uuid === "string" && uuid.length) return uuid;
+
+    // Object with id-like fields
+    const id = ref.id ?? ref._id ?? ref.actorId ?? ref.actorID;
+    if (typeof id === "string" && id.length) {
+      const actor = game.actors?.get(id);
+      if (actor) return actor.uuid ?? `Actor.${actor.id}`;
+      return `Actor.${id}`;
+    }
+
+    return null;
+  }
+
   // -----------------------------
   // 1) Context Resolve
   // -----------------------------
@@ -84,8 +125,6 @@ export class WarehouseAPI {
 
     // actor
     let actorDoc = await this.getActorFromUuidOrUser(payload);
-    // If getActorFromUuidOrUser returned a document directly (game.user.character),
-    // fromUuid isn't needed.
     if (actorDoc?.document) actorDoc = actorDoc.document;
 
     if (!actorDoc) {
@@ -100,7 +139,6 @@ export class WarehouseAPI {
     payload.ctx.actorName = actorDoc.name;
 
     // storage / db via DB Resolver
-    // Your DB Resolver is part of FUCompanion: window.FUCompanion.api.getCurrentGameDb()
     const hasResolver = !!(window.FUCompanion?.api?.getCurrentGameDb);
     if (!hasResolver) {
       payload.gates.ok = false;
@@ -110,9 +148,9 @@ export class WarehouseAPI {
       return payload;
     }
 
-    let dbActor = null;
+    let dbActorRef = null;
     try {
-      dbActor = await window.FUCompanion.api.getCurrentGameDb();
+      dbActorRef = await window.FUCompanion.api.getCurrentGameDb();
     } catch (err) {
       payload.gates.ok = false;
       payload.gates.errors.push(`DB Resolver error: ${err?.message ?? String(err)}`);
@@ -121,18 +159,40 @@ export class WarehouseAPI {
       return payload;
     }
 
-    if (!dbActor) {
+    if (!dbActorRef) {
       payload.gates.ok = false;
-      payload.gates.errors.push("DB Resolver returned null/undefined Database Actor.");
-      WarehouseDebug.error(payload, "CTX", "Failed: DB Actor is null", {});
-      ui.notifications?.error?.("Warehouse: Database Actor not found.");
+      payload.gates.errors.push("DB Resolver returned null/undefined (no storage reference).");
+      WarehouseDebug.error(payload, "CTX", "Failed: DB Resolver returned null", {});
+      ui.notifications?.error?.("Warehouse: Database Actor not found (resolver returned null).");
       return payload;
     }
 
-    // Store DB actor as our storage actor for now (matches your stated “Database Object is storage”)
-    payload.ctx.storageDbUuid = dbActor.uuid;
-    payload.ctx.storageActorUuid = dbActor.uuid;
-    payload.ctx.storageName = dbActor.name;
+    // NEW: show the raw return shape (super important for debugging)
+    WarehouseDebug.log(payload, "CTX", "DB Resolver raw result", {
+      type: typeof dbActorRef,
+      keys: (dbActorRef && typeof dbActorRef === "object") ? Object.keys(dbActorRef) : [],
+      dbActorRef
+    });
+
+    const storageUuid = await this.coerceToActorUuid(dbActorRef);
+
+    if (!storageUuid) {
+      payload.gates.ok = false;
+      payload.gates.errors.push("DB Resolver returned a value that cannot be converted into an Actor UUID.");
+      WarehouseDebug.error(payload, "CTX", "Failed: storageUuid is null", { dbActorRef });
+      ui.notifications?.error?.("Warehouse: Storage Actor not resolved (unexpected DB Resolver return shape).");
+      return payload;
+    }
+
+    // Store as our storage actor (for now, storage == Database Actor)
+    payload.ctx.storageDbUuid = storageUuid;
+    payload.ctx.storageActorUuid = storageUuid;
+
+    // Optional: resolve storage name safely
+    try {
+      const storageDoc = await fromUuid(storageUuid);
+      payload.ctx.storageName = storageDoc?.name ?? payload.ctx.storageName;
+    } catch (_) {}
 
     WarehouseDebug.log(payload, "CTX", "Context resolved", {
       userId: payload.ctx.userId,
@@ -171,7 +231,9 @@ export class WarehouseAPI {
       payload.gates.errors.push("Snapshot failed: could not resolve actor/storage documents from UUID.");
       WarehouseDebug.error(payload, "SNAPSHOT", "Failed: fromUuid returned null", {
         actorUuid: payload.ctx.actorUuid,
-        storageActorUuid: payload.ctx.storageActorUuid
+        storageActorUuid: payload.ctx.storageActorUuid,
+        actorDocOk: !!actorDoc,
+        storageDocOk: !!storageDoc
       });
       return payload;
     }
