@@ -1,11 +1,11 @@
 // scripts/warehouse-system/warehouse-app.js
 // ----------------------------------------------------------------------------
-// ONI Warehouse — UI (planning layer)
-// - 2 panels: Actor Inventory | Storage Inventory
-// - Zenit + Deposit/Withdraw inputs (planning only)
-// - Tooltip on hover (name + description)
-// - Filters OUT "Skill" objects by requiring system.props.item_type
-// - Categorizes items by item_type (like your demo inventory UI)
+// ONI Warehouse — UI (Demo-style Tabs + 7x7 Grid)
+// - 2 panels: Actor | Storage
+// - Each panel has tabs (by item_type) + 7x7 grid
+// - Filters OUT skills by requiring system.props.item_type (or itemType on snapshot)
+// - Tooltip fixed (color + decode + enrich + event delegation)
+// - Zenit deposit/withdraw is still "plan-only" (no commit yet)
 // ----------------------------------------------------------------------------
 
 import { WarehouseDebug } from "./warehouse-debug.js";
@@ -15,30 +15,19 @@ import { WarehousePayloadManager } from "./warehouse-payloadManager.js";
 export class WarehouseApp {
   static APP_FLAG = "ONI_WAREHOUSE_APP_OPEN";
 
-  // Item type ordering + labels (adjust labels anytime)
-  static ITEM_TYPE_ORDER = [
-    "weapon",
-    "armor",
-    "shield",
-    "accessory",
-    "consumable",
-    "key",
-    "material",
-    "recipe",
-    "misc"
+  // Match the demo category set / order (you can tweak labels anytime)
+  static CATEGORIES = [
+    { key: "weapon",     label: "⚔️ Weapon" },
+    { key: "accessory",  label: "Accessory" },
+    { key: "shield",     label: "🛡️ Shield" },
+    { key: "armor",      label: "🥋 Armor" },
+    { key: "consumable", label: "🍖 Consumable" },
+    { key: "recipe",     label: "📖 Recipe" },
+    { key: "key",        label: "🔑 Key Item" }
   ];
 
-  static ITEM_TYPE_LABELS = {
-    weapon: "Weapons",
-    armor: "Armor",
-    shield: "Shields",
-    accessory: "Accessories",
-    consumable: "Consumables",
-    key: "Key Items",
-    material: "Materials",
-    recipe: "Recipes",
-    misc: "Misc"
-  };
+  static GRID_SIZE = 7;
+  static SLOTS = WarehouseApp.GRID_SIZE * WarehouseApp.GRID_SIZE;
 
   static _uid() {
     return Math.random().toString(16).slice(2, 10);
@@ -53,26 +42,27 @@ export class WarehouseApp {
       .replaceAll("'", "&#039;");
   }
 
-  // --------------------------------------------------------------------------
-  // FILTER: real warehouse items only
-  // Rule: must have system.props.item_type (skills don’t)
-  // --------------------------------------------------------------------------
-  static _isWarehouseItem(it) {
-    const itemType =
-      it?.itemType ??
-      it?.system?.props?.item_type ??
-      it?.system?.item_type ??
-      "";
-
-    // Most reliable: system.props.item_type exists and is non-empty
-    const hasItemType = !!(it?.system?.props?.item_type ?? it?.itemType);
-
-    // Defensive: also exclude obvious skill-ish shapes if they somehow have item_type
-    const hasSkillType = !!it?.system?.props?.skill_type;
-
-    return hasItemType && !hasSkillType && String(itemType).trim().length > 0;
+  static async _enrichMaybe(html) {
+    const raw = String(html ?? "").trim();
+    if (!raw) return "";
+    try {
+      return await TextEditor.enrichHTML(raw, { async: true, secrets: false, documents: true, links: true });
+    } catch {
+      return raw;
+    }
   }
 
+  // Decode an HTML-escaped string back into raw HTML
+  static _decodeHtml(escaped) {
+    const t = document.createElement("textarea");
+    t.innerHTML = String(escaped ?? "");
+    return t.value ?? "";
+  }
+
+  // --------------------------------------------------------------------------
+  // FILTER: treat "real items" as those that have item_type
+  // (Skills don’t have system.props.item_type)
+  // --------------------------------------------------------------------------
   static _getItemType(it) {
     const t =
       it?.itemType ??
@@ -83,9 +73,15 @@ export class WarehouseApp {
     return String(t ?? "").toLowerCase().trim();
   }
 
+  static _isWarehouseItem(it) {
+    const t = WarehouseApp._getItemType(it);
+    return !!t; // must be non-empty
+  }
+
   static _getItemDesc(it) {
-    // Your sample item object stores description at system.props.description
+    // Prefer snapshot-provided desc if present
     const desc =
+      it?.desc ??
       it?.system?.props?.description ??
       it?.system?.description?.value ??
       it?.system?.description ??
@@ -93,156 +89,277 @@ export class WarehouseApp {
     return String(desc ?? "");
   }
 
-  static _renderItemSlot(it, side) {
-    const name = this._escapeHtml(it?.name ?? "");
-    const img = this._escapeHtml(it?.img ?? "icons/svg/item-bag.svg");
-    const qty = Number(it?.qty ?? 1);
-    const uuid = this._escapeHtml(it?.itemUuid ?? "");
-    const itemType = this._escapeHtml(this._getItemType(it));
+  static _getQty(it) {
+    let qty = it?.qty ?? it?.system?.props?.item_quantity ?? 1;
+    qty = Number.isFinite(qty) ? qty : Number(qty);
+    if (!Number.isFinite(qty)) qty = 1;
+    return qty;
+  }
 
-    // Tooltip data:
-    const rawDesc = this._getItemDesc(it);
-    const desc = this._escapeHtml(rawDesc);
+  // Normalize snapshot item into a UI record
+  static _normalizeSnapshotItem(it) {
+    const type = WarehouseApp._getItemType(it);
+    return {
+      itemUuid: it?.itemUuid ?? it?.uuid ?? "",
+      name: it?.name ?? "Unnamed",
+      img: it?.img ?? "icons/svg/item-bag.svg",
+      type,
+      qty: WarehouseApp._getQty(it),
+      desc: WarehouseApp._getItemDesc(it)
+    };
+  }
+
+  static _groupByCategory(items) {
+    const byCat = Object.fromEntries(WarehouseApp.CATEGORIES.map(c => [c.key, []]));
+    for (const raw of items ?? []) {
+      if (!WarehouseApp._isWarehouseItem(raw)) continue;
+      const it = WarehouseApp._normalizeSnapshotItem(raw);
+      if (!byCat[it.type]) continue; // ignore unknown types for now (same as demo)
+      byCat[it.type].push(it);
+    }
+    return byCat;
+  }
+
+  static _buildGridHTML(items, side, catKey) {
+    const shown = (items ?? []).slice(0, WarehouseApp.SLOTS);
+    const cells = [];
+
+    for (let idx = 0; idx < WarehouseApp.SLOTS; idx++) {
+      const it = shown[idx];
+      if (!it) {
+        cells.push(`<div class="oni-inv-slot oni-empty" data-side="${side}" data-cat="${catKey}" data-idx="${idx}"></div>`);
+        continue;
+      }
+
+      const qtyBadge = (it.qty > 1)
+        ? `<div class="oni-qty">${it.qty}</div>`
+        : (it.qty === 0 ? `<div class="oni-qty oni-zero">0</div>` : ``);
+
+      // Store tooltip data (ESCAPED) and decode later for tooltip
+      const nameEsc = WarehouseApp._escapeHtml(it.name);
+      const descEsc = WarehouseApp._escapeHtml(it.desc);
+      const uuidEsc = WarehouseApp._escapeHtml(it.itemUuid);
+
+      cells.push(`
+        <div class="oni-inv-slot oni-item"
+             data-side="${side}"
+             data-cat="${catKey}"
+             data-item-uuid="${uuidEsc}"
+             data-item-name="${nameEsc}"
+             data-item-desc="${descEsc}">
+          <img class="oni-icon" src="${WarehouseApp._escapeHtml(it.img)}" draggable="false"/>
+          ${qtyBadge}
+        </div>
+      `);
+    }
 
     return `
-      <div class="wh-slot"
-           data-side="${side}"
-           data-item-uuid="${uuid}"
-           data-item-type="${itemType}"
-           data-tip-name="${name}"
-           data-tip-desc="${desc}">
-        <img class="wh-icon" src="${img}" alt="${name}">
-        ${qty > 1 ? `<div class="wh-qty">${qty}</div>` : ``}
+      <div class="oni-grid-wrap">
+        <div class="oni-grid">${cells.join("")}</div>
       </div>
     `;
   }
 
-  static _groupItemsByType(items) {
-    const groups = {};
-    for (const it of items) {
-      const t = this._getItemType(it) || "misc";
-      groups[t] = groups[t] ?? [];
-      groups[t].push(it);
-    }
-    return groups;
-  }
+  static _buildPanelHTML(payload, side) {
+    const isActor = side === "actor";
 
-  static _renderCategorizedGrid(items, side) {
-    const filtered = (items ?? []).filter((it) => this._isWarehouseItem(it));
+    const name = WarehouseApp._escapeHtml(
+      isActor ? (payload?.ctx?.actorName ?? "Actor") : (payload?.ctx?.storageName ?? "Storage")
+    );
 
-    // Debug: show what got filtered out
-    const removed = (items ?? []).length - filtered.length;
+    const zenit = Number(
+      isActor ? (payload?.snapshot?.actorZenit ?? 0) : (payload?.snapshot?.storageZenit ?? 0)
+    );
+
+    const items = isActor ? (payload?.snapshot?.actorItems ?? []) : (payload?.snapshot?.storageItems ?? []);
+
+    // Debug count (helps verify skill filtering)
+    const totalRaw = Array.isArray(items) ? items.length : 0;
+    const totalFiltered = (items ?? []).filter(WarehouseApp._isWarehouseItem).length;
+    const removed = totalRaw - totalFiltered;
     if (removed > 0) {
-      WarehouseDebug.log(
-        globalThis.__WAREHOUSE_PAYLOAD,
-        "UI",
-        "Filtered out non-warehouse entries (likely Skills)",
-        { side, removed }
-      );
+      WarehouseDebug.log(payload, "UI", "Filtered out non-warehouse entries (likely Skills)", { side, removed });
     }
 
-    const groups = this._groupItemsByType(filtered);
+    const byCat = WarehouseApp._groupByCategory(items);
 
-    // Build in desired order, then append any unknown types at the end
-    const known = this.ITEM_TYPE_ORDER.filter((k) => groups[k]?.length);
-    const unknown = Object.keys(groups)
-      .filter((k) => !this.ITEM_TYPE_ORDER.includes(k))
-      .sort((a, b) => a.localeCompare(b));
+    // Tabs + Panels
+    const tabButtons = WarehouseApp.CATEGORIES.map((c, idx) => `
+      <button type="button"
+              class="oni-tab ${idx === 0 ? "active" : ""}"
+              data-side="${side}"
+              data-tab="${c.key}">
+        ${c.label}
+      </button>
+    `).join("");
 
-    const orderedTypes = [...known, ...unknown];
+    const tabPanels = WarehouseApp.CATEGORIES.map((c, idx) => `
+      <section class="oni-panel ${idx === 0 ? "active" : ""}" data-side="${side}" data-panel="${c.key}">
+        ${WarehouseApp._buildGridHTML(byCat[c.key], side, c.key)}
+      </section>
+    `).join("");
 
-    if (orderedTypes.length === 0) {
-      return `<div style="opacity:0.7;font-size:12px;">(No items)</div>`;
-    }
-
-    return orderedTypes
-      .map((typeKey) => {
-        const label = this._escapeHtml(this.ITEM_TYPE_LABELS[typeKey] ?? typeKey);
-        const slots = groups[typeKey]
-          .map((it) => this._renderItemSlot(it, side))
-          .join("");
-
-        return `
-          <div class="wh-cat-block">
-            <div class="wh-cat-title">${label}</div>
-            <div class="wh-cat-grid">${slots}</div>
-          </div>
-        `;
-      })
-      .join("");
-  }
-
-  static _buildHtml(payload) {
-    const actorName = this._escapeHtml(payload?.ctx?.actorName ?? "Actor");
-    const storageName = this._escapeHtml(payload?.ctx?.storageName ?? "Storage");
-
-    const actorZenit = Number(payload?.snapshot?.actorZenit ?? 0);
-    const storageZenit = Number(payload?.snapshot?.storageZenit ?? 0);
-
+    // Actor-only zenit controls (plan)
     const deposit = Number(payload?.plan?.zenit?.depositToStorage ?? 0);
     const withdraw = Number(payload?.plan?.zenit?.withdrawFromStorage ?? 0);
 
-    const actorItems = Array.isArray(payload?.snapshot?.actorItems) ? payload.snapshot.actorItems : [];
-    const storageItems = Array.isArray(payload?.snapshot?.storageItems) ? payload.snapshot.storageItems : [];
-
-    const actorGrid = this._renderCategorizedGrid(actorItems, "actor");
-    const storageGrid = this._renderCategorizedGrid(storageItems, "storage");
+    const zenitControls = isActor ? `
+      <div class="wh-zenit-controls">
+        <div class="wh-field">
+          <label>Deposit to Storage</label>
+          <input class="wh-input-deposit" type="number" min="0" step="1" value="${deposit}">
+        </div>
+        <div class="wh-field">
+          <label>Withdraw from Storage</label>
+          <input class="wh-input-withdraw" type="number" min="0" step="1" value="${withdraw}">
+        </div>
+      </div>
+      <div class="wh-hint">Drag & Drop comes next. For now: UI preview only.</div>
+    ` : `
+      <div class="wh-hint">Planned transfers are not committed until Confirm.</div>
+    `;
 
     return `
-      <div class="wh-root" data-payload-id="${this._escapeHtml(payload?.meta?.payloadId ?? "")}">
+      <section class="wh-panel" data-side="${side}">
+        <div class="wh-title">
+          <span>${name}</span>
+          <span class="wh-zenit">Zenit: <b>${zenit}</b></span>
+        </div>
+
+        <div class="oni-tabs" data-side="${side}">
+          ${tabButtons}
+        </div>
+
+        <div class="oni-panels" data-side="${side}">
+          ${tabPanels}
+        </div>
+
+        ${zenitControls}
+      </section>
+    `;
+  }
+
+  static _buildHtml(payload) {
+    const actorPanel = WarehouseApp._buildPanelHTML(payload, "actor");
+    const storagePanel = WarehouseApp._buildPanelHTML(payload, "storage");
+
+    return `
+      <div class="wh-root" data-payload-id="${WarehouseApp._escapeHtml(payload?.meta?.payloadId ?? "")}">
         <style>
-          .wh-root { display: flex; gap: 12px; }
+          /* Overall layout */
+          .wh-root { display: flex; gap: 12px; user-select: none; }
           .wh-panel {
             width: 420px;
             border: 1px solid rgba(255,255,255,0.15);
             border-radius: 10px;
             padding: 10px;
             background: rgba(0,0,0,0.20);
-            position: relative;
           }
-          .wh-title { font-weight: 700; font-size: 16px; margin-bottom: 8px; display:flex; justify-content:space-between; align-items:center; }
+          .wh-title {
+            font-weight: 800;
+            font-size: 14px;
+            margin-bottom: 6px;
+            opacity: 0.9;
+            display:flex;
+            justify-content:space-between;
+            align-items:center;
+          }
           .wh-zenit { font-size: 13px; opacity: 0.9; }
           .wh-zenit b { font-size: 14px; }
 
-          /* Category blocks */
-          .wh-cat-block { margin-bottom: 10px; }
-          .wh-cat-title {
-            font-size: 12px;
-            font-weight: 700;
-            opacity: 0.85;
-            margin: 6px 0 6px 2px;
-            letter-spacing: 0.3px;
-          }
-          .wh-cat-grid {
+          /* ===== Demo-style tabs ===== */
+          .oni-tabs {
             display: grid;
-            grid-template-columns: repeat(8, 44px);
+            grid-template-columns: repeat(4, 1fr);
+            gap: 6px;
+            margin-bottom: 8px;
+          }
+          .oni-tab {
+            border: 1px solid rgba(0,0,0,0.18);
+            background: rgba(255,255,255,0.55);
+            padding: 4px 6px;
+            height: 26px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 11px;
+            line-height: 1;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            white-space: nowrap;
+          }
+          .oni-tab.active {
+            background: rgba(255,255,255,0.92);
+            border-color: rgba(0,0,0,0.32);
+            font-weight: 800;
+            box-shadow: 0 0 0 2px rgba(255,255,255,0.35) inset;
+          }
+
+          .oni-panel { display: none; }
+          .oni-panel.active { display: block; }
+
+          /* ===== Demo-style 7x7 grid ===== */
+          .oni-grid {
+            display: grid;
+            grid-template-columns: repeat(7, 44px);
+            grid-auto-rows: 44px;
             gap: 6px;
             padding: 6px;
-            border-radius: 10px;
-            background: rgba(255,255,255,0.08);
-            min-height: 54px;
+            border: 1px solid rgba(0,0,0,0.18);
+            border-radius: 12px;
+            background: rgba(255,255,255,0.45);
           }
 
-          /* Slots */
-          .wh-slot {
-            width: 44px; height: 44px;
-            border-radius: 8px;
-            border: 1px solid rgba(255,255,255,0.12);
-            background: rgba(0,0,0,0.25);
+          .oni-inv-slot {
             position: relative;
-            cursor: default;
-            user-select: none;
-          }
-          .wh-slot:hover { outline: 2px solid rgba(255,255,255,0.18); }
-          .wh-icon { width: 100%; height: 100%; border-radius: 8px; object-fit: cover; }
-          .wh-qty {
-            position: absolute;
-            right: 3px; bottom: 2px;
-            font-size: 12px;
-            font-weight: 800;
-            text-shadow: 0 2px 2px rgba(0,0,0,0.8);
+            width: 44px;
+            height: 44px;
+            border-radius: 10px;
+            border: 1px solid rgba(0,0,0,0.18);
+            background: rgba(255,255,255,0.30);
+            overflow: hidden;
           }
 
+          .oni-inv-slot.oni-item {
+            cursor: pointer;
+            background: rgba(255,255,255,0.65);
+          }
+
+          .oni-inv-slot.oni-item:hover {
+            outline: 2px solid rgba(255,255,255,0.9);
+            box-shadow: 0 0 0 2px rgba(0,0,0,0.12) inset;
+            transform: translateY(-1px);
+          }
+
+          .oni-icon {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+            pointer-events: none;
+          }
+
+          .oni-qty {
+            position: absolute;
+            right: 3px;
+            bottom: 3px;
+            min-width: 16px;
+            height: 16px;
+            padding: 0 4px;
+            border-radius: 999px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            font-weight: 900;
+            background: rgba(0,0,0,0.72);
+            color: white;
+            line-height: 1;
+            pointer-events: none;
+          }
+          .oni-qty.oni-zero { background: rgba(120,0,0,0.78); }
+
+          /* Zenit controls */
           .wh-zenit-controls { display:flex; gap: 10px; margin-top: 10px; }
           .wh-field { flex: 1; display:flex; flex-direction:column; gap: 4px; }
           .wh-field label { font-size: 12px; opacity: 0.85; }
@@ -256,123 +373,138 @@ export class WarehouseApp {
           }
           .wh-hint { margin-top: 8px; font-size: 12px; opacity: 0.75; }
 
-          /* Tooltip */
-          .wh-tooltip {
+          /* Tooltip (fixed: color!) */
+          .oni-tooltip {
             position: fixed;
-            z-index: 999999;
-            max-width: 320px;
-            pointer-events: none;
+            z-index: 100000;
+            max-width: 340px;
             padding: 8px 10px;
             border-radius: 10px;
-            background: rgba(10,10,10,0.92);
-            border: 1px solid rgba(255,255,255,0.12);
-            box-shadow: 0 8px 20px rgba(0,0,0,0.35);
+            border: 1px solid rgba(0,0,0,0.25);
+            background: rgba(20,20,20,0.92);
+            color: #ffffff; /* IMPORTANT FIX */
+            box-shadow: 0 10px 25px rgba(0,0,0,0.35);
             display: none;
+            pointer-events: none;
           }
-          .wh-tooltip .t-name { font-weight: 800; font-size: 13px; margin-bottom: 4px; }
-          .wh-tooltip .t-desc { font-size: 12px; opacity: 0.9; line-height: 1.25; white-space: pre-wrap; }
+          .oni-tooltip .t-name {
+            font-weight: 900;
+            margin-bottom: 6px;
+            font-size: 13px;
+          }
+          .oni-tooltip .t-desc {
+            font-size: 12px;
+            opacity: 0.95;
+          }
+          .oni-tooltip .t-desc p { margin: 0 0 6px 0; }
+          .oni-tooltip .t-desc ul { margin: 0 0 6px 18px; }
         </style>
 
-        <!-- Tooltip node -->
-        <div class="wh-tooltip">
+        ${actorPanel}
+        ${storagePanel}
+
+        <!-- shared tooltip -->
+        <div class="oni-tooltip" id="whTooltip">
           <div class="t-name"></div>
           <div class="t-desc"></div>
         </div>
-
-        <!-- LEFT: ACTOR -->
-        <section class="wh-panel">
-          <div class="wh-title">
-            <span>${actorName}</span>
-            <span class="wh-zenit">Zenit: <b class="wh-actor-zenit">${actorZenit}</b></span>
-          </div>
-
-          <div class="wh-grid wh-grid-actor">
-            ${actorGrid}
-          </div>
-
-          <div class="wh-zenit-controls">
-            <div class="wh-field">
-              <label>Deposit to Storage</label>
-              <input class="wh-input-deposit" type="number" min="0" step="1" value="${deposit}">
-            </div>
-            <div class="wh-field">
-              <label>Withdraw from Storage</label>
-              <input class="wh-input-withdraw" type="number" min="0" step="1" value="${withdraw}">
-            </div>
-          </div>
-
-          <div class="wh-hint">Drag & Drop comes next. For now: UI preview only.</div>
-        </section>
-
-        <!-- RIGHT: STORAGE -->
-        <section class="wh-panel">
-          <div class="wh-title">
-            <span>${storageName}</span>
-            <span class="wh-zenit">Zenit: <b class="wh-storage-zenit">${storageZenit}</b></span>
-          </div>
-
-          <div class="wh-grid wh-grid-storage">
-            ${storageGrid}
-          </div>
-
-          <div class="wh-hint">Planned transfers are not committed until Confirm.</div>
-        </section>
       </div>
     `;
   }
 
-  static _bindTooltip(rootEl, payload) {
-    const tip = rootEl.querySelector(".wh-tooltip");
-    if (!tip) return;
+  static _bindTabs(root) {
+    const tabBtns = [...root.querySelectorAll(".oni-tab")];
+    const panels = [...root.querySelectorAll(".oni-panel")];
 
-    const nameEl = tip.querySelector(".t-name");
-    const descEl = tip.querySelector(".t-desc");
+    const activateTab = (side, key) => {
+      for (const b of tabBtns) {
+        const sameSide = b.dataset.side === side;
+        if (!sameSide) continue;
+        b.classList.toggle("active", b.dataset.tab === key);
+      }
+      for (const p of panels) {
+        const sameSide = p.dataset.side === side;
+        if (!sameSide) continue;
+        p.classList.toggle("active", p.dataset.panel === key);
+      }
+    };
 
-    const show = (ev, slot) => {
-      const name = slot?.dataset?.tipName ?? "";
-      const desc = slot?.dataset?.tipDesc ?? "";
+    for (const b of tabBtns) {
+      b.addEventListener("click", () => activateTab(b.dataset.side, b.dataset.tab));
+    }
+  }
 
-      nameEl.textContent = name;
-      descEl.textContent = desc;
+  static _bindTooltip(root, payload) {
+    const tip = root.querySelector("#whTooltip");
+    const tipName = tip?.querySelector(".t-name");
+    const tipDesc = tip?.querySelector(".t-desc");
+    if (!tip || !tipName || !tipDesc) return;
+
+    const moveTip = (ev) => {
+      const pad = 14;
+      const rect = tip.getBoundingClientRect();
+      let x = ev.clientX + pad;
+      let y = ev.clientY + pad;
+
+      if (x + rect.width > window.innerWidth - 8) x = window.innerWidth - rect.width - 8;
+      if (y + rect.height > window.innerHeight - 8) y = window.innerHeight - rect.height - 8;
+
+      tip.style.left = `${x}px`;
+      tip.style.top = `${y}px`;
+    };
+
+    const hideTip = () => {
+      tip.style.display = "none";
+      tipName.textContent = "";
+      tipDesc.innerHTML = "";
+    };
+
+    const showTip = async (ev, slot) => {
+      const nameEsc = slot.dataset.itemName ?? "Item";
+      const descEsc = slot.dataset.itemDesc ?? "";
+
+      // nameEsc is already plain text-safe (escaped), so textContent is fine:
+      tipName.textContent = WarehouseApp._decodeHtml(nameEsc) || "Item";
+
+      // descEsc may contain HTML; decode then enrich
+      const decodedHtml = WarehouseApp._decodeHtml(descEsc);
+      const finalHtml = await WarehouseApp._enrichMaybe(decodedHtml);
+      tipDesc.innerHTML = finalHtml || `<em>No description.</em>`;
 
       tip.style.display = "block";
-      this._moveTooltip(ev);
-      WarehouseDebug.log(payload, "TIP", "Tooltip show", { name, hasDesc: !!desc });
+      moveTip(ev);
+
+      WarehouseDebug.log(payload, "TIP", "Tooltip show", {
+        name: tipName.textContent,
+        hasDesc: !!decodedHtml
+      });
     };
 
-    const hide = () => {
-      tip.style.display = "none";
-    };
+    // Demo-style event delegation (works even when grids change / tabs switch)
+    root.addEventListener("mouseenter", (ev) => {
+      const slot = ev.target.closest(".oni-inv-slot.oni-item");
+      if (!slot) return;
+      showTip(ev, slot);
+    }, true);
 
-    rootEl.addEventListener("mousemove", (ev) => {
-      if (tip.style.display !== "block") return;
-      this._moveTooltip(ev);
-    });
+    root.addEventListener("mousemove", (ev) => {
+      if (tip.style.display === "none") return;
+      moveTip(ev);
+    }, true);
 
-    rootEl.querySelectorAll(".wh-slot").forEach((slot) => {
-      slot.addEventListener("mouseenter", (ev) => show(ev, slot));
-      slot.addEventListener("mouseleave", hide);
-    });
+    root.addEventListener("mouseleave", (ev) => {
+      const slot = ev.target.closest(".oni-inv-slot.oni-item");
+      if (!slot) return;
+      hideTip();
+    }, true);
+
+    root.addEventListener("wheel", hideTip, { passive: true });
+    root.addEventListener("mousedown", hideTip);
   }
 
-  static _moveTooltip(ev) {
-    const tip = document.querySelector(".wh-tooltip");
-    if (!tip) return;
-
-    const pad = 14;
-    const x = ev.clientX + pad;
-    const y = ev.clientY + pad;
-
-    tip.style.left = `${x}px`;
-    tip.style.top = `${y}px`;
-  }
-
-  static _bindListeners(html, payload) {
-    const root = html[0];
-
-    // Zenit inputs → planning layer only
-    const depositEl = root?.querySelector?.(".wh-input-deposit");
-    const withdrawEl = root?.querySelector?.(".wh-input-withdraw");
+  static _bindZenit(root, payload) {
+    const depositEl = root.querySelector(".wh-input-deposit");
+    const withdrawEl = root.querySelector(".wh-input-withdraw");
 
     const clamp0 = (n) => Math.max(0, Number.isFinite(n) ? n : 0);
 
@@ -391,16 +523,21 @@ export class WarehouseApp {
       payload.plan.zenit.lastEditedBy = payload.ctx.userId;
       WarehouseDebug.log(payload, "ZENIT", "Withdraw changed", { withdrawFromStorage: v });
     });
+  }
 
-    // Tooltip
+  static _bindAll(htmlObj, payload) {
+    const root = htmlObj?.[0]?.querySelector?.(".wh-root");
+    if (!root) return;
+
+    this._bindTabs(root);
     this._bindTooltip(root, payload);
+    this._bindZenit(root, payload);
   }
 
   static async open(payload) {
     payload = WarehousePayloadManager.getOrCreate(payload?.meta?.initial ?? payload ?? {});
     payload.ui.instanceId = payload.ui.instanceId ?? this._uid();
 
-    // Ensure ctx+snapshot are ready
     await WarehouseAPI.resolveContext(payload);
     await WarehouseAPI.buildSnapshot(payload);
 
@@ -442,15 +579,15 @@ export class WarehouseApp {
           }
         },
         default: "confirm",
-        render: (htmlObj) => {
+        render: (html) => {
           payload.ui.appId = dlg?.appId ?? payload.ui.appId;
-          this._bindListeners(htmlObj, payload);
+          this._bindAll(html, payload);
         },
         close: () => {
           WarehouseDebug.log(payload, "UI", "Dialog closed", { instanceId: payload.ui.instanceId });
         }
       },
-      { width: 900, height: "auto", resizable: true }
+      { width: 920, height: "auto", resizable: true }
     );
 
     dlg.render(true);
