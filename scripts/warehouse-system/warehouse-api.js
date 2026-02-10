@@ -20,24 +20,18 @@ export class WarehouseAPI {
 
   static getZenit(doc) {
     // Your data key is ".zenit" on both Actor + DB Actor.
-    // In samples, it's commonly at doc.system.zenit (string/number).
-    // We'll also support doc.system.props.zenit as fallback.
     const z =
       doc?.system?.zenit ??
       doc?.system?.props?.zenit ??
-      doc?.system?.data?.zenit; // extra fallback just in case
+      doc?.system?.data?.zenit; // extra fallback
 
     return this._asInt(z, 0);
   }
 
   static normalizeItem(item) {
-    // Foundry Item document normalization (UI-friendly)
     const itemType = item?.system?.props?.item_type ?? item?.system?.item_type ?? item?.type ?? "";
     const rawQty = item?.system?.props?.item_quantity ?? item?.system?.item_quantity ?? null;
 
-    // Stack rule assumption:
-    // - "consumable" stacks via item_quantity
-    // - everything else is treated as qty = 1 in the UI planning layer
     const isConsumable = String(itemType).toLowerCase() === "consumable";
     const qty = isConsumable ? Math.max(1, this._asInt(rawQty, 1)) : 1;
 
@@ -48,38 +42,69 @@ export class WarehouseAPI {
       img: item?.img ?? "icons/svg/item-bag.svg",
       itemType,
       qty,
-      // keep extra data for future niche rules (never harmful)
       flags: item?.flags ?? {},
       system: item?.system ?? {}
     };
   }
 
   static getActorFromUuidOrUser(payload) {
-    // 1) payload.ctx.actorUuid
-    // 2) game.user.character
     const actorUuid = payload?.ctx?.actorUuid ?? null;
 
     if (actorUuid && actorUuid !== "TEST") {
-      // fromUuid can resolve Actor/Token/Item; we want Actor
       return fromUuid(actorUuid);
     }
 
-    // fallback: linked character
     if (game.user?.character) return game.user.character;
 
     return null;
   }
 
   /**
-   * Coerce many possible DB Resolver return shapes into an Actor UUID string.
+   * DB Resolver returns a cache object:
+   * { db, dbUuid, gameName, source, rawGameId, ts }
+   * If we detect that shape, choose:
+   *  1) dbUuid (best, already "Actor.<id>")
+   *  2) db (actor doc)
+   *  3) source (token override actor)
+   */
+  static unwrapDbResolverResult(maybeCacheObj) {
+    if (!maybeCacheObj || typeof maybeCacheObj !== "object") return maybeCacheObj;
+
+    const looksLikeResolverCache =
+      ("dbUuid" in maybeCacheObj) ||
+      ("db" in maybeCacheObj) ||
+      ("source" in maybeCacheObj) ||
+      ("rawGameId" in maybeCacheObj);
+
+    if (!looksLikeResolverCache) return maybeCacheObj;
+
+    // Prefer dbUuid if present
+    if (typeof maybeCacheObj.dbUuid === "string" && maybeCacheObj.dbUuid.trim()) {
+      return maybeCacheObj.dbUuid.trim();
+    }
+
+    // Else try db actor doc
+    if (maybeCacheObj.db) return maybeCacheObj.db;
+
+    // Else try source (token override actor)
+    if (maybeCacheObj.source) return maybeCacheObj.source;
+
+    return maybeCacheObj;
+  }
+
+  /**
+   * Coerce many possible refs into an Actor UUID string.
    * Accepts:
    * - Actor document
    * - UUID string ("Actor.xxxxx", "Compendium....", "Scene....")
    * - Actor ID string (we will look up game.actors.get(id))
    * - object with uuid/id/_id/actorId/actorID
    */
-  static async coerceToActorUuid(ref) {
-    if (!ref) return null;
+  static async coerceToActorUuid(refRaw) {
+    if (!refRaw) return null;
+
+    // If it is the resolver cache, unwrap it first
+    const ref = this.unwrapDbResolverResult(refRaw);
 
     // Actor doc
     if (ref?.documentName === "Actor" || ref?.constructor?.name === "Actor") {
@@ -88,24 +113,32 @@ export class WarehouseAPI {
 
     // UUID string or ID string
     if (typeof ref === "string") {
-      if (ref.startsWith("Actor.") || ref.startsWith("Scene.") || ref.startsWith("Compendium.")) return ref;
+      const s = ref.trim();
+      if (!s) return null;
 
-      const actor = game.actors?.get(ref);
+      if (s.startsWith("Actor.") || s.startsWith("Scene.") || s.startsWith("Compendium.")) return s;
+
+      const actor = game.actors?.get(s);
       if (actor) return actor.uuid ?? `Actor.${actor.id}`;
+
+      // Try resolving as Actor.<id>
+      const byUuid = await fromUuid(`Actor.${s}`).catch(() => null);
+      if (byUuid) return byUuid.uuid ?? `Actor.${byUuid.id}`;
 
       return null;
     }
 
     // Object with uuid
     const uuid = ref.uuid;
-    if (typeof uuid === "string" && uuid.length) return uuid;
+    if (typeof uuid === "string" && uuid.trim()) return uuid.trim();
 
     // Object with id-like fields
     const id = ref.id ?? ref._id ?? ref.actorId ?? ref.actorID;
-    if (typeof id === "string" && id.length) {
-      const actor = game.actors?.get(id);
+    if (typeof id === "string" && id.trim()) {
+      const trimmed = id.trim();
+      const actor = game.actors?.get(trimmed);
       if (actor) return actor.uuid ?? `Actor.${actor.id}`;
-      return `Actor.${id}`;
+      return `Actor.${trimmed}`;
     }
 
     return null;
@@ -117,10 +150,8 @@ export class WarehouseAPI {
   static async resolveContext(payload) {
     WarehouseDebug.log(payload, "CTX", "Resolving context...");
 
-    // Always ensure payload exists (manager rule)
     payload = WarehousePayloadManager.getOrCreate(payload?.meta?.initial ?? {});
 
-    // user
     payload.ctx.userId = payload.ctx.userId ?? game.user?.id ?? null;
 
     // actor
@@ -148,9 +179,9 @@ export class WarehouseAPI {
       return payload;
     }
 
-    let dbActorRef = null;
+    let dbResolverResult = null;
     try {
-      dbActorRef = await window.FUCompanion.api.getCurrentGameDb();
+      dbResolverResult = await window.FUCompanion.api.getCurrentGameDb();
     } catch (err) {
       payload.gates.ok = false;
       payload.gates.errors.push(`DB Resolver error: ${err?.message ?? String(err)}`);
@@ -159,36 +190,36 @@ export class WarehouseAPI {
       return payload;
     }
 
-    if (!dbActorRef) {
+    if (!dbResolverResult) {
       payload.gates.ok = false;
-      payload.gates.errors.push("DB Resolver returned null/undefined (no storage reference).");
+      payload.gates.errors.push("DB Resolver returned null/undefined.");
       WarehouseDebug.error(payload, "CTX", "Failed: DB Resolver returned null", {});
       ui.notifications?.error?.("Warehouse: Database Actor not found (resolver returned null).");
       return payload;
     }
 
-    // NEW: show the raw return shape (super important for debugging)
+    // Log the raw resolver cache shape for debugging
     WarehouseDebug.log(payload, "CTX", "DB Resolver raw result", {
-      type: typeof dbActorRef,
-      keys: (dbActorRef && typeof dbActorRef === "object") ? Object.keys(dbActorRef) : [],
-      dbActorRef
+      type: typeof dbResolverResult,
+      keys: Object.keys(dbResolverResult || {}),
+      // NOTE: This prints the whole object; useful now. We can reduce later.
+      dbResolverResult
     });
 
-    const storageUuid = await this.coerceToActorUuid(dbActorRef);
+    // NEW: unwrap + coerce
+    const storageUuid = await this.coerceToActorUuid(dbResolverResult);
 
     if (!storageUuid) {
       payload.gates.ok = false;
       payload.gates.errors.push("DB Resolver returned a value that cannot be converted into an Actor UUID.");
-      WarehouseDebug.error(payload, "CTX", "Failed: storageUuid is null", { dbActorRef });
+      WarehouseDebug.error(payload, "CTX", "Failed: storageUuid is null", { dbResolverResult });
       ui.notifications?.error?.("Warehouse: Storage Actor not resolved (unexpected DB Resolver return shape).");
       return payload;
     }
 
-    // Store as our storage actor (for now, storage == Database Actor)
     payload.ctx.storageDbUuid = storageUuid;
     payload.ctx.storageActorUuid = storageUuid;
 
-    // Optional: resolve storage name safely
     try {
       const storageDoc = await fromUuid(storageUuid);
       payload.ctx.storageName = storageDoc?.name ?? payload.ctx.storageName;
@@ -209,13 +240,11 @@ export class WarehouseAPI {
   static async buildSnapshot(payload) {
     WarehouseDebug.log(payload, "SNAPSHOT", "Building snapshot...");
 
-    // Resolve context first if not ready
     const needsCtx = !payload?.ctx?.actorUuid || !payload?.ctx?.storageActorUuid;
     if (needsCtx) {
       await this.resolveContext(payload);
     }
 
-    // If gates already failed, stop snapshot
     if (payload?.gates?.ok === false) {
       WarehouseDebug.warn(payload, "SNAPSHOT", "Skipped because gates.ok=false", {
         errors: payload.gates?.errors ?? []
@@ -238,11 +267,9 @@ export class WarehouseAPI {
       return payload;
     }
 
-    // Zenit
     payload.snapshot.actorZenit = this.getZenit(actorDoc);
     payload.snapshot.storageZenit = this.getZenit(storageDoc);
 
-    // Items (use embedded Item collection)
     const actorItems = Array.from(actorDoc.items ?? []).map((it) => this.normalizeItem(it));
     const storageItems = Array.from(storageDoc.items ?? []).map((it) => this.normalizeItem(it));
 
