@@ -1,254 +1,88 @@
-// scripts/warehouse-system/warehouse-app.js
-// ----------------------------------------------------------------------------
-// ONI Warehouse — UI Skeleton (no DnD yet, no commit yet)
-// - Renders 2 panels: Actor Inventory | Storage Inventory
-// - Shows Zenit + Deposit/Withdraw fields
-// - Confirm/Cancel buttons (Confirm is placeholder for now)
-// ----------------------------------------------------------------------------
+// ============================================================================
+// WarehouseAPI - Snapshot item gather (FILTERED BY SYSTEM CONTAINERS)
+// Replace your current actor.items scanning with this block.
+// ============================================================================
 
-import { WarehouseDebug } from "./warehouse-debug.js";
-import { WarehouseAPI } from "./warehouse-api.js";
-import { WarehousePayloadManager } from "./warehouse-payloadManager.js";
+static _ALLOWED_ITEM_CONTAINERS = [
+  "inventory_tab",
+  "weapon_list",
+  "itemContainer2",
+  "itemContainer3",
+  "itemContainer4",
+  "consumable_list",
+  "key_list",
+];
 
-export class WarehouseApp {
-  static APP_FLAG = "ONI_WAREHOUSE_APP_OPEN";
+static _getContainerObject(actor, key) {
+  // Most FU sheets store these on actor.system (commonly), but we’ll safely check both.
+  const sys = actor?.system ?? {};
+  const root = actor ?? {};
+  const a = sys?.[key];
+  const b = root?.[key];
+  const val = (a && typeof a === "object") ? a : (b && typeof b === "object" ? b : null);
+  return val && typeof val === "object" ? val : null;
+}
 
-  static _uid() {
-    return Math.random().toString(16).slice(2, 10);
-  }
+static _inferQtyFromEntry(entry) {
+  // Your containers commonly use "quantity" for consumables; weapons may be "" (treat as 1).
+  const q = entry?.quantity;
+  const n = Number(q);
+  if (Number.isFinite(n) && n >= 0) return n;
+  return 1;
+}
 
-  static _escapeHtml(str) {
-    return String(str ?? "")
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#039;");
-  }
+static _inferDescFromEntry(entry) {
+  // Your data uses different description keys per container type.
+  // Examples in your sample: weapon_description, consume_description, armor_description, key_description:contentReference[oaicite:3]{index=3}.
+  return (
+    entry?.weapon_description ??
+    entry?.armor_description ??
+    entry?.shield_description ??
+    entry?.accessory_description ??
+    entry?.consume_description ??
+    entry?.key_description ??
+    entry?.description ??
+    ""
+  );
+}
 
-  static _renderItemSlot(it, side) {
-    const name = this._escapeHtml(it?.name ?? "");
-    const img = this._escapeHtml(it?.img ?? "icons/svg/item-bag.svg");
-    const qty = Number(it?.qty ?? 1);
-    const uuid = this._escapeHtml(it?.itemUuid ?? "");
+static async _collectItemsFromContainers(actor, debug) {
+  const out = [];
+  const seen = new Set(); // de-dupe by uuid
 
-    // data-side tells us where it is (actor vs storage) for future DnD
-    return `
-      <div class="wh-slot" data-side="${side}" data-item-uuid="${uuid}" title="${name}">
-        <img class="wh-icon" src="${img}" alt="${name}">
-        ${qty > 1 ? `<div class="wh-qty">${qty}</div>` : ``}
-      </div>
-    `;
-  }
+  for (const key of WarehouseAPI._ALLOWED_ITEM_CONTAINERS) {
+    const container = WarehouseAPI._getContainerObject(actor, key);
+    if (!container) continue;
 
-  static _buildHtml(payload) {
-    const actorName = this._escapeHtml(payload?.ctx?.actorName ?? "Actor");
-    const storageName = this._escapeHtml(payload?.ctx?.storageName ?? "Storage");
+    // Container shape: { "<itemId>": { name, uuid, quantity, ... }, ... }
+    for (const [itemId, entry] of Object.entries(container)) {
+      const uuid = entry?.uuid;
+      if (!uuid || typeof uuid !== "string") continue;
+      if (seen.has(uuid)) continue;
+      seen.add(uuid);
 
-    const actorZenit = Number(payload?.snapshot?.actorZenit ?? 0);
-    const storageZenit = Number(payload?.snapshot?.storageZenit ?? 0);
-
-    const deposit = Number(payload?.plan?.zenit?.depositToStorage ?? 0);
-    const withdraw = Number(payload?.plan?.zenit?.withdrawFromStorage ?? 0);
-
-    const actorItems = Array.isArray(payload?.snapshot?.actorItems) ? payload.snapshot.actorItems : [];
-    const storageItems = Array.isArray(payload?.snapshot?.storageItems) ? payload.snapshot.storageItems : [];
-
-    const actorGrid = actorItems.map((it) => this._renderItemSlot(it, "actor")).join("");
-    const storageGrid = storageItems.map((it) => this._renderItemSlot(it, "storage")).join("");
-
-    return `
-      <div class="wh-root" data-payload-id="${this._escapeHtml(payload?.meta?.payloadId ?? "")}">
-        <style>
-          /* Minimal skeleton styling (we'll replace with RO style CSS later) */
-          .wh-root { display: flex; gap: 12px; }
-          .wh-panel {
-            width: 420px;
-            border: 1px solid rgba(255,255,255,0.15);
-            border-radius: 10px;
-            padding: 10px;
-            background: rgba(0,0,0,0.20);
-          }
-          .wh-title { font-weight: 700; font-size: 16px; margin-bottom: 8px; display:flex; justify-content:space-between; align-items:center; }
-          .wh-zenit { font-size: 13px; opacity: 0.9; }
-          .wh-zenit b { font-size: 14px; }
-          .wh-grid {
-            display: grid;
-            grid-template-columns: repeat(8, 44px);
-            gap: 6px;
-            padding: 8px;
-            border-radius: 10px;
-            border: 1px solid rgba(255,255,255,0.10);
-            background: rgba(0,0,0,0.18);
-            min-height: 280px;
-          }
-          .wh-slot {
-            width: 44px; height: 44px;
-            border-radius: 8px;
-            border: 1px solid rgba(255,255,255,0.10);
-            background: rgba(0,0,0,0.15);
-            position: relative;
-            overflow: hidden;
-            cursor: default;
-          }
-          .wh-slot:hover { outline: 2px solid rgba(255,255,255,0.12); }
-          .wh-icon { width: 100%; height: 100%; object-fit: cover; display:block; }
-          .wh-qty {
-            position: absolute;
-            right: 3px; bottom: 2px;
-            font-size: 12px;
-            padding: 0px 5px;
-            border-radius: 999px;
-            background: rgba(0,0,0,0.70);
-            border: 1px solid rgba(255,255,255,0.14);
-          }
-          .wh-zenit-controls {
-            margin-top: 10px;
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 8px;
-          }
-          .wh-field { display:flex; flex-direction:column; gap: 4px; }
-          .wh-field label { font-size: 12px; opacity: 0.85; }
-          .wh-field input {
-            width: 100%;
-            padding: 6px 8px;
-            border-radius: 8px;
-            border: 1px solid rgba(255,255,255,0.12);
-            background: rgba(0,0,0,0.25);
-            color: inherit;
-          }
-          .wh-hint { margin-top: 8px; font-size: 12px; opacity: 0.75; }
-        </style>
-
-        <!-- LEFT: ACTOR -->
-        <section class="wh-panel">
-          <div class="wh-title">
-            <span>${actorName}</span>
-            <span class="wh-zenit">Zenit: <b class="wh-actor-zenit">${actorZenit}</b></span>
-          </div>
-
-          <div class="wh-grid wh-grid-actor">
-            ${actorGrid || `<div style="opacity:0.7;font-size:12px;">(No items)</div>`}
-          </div>
-
-          <div class="wh-zenit-controls">
-            <div class="wh-field">
-              <label>Deposit to Storage</label>
-              <input class="wh-input-deposit" type="number" min="0" step="1" value="${deposit}">
-            </div>
-            <div class="wh-field">
-              <label>Withdraw from Storage</label>
-              <input class="wh-input-withdraw" type="number" min="0" step="1" value="${withdraw}">
-            </div>
-          </div>
-
-          <div class="wh-hint">Drag & Drop comes next. For now: UI preview only.</div>
-        </section>
-
-        <!-- RIGHT: STORAGE -->
-        <section class="wh-panel">
-          <div class="wh-title">
-            <span>${storageName}</span>
-            <span class="wh-zenit">Zenit: <b class="wh-storage-zenit">${storageZenit}</b></span>
-          </div>
-
-          <div class="wh-grid wh-grid-storage">
-            ${storageGrid || `<div style="opacity:0.7;font-size:12px;">(No items)</div>`}
-          </div>
-
-          <div class="wh-hint">Planned transfers are not committed until Confirm.</div>
-        </section>
-      </div>
-    `;
-  }
-
-  static _bindListeners(html, payload) {
-    // Zenit inputs → write into payload.plan (planning layer only)
-    const depositEl = html[0]?.querySelector?.(".wh-input-deposit");
-    const withdrawEl = html[0]?.querySelector?.(".wh-input-withdraw");
-
-    const clamp0 = (n) => Math.max(0, Number.isFinite(n) ? n : 0);
-
-    depositEl?.addEventListener("input", () => {
-      const v = clamp0(parseInt(depositEl.value ?? "0", 10));
-      payload.plan.zenit.depositToStorage = v;
-      payload.plan.zenit.lastEditedAt = Date.now();
-      payload.plan.zenit.lastEditedBy = payload.ctx.userId;
-      WarehouseDebug.log(payload, "ZENIT", "Deposit changed", { depositToStorage: v });
-    });
-
-    withdrawEl?.addEventListener("input", () => {
-      const v = clamp0(parseInt(withdrawEl.value ?? "0", 10));
-      payload.plan.zenit.withdrawFromStorage = v;
-      payload.plan.zenit.lastEditedAt = Date.now();
-      payload.plan.zenit.lastEditedBy = payload.ctx.userId;
-      WarehouseDebug.log(payload, "ZENIT", "Withdraw changed", { withdrawFromStorage: v });
-    });
-  }
-
-  static async open(payload) {
-    payload = WarehousePayloadManager.getOrCreate(payload?.meta?.initial ?? payload ?? {});
-    payload.ui.instanceId = payload.ui.instanceId ?? this._uid();
-
-    // Ensure ctx+snapshot are ready
-    await WarehouseAPI.resolveContext(payload);
-    await WarehouseAPI.buildSnapshot(payload);
-
-    if (payload?.gates?.ok === false) {
-      WarehouseDebug.warn(payload, "UI", "Not opening UI because gates.ok=false", { errors: payload.gates.errors });
-      return payload;
-    }
-
-    payload.ui.renderCount = (payload.ui.renderCount ?? 0) + 1;
-
-    const html = this._buildHtml(payload);
-
-    WarehouseDebug.log(payload, "UI", "Opening Warehouse UI", {
-      instanceId: payload.ui.instanceId,
-      renderCount: payload.ui.renderCount
-    });
-
-    const dlg = new Dialog({
-      title: "Warehouse — Item Withdraw",
-      content: html,
-      buttons: {
-        confirm: {
-          icon: '<i class="fas fa-check"></i>',
-          label: "Confirm",
-          callback: () => {
-            // Placeholder: commit comes later
-            WarehouseDebug.log(payload, "UI", "Confirm pressed (placeholder)", {
-              plannedMoves: payload.plan?.itemMoves?.length ?? 0,
-              zenitPlan: payload.plan?.zenit
-            });
-            ui.notifications?.info?.("Warehouse: Confirm (placeholder). Commit stage comes next.");
-          }
-        },
-        cancel: {
-          icon: '<i class="fas fa-times"></i>',
-          label: "Cancel",
-          callback: () => {
-            WarehouseDebug.log(payload, "UI", "Cancel pressed", { instanceId: payload.ui.instanceId });
-          }
-        }
-      },
-      default: "confirm",
-      render: (htmlObj) => {
-        // save dialog id reference for future
-        payload.ui.appId = dlg?.appId ?? payload.ui.appId;
-        this._bindListeners(htmlObj, payload);
-      },
-      close: () => {
-        WarehouseDebug.log(payload, "UI", "Dialog closed", { instanceId: payload.ui.instanceId });
+      const doc = await fromUuid(uuid);
+      // Some bad/old entries can exist; skip if unresolved
+      if (!doc) {
+        debug?.warn?.("[SNAPSHOT] fromUuid null (container entry)", { key, itemId, uuid });
+        continue;
       }
-    }, {
-      width: 900,
-      height: "auto",
-      resizable: true
-    });
 
-    dlg.render(true);
-    return payload;
+      const qty = WarehouseAPI._inferQtyFromEntry(entry);
+      const desc = WarehouseAPI._inferDescFromEntry(entry);
+
+      out.push({
+        uuid,
+        id: doc.id,
+        name: entry?.name ?? doc.name ?? "Unnamed",
+        img: doc.img,
+        qty,
+        // keep BOTH: raw container desc (fast) + doc/system desc (if you want later)
+        desc,
+        _containerKey: key,
+      });
+    }
   }
+
+  return out;
 }
