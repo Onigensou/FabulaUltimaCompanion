@@ -1,21 +1,21 @@
 // scripts/warehouse-system/warehouse-app.js
 // ----------------------------------------------------------------------------
-// ONI Warehouse — UI (Demo-style Tabs + 7x7 Grid)
+// ONI Warehouse — UI (Demo-style Tabs + 7x7 Grid + DnD Planning)
 // - 2 panels: Actor | Storage
 // - Each panel has tabs (by item_type) + 7x7 grid
-// - Filters OUT skills by requiring system.props.item_type (or itemType on snapshot)
-// - Tooltip fixed (color + decode + enrich + event delegation)
-// - Zenit deposit/withdraw is still "plan-only" (no commit yet)
+// - Tooltip + DnD ghost + quantity prompt
+// - Planned moves stored in payload.plan.itemMoves[]
+// - UI rerenders to reflect planning changes (still not committed)
 // ----------------------------------------------------------------------------
 
 import { WarehouseDebug } from "./warehouse-debug.js";
 import { WarehouseAPI } from "./warehouse-api.js";
 import { WarehousePayloadManager } from "./warehouse-payloadManager.js";
+import { WarehouseDnD } from "./warehouse-dnd.js";
 
 export class WarehouseApp {
   static APP_FLAG = "ONI_WAREHOUSE_APP_OPEN";
 
-  // Match the demo category set / order (you can tweak labels anytime)
   static CATEGORIES = [
     { key: "weapon",     label: "⚔️ Weapon" },
     { key: "accessory",  label: "Accessory" },
@@ -29,9 +29,7 @@ export class WarehouseApp {
   static GRID_SIZE = 7;
   static SLOTS = WarehouseApp.GRID_SIZE * WarehouseApp.GRID_SIZE;
 
-  static _uid() {
-    return Math.random().toString(16).slice(2, 10);
-  }
+  static _uid() { return Math.random().toString(16).slice(2, 10); }
 
   static _escapeHtml(str) {
     return String(str ?? "")
@@ -40,6 +38,12 @@ export class WarehouseApp {
       .replaceAll(">", "&gt;")
       .replaceAll('"', "&quot;")
       .replaceAll("'", "&#039;");
+  }
+
+  static _decodeHtml(escaped) {
+    const t = document.createElement("textarea");
+    t.innerHTML = String(escaped ?? "");
+    return t.value ?? "";
   }
 
   static async _enrichMaybe(html) {
@@ -52,17 +56,6 @@ export class WarehouseApp {
     }
   }
 
-  // Decode an HTML-escaped string back into raw HTML
-  static _decodeHtml(escaped) {
-    const t = document.createElement("textarea");
-    t.innerHTML = String(escaped ?? "");
-    return t.value ?? "";
-  }
-
-  // --------------------------------------------------------------------------
-  // FILTER: treat "real items" as those that have item_type
-  // (Skills don’t have system.props.item_type)
-  // --------------------------------------------------------------------------
   static _getItemType(it) {
     const t =
       it?.itemType ??
@@ -75,11 +68,10 @@ export class WarehouseApp {
 
   static _isWarehouseItem(it) {
     const t = WarehouseApp._getItemType(it);
-    return !!t; // must be non-empty
+    return !!t;
   }
 
   static _getItemDesc(it) {
-    // Prefer snapshot-provided desc if present
     const desc =
       it?.desc ??
       it?.system?.props?.description ??
@@ -96,7 +88,6 @@ export class WarehouseApp {
     return qty;
   }
 
-  // Normalize snapshot item into a UI record
   static _normalizeSnapshotItem(it) {
     const type = WarehouseApp._getItemType(it);
     return {
@@ -114,10 +105,55 @@ export class WarehouseApp {
     for (const raw of items ?? []) {
       if (!WarehouseApp._isWarehouseItem(raw)) continue;
       const it = WarehouseApp._normalizeSnapshotItem(raw);
-      if (!byCat[it.type]) continue; // ignore unknown types for now (same as demo)
+      if (!byCat[it.type]) continue;
       byCat[it.type].push(it);
     }
     return byCat;
+  }
+
+  // Apply planning moves to an item list to compute "virtual qty"
+  static _virtualizeList(payload, side) {
+    const list = side === "actor" ? (payload.snapshot.actorItems ?? []) : (payload.snapshot.storageItems ?? []);
+    const moves = payload.plan?.itemMoves ?? [];
+
+    // Map uuid -> record
+    const map = new Map();
+    for (const raw of list) {
+      if (!WarehouseApp._isWarehouseItem(raw)) continue;
+      const it = WarehouseApp._normalizeSnapshotItem(raw);
+      if (!it.itemUuid) continue;
+      map.set(it.itemUuid, { ...it });
+    }
+
+    // Apply deltas
+    for (const m of moves) {
+      const qty = Number(m.qty ?? 0);
+      if (!m.itemUuid || qty <= 0) continue;
+
+      if (m.from === side) {
+        const it = map.get(m.itemUuid);
+        if (it) it.qty = Math.max(0, Number(it.qty ?? 0) - qty);
+        // if missing, ignore
+      }
+      if (m.to === side) {
+        const it = map.get(m.itemUuid);
+        if (it) it.qty = Number(it.qty ?? 0) + qty;
+        else {
+          // Create a lightweight entry so it appears in destination
+          map.set(m.itemUuid, {
+            itemUuid: m.itemUuid,
+            name: m.itemName ?? "Item",
+            img: m.itemImg ?? "icons/svg/item-bag.svg",
+            type: m.itemType ?? "misc",
+            qty,
+            desc: m.itemDesc ?? ""
+          });
+        }
+      }
+    }
+
+    // Remove qty 0
+    return [...map.values()].filter(it => Number(it.qty ?? 0) > 0);
   }
 
   static _buildGridHTML(items, side, catKey) {
@@ -133,18 +169,19 @@ export class WarehouseApp {
 
       const qtyBadge = (it.qty > 1)
         ? `<div class="oni-qty">${it.qty}</div>`
-        : (it.qty === 0 ? `<div class="oni-qty oni-zero">0</div>` : ``);
+        : ``;
 
-      // Store tooltip data (ESCAPED) and decode later for tooltip
       const nameEsc = WarehouseApp._escapeHtml(it.name);
       const descEsc = WarehouseApp._escapeHtml(it.desc);
       const uuidEsc = WarehouseApp._escapeHtml(it.itemUuid);
+      const typeEsc = WarehouseApp._escapeHtml(it.type);
 
       cells.push(`
         <div class="oni-inv-slot oni-item"
              data-side="${side}"
              data-cat="${catKey}"
              data-item-uuid="${uuidEsc}"
+             data-item-type="${typeEsc}"
              data-item-name="${nameEsc}"
              data-item-desc="${descEsc}">
           <img class="oni-icon" src="${WarehouseApp._escapeHtml(it.img)}" draggable="false"/>
@@ -153,15 +190,12 @@ export class WarehouseApp {
       `);
     }
 
-    return `
-      <div class="oni-grid-wrap">
-        <div class="oni-grid">${cells.join("")}</div>
-      </div>
-    `;
+    return `<div class="oni-grid">${cells.join("")}</div>`;
   }
 
   static _buildPanelHTML(payload, side) {
     const isActor = side === "actor";
+    payload.ui.activeTab = payload.ui.activeTab ?? { actor: "weapon", storage: "weapon" };
 
     const name = WarehouseApp._escapeHtml(
       isActor ? (payload?.ctx?.actorName ?? "Actor") : (payload?.ctx?.storageName ?? "Storage")
@@ -171,35 +205,28 @@ export class WarehouseApp {
       isActor ? (payload?.snapshot?.actorZenit ?? 0) : (payload?.snapshot?.storageZenit ?? 0)
     );
 
-    const items = isActor ? (payload?.snapshot?.actorItems ?? []) : (payload?.snapshot?.storageItems ?? []);
+    // Use virtualized list so UI reflects plan
+    const virtualList = WarehouseApp._virtualizeList(payload, side);
+    const byCat = WarehouseApp._groupByCategory(virtualList);
 
-    // Debug count (helps verify skill filtering)
-    const totalRaw = Array.isArray(items) ? items.length : 0;
-    const totalFiltered = (items ?? []).filter(WarehouseApp._isWarehouseItem).length;
-    const removed = totalRaw - totalFiltered;
-    if (removed > 0) {
-      WarehouseDebug.log(payload, "UI", "Filtered out non-warehouse entries (likely Skills)", { side, removed });
-    }
+    const tabButtons = WarehouseApp.CATEGORIES.map((c) => {
+      const active = payload.ui.activeTab[side] === c.key ? "active" : "";
+      return `
+        <button type="button" class="oni-tab ${active}" data-side="${side}" data-tab="${c.key}">
+          ${c.label}
+        </button>
+      `;
+    }).join("");
 
-    const byCat = WarehouseApp._groupByCategory(items);
+    const tabPanels = WarehouseApp.CATEGORIES.map((c) => {
+      const active = payload.ui.activeTab[side] === c.key ? "active" : "";
+      return `
+        <section class="oni-panel ${active}" data-side="${side}" data-panel="${c.key}">
+          ${WarehouseApp._buildGridHTML(byCat[c.key], side, c.key)}
+        </section>
+      `;
+    }).join("");
 
-    // Tabs + Panels
-    const tabButtons = WarehouseApp.CATEGORIES.map((c, idx) => `
-      <button type="button"
-              class="oni-tab ${idx === 0 ? "active" : ""}"
-              data-side="${side}"
-              data-tab="${c.key}">
-        ${c.label}
-      </button>
-    `).join("");
-
-    const tabPanels = WarehouseApp.CATEGORIES.map((c, idx) => `
-      <section class="oni-panel ${idx === 0 ? "active" : ""}" data-side="${side}" data-panel="${c.key}">
-        ${WarehouseApp._buildGridHTML(byCat[c.key], side, c.key)}
-      </section>
-    `).join("");
-
-    // Actor-only zenit controls (plan)
     const deposit = Number(payload?.plan?.zenit?.depositToStorage ?? 0);
     const withdraw = Number(payload?.plan?.zenit?.withdrawFromStorage ?? 0);
 
@@ -214,7 +241,7 @@ export class WarehouseApp {
           <input class="wh-input-withdraw" type="number" min="0" step="1" value="${withdraw}">
         </div>
       </div>
-      <div class="wh-hint">Drag & Drop comes next. For now: UI preview only.</div>
+      <div class="wh-hint">Drag & Drop is active. Transfers are still “planned” until Confirm.</div>
     ` : `
       <div class="wh-hint">Planned transfers are not committed until Confirm.</div>
     `;
@@ -244,9 +271,8 @@ export class WarehouseApp {
     const storagePanel = WarehouseApp._buildPanelHTML(payload, "storage");
 
     return `
-      <div class="wh-root" data-payload-id="${WarehouseApp._escapeHtml(payload?.meta?.payloadId ?? "")}">
+      <div class="wh-root">
         <style>
-          /* Overall layout */
           .wh-root { display: flex; gap: 12px; user-select: none; }
           .wh-panel {
             width: 420px;
@@ -267,7 +293,6 @@ export class WarehouseApp {
           .wh-zenit { font-size: 13px; opacity: 0.9; }
           .wh-zenit b { font-size: 14px; }
 
-          /* ===== Demo-style tabs ===== */
           .oni-tabs {
             display: grid;
             grid-template-columns: repeat(4, 1fr);
@@ -298,7 +323,6 @@ export class WarehouseApp {
           .oni-panel { display: none; }
           .oni-panel.active { display: block; }
 
-          /* ===== Demo-style 7x7 grid ===== */
           .oni-grid {
             display: grid;
             grid-template-columns: repeat(7, 44px);
@@ -324,7 +348,6 @@ export class WarehouseApp {
             cursor: pointer;
             background: rgba(255,255,255,0.65);
           }
-
           .oni-inv-slot.oni-item:hover {
             outline: 2px solid rgba(255,255,255,0.9);
             box-shadow: 0 0 0 2px rgba(0,0,0,0.12) inset;
@@ -357,9 +380,7 @@ export class WarehouseApp {
             line-height: 1;
             pointer-events: none;
           }
-          .oni-qty.oni-zero { background: rgba(120,0,0,0.78); }
 
-          /* Zenit controls */
           .wh-zenit-controls { display:flex; gap: 10px; margin-top: 10px; }
           .wh-field { flex: 1; display:flex; flex-direction:column; gap: 4px; }
           .wh-field label { font-size: 12px; opacity: 0.85; }
@@ -373,7 +394,7 @@ export class WarehouseApp {
           }
           .wh-hint { margin-top: 8px; font-size: 12px; opacity: 0.75; }
 
-          /* Tooltip (fixed: color!) */
+          /* Tooltip */
           .oni-tooltip {
             position: fixed;
             z-index: 100000;
@@ -382,28 +403,21 @@ export class WarehouseApp {
             border-radius: 10px;
             border: 1px solid rgba(0,0,0,0.25);
             background: rgba(20,20,20,0.92);
-            color: #ffffff; /* IMPORTANT FIX */
+            color: #ffffff;
             box-shadow: 0 10px 25px rgba(0,0,0,0.35);
             display: none;
             pointer-events: none;
           }
-          .oni-tooltip .t-name {
-            font-weight: 900;
-            margin-bottom: 6px;
-            font-size: 13px;
-          }
-          .oni-tooltip .t-desc {
-            font-size: 12px;
-            opacity: 0.95;
-          }
-          .oni-tooltip .t-desc p { margin: 0 0 6px 0; }
-          .oni-tooltip .t-desc ul { margin: 0 0 6px 18px; }
+          .oni-tooltip .t-name { font-weight: 900; margin-bottom: 6px; font-size: 13px; }
+          .oni-tooltip .t-desc { font-size: 12px; opacity: 0.95; }
+
+          /* Ghost */
+          .wh-ghost { filter: drop-shadow(0 10px 18px rgba(0,0,0,0.35)); }
         </style>
 
         ${actorPanel}
         ${storagePanel}
 
-        <!-- shared tooltip -->
         <div class="oni-tooltip" id="whTooltip">
           <div class="t-name"></div>
           <div class="t-desc"></div>
@@ -412,19 +426,41 @@ export class WarehouseApp {
     `;
   }
 
-  static _bindTabs(root) {
+  // --- RERENDER: rebuild wh-root content, keep active tabs
+  static rerender(payload) {
+    const dlg = payload.ui?.dialogApp;
+    const el = dlg?.element?.[0];
+    if (!el) return;
+
+    const oldRoot = el.querySelector(".wh-root");
+    if (!oldRoot) return;
+
+    WarehouseDebug.log(payload, "UI", "Rerender UI (planning change)", {
+      moves: payload.plan?.itemMoves?.length ?? 0,
+      zenitPlan: payload.plan?.zenit
+    });
+
+    oldRoot.outerHTML = this._buildHtml(payload);
+
+    // Rebind everything on the new DOM
+    const newRoot = el.querySelector(".wh-root");
+    this._bindAll({ 0: newRoot }, payload);
+  }
+
+  static _bindTabs(root, payload) {
     const tabBtns = [...root.querySelectorAll(".oni-tab")];
     const panels = [...root.querySelectorAll(".oni-panel")];
 
     const activateTab = (side, key) => {
+      payload.ui.activeTab = payload.ui.activeTab ?? { actor: "weapon", storage: "weapon" };
+      payload.ui.activeTab[side] = key;
+
       for (const b of tabBtns) {
-        const sameSide = b.dataset.side === side;
-        if (!sameSide) continue;
+        if (b.dataset.side !== side) continue;
         b.classList.toggle("active", b.dataset.tab === key);
       }
       for (const p of panels) {
-        const sameSide = p.dataset.side === side;
-        if (!sameSide) continue;
+        if (p.dataset.side !== side) continue;
         p.classList.toggle("active", p.dataset.panel === key);
       }
     };
@@ -463,10 +499,8 @@ export class WarehouseApp {
       const nameEsc = slot.dataset.itemName ?? "Item";
       const descEsc = slot.dataset.itemDesc ?? "";
 
-      // nameEsc is already plain text-safe (escaped), so textContent is fine:
       tipName.textContent = WarehouseApp._decodeHtml(nameEsc) || "Item";
 
-      // descEsc may contain HTML; decode then enrich
       const decodedHtml = WarehouseApp._decodeHtml(descEsc);
       const finalHtml = await WarehouseApp._enrichMaybe(decodedHtml);
       tipDesc.innerHTML = finalHtml || `<em>No description.</em>`;
@@ -474,13 +508,9 @@ export class WarehouseApp {
       tip.style.display = "block";
       moveTip(ev);
 
-      WarehouseDebug.log(payload, "TIP", "Tooltip show", {
-        name: tipName.textContent,
-        hasDesc: !!decodedHtml
-      });
+      WarehouseDebug.log(payload, "TIP", "Tooltip show", { name: tipName.textContent, hasDesc: !!decodedHtml });
     };
 
-    // Demo-style event delegation (works even when grids change / tabs switch)
     root.addEventListener("mouseenter", (ev) => {
       const slot = ev.target.closest(".oni-inv-slot.oni-item");
       if (!slot) return;
@@ -525,18 +555,27 @@ export class WarehouseApp {
     });
   }
 
+  static _bindDnD(root, payload) {
+    WarehouseDnD.init(root, payload, {
+      onChange: () => this.rerender(payload)
+    });
+  }
+
   static _bindAll(htmlObj, payload) {
-    const root = htmlObj?.[0]?.querySelector?.(".wh-root");
+    const root = htmlObj?.[0]?.querySelector?.(".wh-root") ?? htmlObj?.[0];
     if (!root) return;
 
-    this._bindTabs(root);
+    this._bindTabs(root, payload);
     this._bindTooltip(root, payload);
     this._bindZenit(root, payload);
+    this._bindDnD(root, payload);
   }
 
   static async open(payload) {
     payload = WarehousePayloadManager.getOrCreate(payload?.meta?.initial ?? payload ?? {});
-    payload.ui.instanceId = payload.ui.instanceId ?? this._uid();
+    payload.ui.instanceId = payload.ui.instanceId ?? crypto.randomUUID?.() ?? this._uid();
+    payload.ui.activeTab = payload.ui.activeTab ?? { actor: "weapon", storage: "weapon" };
+    payload.plan.itemMoves = payload.plan.itemMoves ?? [];
 
     await WarehouseAPI.resolveContext(payload);
     await WarehouseAPI.buildSnapshot(payload);
@@ -580,7 +619,7 @@ export class WarehouseApp {
         },
         default: "confirm",
         render: (html) => {
-          payload.ui.appId = dlg?.appId ?? payload.ui.appId;
+          payload.ui.dialogApp = dlg; // for rerender
           this._bindAll(html, payload);
         },
         close: () => {
