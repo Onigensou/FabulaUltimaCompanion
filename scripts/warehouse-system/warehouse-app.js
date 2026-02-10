@@ -2,12 +2,9 @@
 // ----------------------------------------------------------------------------
 // ONI Warehouse — UI (Demo-style Tabs + 7x7 Grid + DnD Planning)
 //
-// NEW IN THIS VERSION:
-// - Gate Logic integration (WarehouseGates)
-//   - Validates plan vs snapshot
-//   - Shows gate errors in UI
-//   - Blocks Confirm when gates fail
-//   - Re-validates on every plan change (DnD + Zenit inputs)
+// FIX IN THIS VERSION:
+// - Zenit inputs no longer full-rerender on every keystroke (prevents focus loss / hotbar typing)
+// - Zenit inputs now do a "light refresh": update gate box + confirm enabled/disabled only
 // ----------------------------------------------------------------------------
 
 import { WarehouseDebug } from "./warehouse-debug.js";
@@ -142,12 +139,11 @@ export class WarehouseApp {
         if (it) {
           it.qty = Number(it.qty ?? 0) + qty;
 
-          // ✅ Upgrade meta if missing (prevents white bag / empty tooltip)
+          // Upgrade meta if missing (prevents white bag / empty tooltip)
           if ((!it.img || it.img === "icons/svg/item-bag.svg") && m.itemImg) it.img = m.itemImg;
           if ((!it.desc || String(it.desc).trim() === "") && m.itemDesc) it.desc = this._decodeHtml(m.itemDesc);
 
         } else {
-          // ✅ Create a full preview entry using planned move meta
           map.set(m.itemUuid, {
             itemUuid: m.itemUuid,
             name: m.itemName ?? "Item",
@@ -472,7 +468,6 @@ export class WarehouseApp {
 
     const ok = payload?.gates?.ok !== false;
 
-    // Foundry Dialog renders buttons as <button data-button="confirm">...
     const btn = el.querySelector(`.dialog-buttons button[data-button="confirm"]`);
     if (!btn) return;
 
@@ -481,6 +476,33 @@ export class WarehouseApp {
     btn.title = ok ? "" : "Fix errors above before Confirm";
 
     WarehouseDebug.log(payload, "GATE", "Confirm button state", { enabled: ok });
+  }
+
+  // ✅ Light refresh: only update gate box + confirm enabled/disabled (no full rerender)
+  static _refreshGatesOnly(payload) {
+    const dlg = payload.ui?.dialogApp;
+    const el = dlg?.element?.[0];
+    if (!dlg || !el) return;
+
+    const root = el.querySelector(".wh-root");
+    if (!root) return;
+
+    const existing = root.querySelector(".wh-gatebox");
+    const ok = payload?.gates?.ok !== false;
+
+    if (ok) {
+      if (existing) existing.remove();
+    } else {
+      const html = this._buildGateBox(payload);
+      if (existing) {
+        existing.outerHTML = html;
+      } else {
+        // insert at top of wh-root
+        root.insertAdjacentHTML("afterbegin", html);
+      }
+    }
+
+    this._setConfirmEnabled(payload);
   }
 
   // --- RERENDER: rebuild wh-root content, keep active tabs
@@ -500,11 +522,9 @@ export class WarehouseApp {
 
     oldRoot.outerHTML = this._buildHtml(payload);
 
-    // Rebind everything on the new DOM
     const newRoot = el.querySelector(".wh-root");
     this._bindAll({ 0: newRoot }, payload);
 
-    // Update confirm state
     this._setConfirmEnabled(payload);
   }
 
@@ -597,28 +617,51 @@ export class WarehouseApp {
     const depositEl = root.querySelector(".wh-input-deposit");
     const withdrawEl = root.querySelector(".wh-input-withdraw");
 
-    const clamp0 = (n) => Math.max(0, Number.isFinite(n) ? n : 0);
+    const clamp0Int = (n) => {
+      const v = Math.floor(Number(n));
+      return Number.isFinite(v) ? Math.max(0, v) : 0;
+    };
 
+    // 🔒 Prevent Foundry keybinds / focus leaks while typing
+    const protectInput = (el) => {
+      if (!el) return;
+
+      // stop keyboard events from bubbling to Foundry keybind handlers
+      const stop = (ev) => ev.stopPropagation();
+      el.addEventListener("keydown", stop);
+      el.addEventListener("keyup", stop);
+      el.addEventListener("keypress", stop);
+
+      // also stop mouse down bubbling (helps some clients)
+      el.addEventListener("mousedown", stop);
+    };
+
+    protectInput(depositEl);
+    protectInput(withdrawEl);
+
+    // ✅ On input: update payload + validate + LIGHT refresh only
     depositEl?.addEventListener("input", () => {
-      const v = clamp0(parseInt(depositEl.value ?? "0", 10));
+      const v = clamp0Int(depositEl.value ?? 0);
       payload.plan.zenit.depositToStorage = v;
       payload.plan.zenit.lastEditedAt = Date.now();
       payload.plan.zenit.lastEditedBy = payload.ctx.userId;
+
       WarehouseDebug.log(payload, "ZENIT", "Deposit changed", { depositToStorage: v });
 
       WarehouseGates.validate(payload);
-      this.rerender(payload);
+      this._refreshGatesOnly(payload);
     });
 
     withdrawEl?.addEventListener("input", () => {
-      const v = clamp0(parseInt(withdrawEl.value ?? "0", 10));
+      const v = clamp0Int(withdrawEl.value ?? 0);
       payload.plan.zenit.withdrawFromStorage = v;
       payload.plan.zenit.lastEditedAt = Date.now();
       payload.plan.zenit.lastEditedBy = payload.ctx.userId;
+
       WarehouseDebug.log(payload, "ZENIT", "Withdraw changed", { withdrawFromStorage: v });
 
       WarehouseGates.validate(payload);
-      this.rerender(payload);
+      this._refreshGatesOnly(payload);
     });
   }
 
@@ -626,7 +669,7 @@ export class WarehouseApp {
     WarehouseDnD.init(root, payload, {
       onChange: () => {
         WarehouseGates.validate(payload);
-        this.rerender(payload);
+        this.rerender(payload); // DnD planning changes still do full rerender
       }
     });
   }
@@ -651,14 +694,7 @@ export class WarehouseApp {
     await WarehouseAPI.resolveContext(payload);
     await WarehouseAPI.buildSnapshot(payload);
 
-    // ✅ Validate gates after snapshot is available
     WarehouseGates.validate(payload);
-
-    if (payload?.gates?.ok === false) {
-      WarehouseDebug.warn(payload, "GATE", "Opening UI with gates failing (expected if plan invalid)", {
-        errors: payload.gates.errors?.length ?? 0
-      });
-    }
 
     payload.ui.renderCount = (payload.ui.renderCount ?? 0) + 1;
     const content = this._buildHtml(payload);
@@ -682,9 +718,7 @@ export class WarehouseApp {
               if (payload.gates?.ok === false) {
                 ui.notifications?.error?.("Warehouse: Fix errors before Confirm.");
                 WarehouseDebug.warn(payload, "GATE", "Confirm blocked", { errors: payload.gates?.errors });
-                // Keep dialog open by returning false is not supported in Dialog callback,
-                // but we simply do nothing else here.
-                this.rerender(payload);
+                this._refreshGatesOnly(payload);
                 return;
               }
 
