@@ -2,7 +2,7 @@
   "id": "fabula-ultima-companion",
   "title": "FabulaUltimaCompanion",
   "description": "Adds custom hooks and cool functionality.",
-  "version": "1.0.294",
+  "version": "1.0.295",
   "compatibility": {
     "minimum": "12",
     "verified": "12"
@@ -84,11 +84,12 @@
     "scripts/warehouse-system/warehouse-debug.js",
     "scripts/warehouse-system/warehouse-payloadManager.js",
     "scripts/warehouse-system/warehouse-api.js",
-    "scripts/warehouse-system/warehouse-app.js"
+    "scripts/warehouse-system/warehouse-app.js",
+    "scripts/warehouse-system/warehouse-dnd.js"
   ],
   
   "styles": ["styles/style.css"],
   "packs": [],
   "manifest": "https://raw.githubusercontent.com/Onigensou/FabulaUltimaCompanion/refs/heads/main/module.json",
-  "download": "https://codeload.github.com/Onigensou/FabulaUltimaCompanion/zip/refs/tags/v1.0.294"
+  "download": "https://codeload.github.com/Onigensou/FabulaUltimaCompanion/zip/refs/tags/v1.0.295"
 }
