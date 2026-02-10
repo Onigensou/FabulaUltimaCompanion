@@ -6,7 +6,7 @@
 // - Stores payload globally: globalThis.__WAREHOUSE_PAYLOAD
 // ----------------------------------------------------------------------------
 
-import { WarehouseDebug } from "./Debug.js";
+import { WarehouseDebug } from "./warehouse-debug.js";
 
 export class WarehousePayloadManager {
   static GLOBAL_KEY = "__WAREHOUSE_PAYLOAD";
