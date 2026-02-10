@@ -1,24 +1,20 @@
 // scripts/warehouse-system/warehouse-app.js
 // ----------------------------------------------------------------------------
 // ONI Warehouse — UI (Demo-style Tabs + 7x7 Grid + DnD Planning)
-// - 2 panels: Actor | Storage
-// - Each panel has tabs (by item_type) + 7x7 grid
-// - Tooltip + DnD ghost + quantity prompt
-// - Planned moves stored in payload.plan.itemMoves[]
-// - UI rerenders to reflect planning changes (still not committed)
 //
-// PATCH NOTES (this update):
-// - Fix: Planned move preview no longer loses icon/desc (white bag issue)
-//   by preserving itemImg/itemDesc in planned moves and using them during
-//   virtualization when the destination side doesn't already have the item.
-// - Fix: If destination already has the item but is missing img/desc, we "upgrade"
-//   it from planned move meta.
+// NEW IN THIS VERSION:
+// - Gate Logic integration (WarehouseGates)
+//   - Validates plan vs snapshot
+//   - Shows gate errors in UI
+//   - Blocks Confirm when gates fail
+//   - Re-validates on every plan change (DnD + Zenit inputs)
 // ----------------------------------------------------------------------------
 
 import { WarehouseDebug } from "./warehouse-debug.js";
 import { WarehouseAPI } from "./warehouse-api.js";
 import { WarehousePayloadManager } from "./warehouse-payloadManager.js";
 import { WarehouseDnD } from "./warehouse-dnd.js";
+import { WarehouseGates } from "./warehouse-gates.js";
 
 export class WarehouseApp {
   static APP_FLAG = "ONI_WAREHOUSE_APP_OPEN";
@@ -123,7 +119,6 @@ export class WarehouseApp {
     const list = side === "actor" ? (payload.snapshot.actorItems ?? []) : (payload.snapshot.storageItems ?? []);
     const moves = payload.plan?.itemMoves ?? [];
 
-    // Map uuid -> record
     const map = new Map();
     for (const raw of list) {
       if (!WarehouseApp._isWarehouseItem(raw)) continue;
@@ -132,7 +127,6 @@ export class WarehouseApp {
       map.set(it.itemUuid, { ...it });
     }
 
-    // Apply deltas
     for (const m of moves) {
       const qty = Number(m.qty ?? 0);
       if (!m.itemUuid || qty <= 0) continue;
@@ -140,7 +134,6 @@ export class WarehouseApp {
       if (m.from === side) {
         const it = map.get(m.itemUuid);
         if (it) it.qty = Math.max(0, Number(it.qty ?? 0) - qty);
-        // if missing, ignore
       }
 
       if (m.to === side) {
@@ -149,7 +142,7 @@ export class WarehouseApp {
         if (it) {
           it.qty = Number(it.qty ?? 0) + qty;
 
-          // ✅ Upgrade meta if missing (prevents "white bag" and empty tooltip)
+          // ✅ Upgrade meta if missing (prevents white bag / empty tooltip)
           if ((!it.img || it.img === "icons/svg/item-bag.svg") && m.itemImg) it.img = m.itemImg;
           if ((!it.desc || String(it.desc).trim() === "") && m.itemDesc) it.desc = this._decodeHtml(m.itemDesc);
 
@@ -161,14 +154,12 @@ export class WarehouseApp {
             img: m.itemImg ?? "icons/svg/item-bag.svg",
             type: m.itemType ?? "misc",
             qty,
-            // planned desc is stored escaped in dataset sometimes; decode to keep tooltips correct
             desc: m.itemDesc ? this._decodeHtml(m.itemDesc) : ""
           });
         }
       }
     }
 
-    // Remove qty 0
     return [...map.values()].filter(it => Number(it.qty ?? 0) > 0);
   }
 
@@ -220,7 +211,6 @@ export class WarehouseApp {
       isActor ? (payload?.snapshot?.actorZenit ?? 0) : (payload?.snapshot?.storageZenit ?? 0)
     );
 
-    // Use virtualized list so UI reflects plan
     const virtualList = WarehouseApp._virtualizeList(payload, side);
     const byCat = WarehouseApp._groupByCategory(virtualList);
 
@@ -281,14 +271,33 @@ export class WarehouseApp {
     `;
   }
 
+  static _buildGateBox(payload) {
+    const ok = payload?.gates?.ok !== false;
+    if (ok) return "";
+
+    const errs = (payload.gates?.errors ?? []).slice(0, 6);
+    const items = errs.map(e => `<li>${this._escapeHtml(e.msg ?? "Gate error")}</li>`).join("");
+
+    return `
+      <div class="wh-gatebox">
+        <div class="wh-gatebox-title">Cannot Confirm</div>
+        <ul class="wh-gatebox-list">${items}</ul>
+      </div>
+    `;
+  }
+
   static _buildHtml(payload) {
+    const gateBox = WarehouseApp._buildGateBox(payload);
+
     const actorPanel = WarehouseApp._buildPanelHTML(payload, "actor");
     const storagePanel = WarehouseApp._buildPanelHTML(payload, "storage");
 
     return `
       <div class="wh-root">
         <style>
-          .wh-root { display: flex; gap: 12px; user-select: none; }
+          .wh-root { display: flex; gap: 12px; user-select: none; flex-direction: column; }
+          .wh-row { display:flex; gap: 12px; }
+
           .wh-panel {
             width: 420px;
             border: 1px solid rgba(255,255,255,0.15);
@@ -409,6 +418,17 @@ export class WarehouseApp {
           }
           .wh-hint { margin-top: 8px; font-size: 12px; opacity: 0.75; }
 
+          /* Gate box */
+          .wh-gatebox {
+            padding: 10px 12px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 80, 80, 0.35);
+            background: rgba(140, 0, 0, 0.20);
+            color: rgba(255,255,255,0.92);
+          }
+          .wh-gatebox-title { font-weight: 900; margin-bottom: 6px; }
+          .wh-gatebox-list { margin: 0 0 0 18px; padding: 0; }
+
           /* Tooltip */
           .oni-tooltip {
             position: fixed;
@@ -430,8 +450,12 @@ export class WarehouseApp {
           .wh-ghost { filter: drop-shadow(0 10px 18px rgba(0,0,0,0.35)); }
         </style>
 
-        ${actorPanel}
-        ${storagePanel}
+        ${gateBox}
+
+        <div class="wh-row">
+          ${actorPanel}
+          ${storagePanel}
+        </div>
 
         <div class="oni-tooltip" id="whTooltip">
           <div class="t-name"></div>
@@ -439,6 +463,24 @@ export class WarehouseApp {
         </div>
       </div>
     `;
+  }
+
+  static _setConfirmEnabled(payload) {
+    const dlg = payload.ui?.dialogApp;
+    const el = dlg?.element?.[0];
+    if (!dlg || !el) return;
+
+    const ok = payload?.gates?.ok !== false;
+
+    // Foundry Dialog renders buttons as <button data-button="confirm">...
+    const btn = el.querySelector(`.dialog-buttons button[data-button="confirm"]`);
+    if (!btn) return;
+
+    btn.disabled = !ok;
+    btn.classList.toggle("wh-disabled", !ok);
+    btn.title = ok ? "" : "Fix errors above before Confirm";
+
+    WarehouseDebug.log(payload, "GATE", "Confirm button state", { enabled: ok });
   }
 
   // --- RERENDER: rebuild wh-root content, keep active tabs
@@ -452,7 +494,8 @@ export class WarehouseApp {
 
     WarehouseDebug.log(payload, "UI", "Rerender UI (planning change)", {
       moves: payload.plan?.itemMoves?.length ?? 0,
-      zenitPlan: payload.plan?.zenit
+      zenitPlan: payload.plan?.zenit,
+      gatesOk: payload.gates?.ok
     });
 
     oldRoot.outerHTML = this._buildHtml(payload);
@@ -460,6 +503,9 @@ export class WarehouseApp {
     // Rebind everything on the new DOM
     const newRoot = el.querySelector(".wh-root");
     this._bindAll({ 0: newRoot }, payload);
+
+    // Update confirm state
+    this._setConfirmEnabled(payload);
   }
 
   static _bindTabs(root, payload) {
@@ -559,6 +605,9 @@ export class WarehouseApp {
       payload.plan.zenit.lastEditedAt = Date.now();
       payload.plan.zenit.lastEditedBy = payload.ctx.userId;
       WarehouseDebug.log(payload, "ZENIT", "Deposit changed", { depositToStorage: v });
+
+      WarehouseGates.validate(payload);
+      this.rerender(payload);
     });
 
     withdrawEl?.addEventListener("input", () => {
@@ -567,12 +616,18 @@ export class WarehouseApp {
       payload.plan.zenit.lastEditedAt = Date.now();
       payload.plan.zenit.lastEditedBy = payload.ctx.userId;
       WarehouseDebug.log(payload, "ZENIT", "Withdraw changed", { withdrawFromStorage: v });
+
+      WarehouseGates.validate(payload);
+      this.rerender(payload);
     });
   }
 
   static _bindDnD(root, payload) {
     WarehouseDnD.init(root, payload, {
-      onChange: () => this.rerender(payload)
+      onChange: () => {
+        WarehouseGates.validate(payload);
+        this.rerender(payload);
+      }
     });
   }
 
@@ -591,13 +646,18 @@ export class WarehouseApp {
     payload.ui.instanceId = payload.ui.instanceId ?? crypto.randomUUID?.() ?? this._uid();
     payload.ui.activeTab = payload.ui.activeTab ?? { actor: "weapon", storage: "weapon" };
     payload.plan.itemMoves = payload.plan.itemMoves ?? [];
+    payload.plan.zenit = payload.plan.zenit ?? { depositToStorage: 0, withdrawFromStorage: 0 };
 
     await WarehouseAPI.resolveContext(payload);
     await WarehouseAPI.buildSnapshot(payload);
 
+    // ✅ Validate gates after snapshot is available
+    WarehouseGates.validate(payload);
+
     if (payload?.gates?.ok === false) {
-      WarehouseDebug.warn(payload, "UI", "Not opening UI because gates.ok=false", { errors: payload.gates.errors });
-      return payload;
+      WarehouseDebug.warn(payload, "GATE", "Opening UI with gates failing (expected if plan invalid)", {
+        errors: payload.gates.errors?.length ?? 0
+      });
     }
 
     payload.ui.renderCount = (payload.ui.renderCount ?? 0) + 1;
@@ -617,6 +677,17 @@ export class WarehouseApp {
             icon: '<i class="fas fa-check"></i>',
             label: "Confirm",
             callback: () => {
+              WarehouseGates.validate(payload);
+
+              if (payload.gates?.ok === false) {
+                ui.notifications?.error?.("Warehouse: Fix errors before Confirm.");
+                WarehouseDebug.warn(payload, "GATE", "Confirm blocked", { errors: payload.gates?.errors });
+                // Keep dialog open by returning false is not supported in Dialog callback,
+                // but we simply do nothing else here.
+                this.rerender(payload);
+                return;
+              }
+
               WarehouseDebug.log(payload, "UI", "Confirm pressed (placeholder)", {
                 plannedMoves: payload.plan?.itemMoves?.length ?? 0,
                 zenitPlan: payload.plan?.zenit
@@ -634,8 +705,9 @@ export class WarehouseApp {
         },
         default: "confirm",
         render: (html) => {
-          payload.ui.dialogApp = dlg; // for rerender
+          payload.ui.dialogApp = dlg;
           this._bindAll(html, payload);
+          this._setConfirmEnabled(payload);
         },
         close: () => {
           WarehouseDebug.log(payload, "UI", "Dialog closed", { instanceId: payload.ui.instanceId });
