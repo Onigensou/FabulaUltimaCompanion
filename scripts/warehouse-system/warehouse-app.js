@@ -6,6 +6,13 @@
 // - Tooltip + DnD ghost + quantity prompt
 // - Planned moves stored in payload.plan.itemMoves[]
 // - UI rerenders to reflect planning changes (still not committed)
+//
+// PATCH NOTES (this update):
+// - Fix: Planned move preview no longer loses icon/desc (white bag issue)
+//   by preserving itemImg/itemDesc in planned moves and using them during
+//   virtualization when the destination side doesn't already have the item.
+// - Fix: If destination already has the item but is missing img/desc, we "upgrade"
+//   it from planned move meta.
 // ----------------------------------------------------------------------------
 
 import { WarehouseDebug } from "./warehouse-debug.js";
@@ -135,18 +142,27 @@ export class WarehouseApp {
         if (it) it.qty = Math.max(0, Number(it.qty ?? 0) - qty);
         // if missing, ignore
       }
+
       if (m.to === side) {
         const it = map.get(m.itemUuid);
-        if (it) it.qty = Number(it.qty ?? 0) + qty;
-        else {
-          // Create a lightweight entry so it appears in destination
+
+        if (it) {
+          it.qty = Number(it.qty ?? 0) + qty;
+
+          // ✅ Upgrade meta if missing (prevents "white bag" and empty tooltip)
+          if ((!it.img || it.img === "icons/svg/item-bag.svg") && m.itemImg) it.img = m.itemImg;
+          if ((!it.desc || String(it.desc).trim() === "") && m.itemDesc) it.desc = this._decodeHtml(m.itemDesc);
+
+        } else {
+          // ✅ Create a full preview entry using planned move meta
           map.set(m.itemUuid, {
             itemUuid: m.itemUuid,
             name: m.itemName ?? "Item",
             img: m.itemImg ?? "icons/svg/item-bag.svg",
             type: m.itemType ?? "misc",
             qty,
-            desc: m.itemDesc ?? ""
+            // planned desc is stored escaped in dataset sometimes; decode to keep tooltips correct
+            desc: m.itemDesc ? this._decodeHtml(m.itemDesc) : ""
           });
         }
       }
@@ -162,14 +178,13 @@ export class WarehouseApp {
 
     for (let idx = 0; idx < WarehouseApp.SLOTS; idx++) {
       const it = shown[idx];
+
       if (!it) {
         cells.push(`<div class="oni-inv-slot oni-empty" data-side="${side}" data-cat="${catKey}" data-idx="${idx}"></div>`);
         continue;
       }
 
-      const qtyBadge = (it.qty > 1)
-        ? `<div class="oni-qty">${it.qty}</div>`
-        : ``;
+      const qtyBadge = (it.qty > 1) ? `<div class="oni-qty">${it.qty}</div>` : ``;
 
       const nameEsc = WarehouseApp._escapeHtml(it.name);
       const descEsc = WarehouseApp._escapeHtml(it.desc);
