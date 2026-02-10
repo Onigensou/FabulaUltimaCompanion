@@ -12,6 +12,7 @@ import { WarehouseAPI } from "./warehouse-api.js";
 import { WarehousePayloadManager } from "./warehouse-payloadManager.js";
 import { WarehouseDnD } from "./warehouse-dnd.js";
 import { WarehouseGates } from "./warehouse-gates.js";
+import { WarehouseCommit } from "./warehouse-commit.js";
 
 export class WarehouseApp {
   static APP_FLAG = "ONI_WAREHOUSE_APP_OPEN";
@@ -712,22 +713,24 @@ export class WarehouseApp {
           confirm: {
             icon: '<i class="fas fa-check"></i>',
             label: "Confirm",
-            callback: () => {
-              WarehouseGates.validate(payload);
+           callback: async () => {
+  WarehouseGates.validate(payload);
 
-              if (payload.gates?.ok === false) {
-                ui.notifications?.error?.("Warehouse: Fix errors before Confirm.");
-                WarehouseDebug.warn(payload, "GATE", "Confirm blocked", { errors: payload.gates?.errors });
-                this._refreshGatesOnly(payload);
-                return;
-              }
+  if (payload.gates?.ok === false) {
+    ui.notifications?.error?.("Warehouse: Fix errors before Confirm.");
+    WarehouseDebug.warn(payload, "GATE", "Confirm blocked", { errors: payload.gates?.errors });
+    this._refreshGatesOnly(payload);
+    return;
+  }
 
-              WarehouseDebug.log(payload, "UI", "Confirm pressed (placeholder)", {
-                plannedMoves: payload.plan?.itemMoves?.length ?? 0,
-                zenitPlan: payload.plan?.zenit
-              });
-              ui.notifications?.info?.("Warehouse: Confirm (placeholder). Commit stage comes next.");
-            }
+  WarehouseDebug.log(payload, "UI", "Confirm pressed → committing", {
+    plannedMoves: payload.plan?.itemMoves?.length ?? 0,
+    zenitPlan: payload.plan?.zenit
+  });
+
+  // ✅ Commit (Items + Zenit), then snapshot refresh + plan clear happens inside commit script
+  await WarehouseCommit.commit(payload, this);
+}
           },
           cancel: {
             icon: '<i class="fas fa-times"></i>',
