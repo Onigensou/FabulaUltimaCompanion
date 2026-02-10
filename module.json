@@ -83,7 +83,8 @@
     "scripts/shop-system/shopOpen-bootstrap.js",
     "scripts/warehouse-system/warehouse-debug.js",
     "scripts/warehouse-system/warehouse-payloadManager.js",
-    "scripts/warehouse-system/warehouse-api.js"
+    "scripts/warehouse-system/warehouse-api.js",
+    "scripts/warehouse-system/warehouse-app.js"
   ],
   
   "styles": ["styles/style.css"],
