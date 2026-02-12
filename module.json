@@ -2,7 +2,7 @@
   "id": "fabula-ultima-companion",
   "title": "FabulaUltimaCompanion",
   "description": "Adds custom hooks and cool functionality.",
-  "version": "1.0.306",
+  "version": "1.0.309",
   "compatibility": {
     "minimum": "12",
     "verified": "12"
@@ -76,8 +76,7 @@
   "scripts/fabula-initiative/fabula-initiative-round-announcer.js",
   "scripts/gacha-system/gacha-socket-banner.js",
   "scripts/treasure-chest-system/treasureChest-configUI.js",
-  "scripts/treasure-chest-system/treasureChest-core.js",
-  "scripts/idle-animation/idle-animation-bootstrap.js"
+  "scripts/treasure-chest-system/treasureChest-core.js"
 ],
 
   "esmodules": [
@@ -88,11 +87,13 @@
     "scripts/warehouse-system/warehouse-app.js",
     "scripts/warehouse-system/warehouse-dnd.js",
     "scripts/warehouse-system/warehouse-gates.js",
-    "scripts/warehouse-system/warehouse-commit.js"
+    "scripts/warehouse-system/warehouse-commit.js",
+    "scripts/idle-animation/idle-animation-logic.js",
+    "scripts/idle-animation/idle-animation-ui.js"
   ],
   
   "styles": ["styles/style.css"],
   "packs": [],
   "manifest": "https://raw.githubusercontent.com/Onigensou/FabulaUltimaCompanion/refs/heads/main/module.json",
-  "download": "https://codeload.github.com/Onigensou/FabulaUltimaCompanion/zip/refs/tags/v1.0.306"
+  "download": "https://codeload.github.com/Onigensou/FabulaUltimaCompanion/zip/refs/tags/v1.0.309"
 }
