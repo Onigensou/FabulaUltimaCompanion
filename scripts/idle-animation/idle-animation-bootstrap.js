@@ -2,16 +2,14 @@
  * fabula-ultima-companion — Idle Animation System (BOOTSTRAP)
  * Loaded via module.json "scripts" (no imports)
  *
- * Features:
- * - Inject "Idle Animation" tab into TokenConfig
- * - Two booleans saved via token flags when user clicks "Update Token":
- *   flags.fabula-ultima-companion.idleAnim.float
- *   flags.fabula-ultima-companion.idleAnim.bounce
- * - Applies animations for all clients (token updates sync automatically)
+ * Fixes & upgrades:
+ * - FIX: TokenConfig tab no longer "bounces" back to Identity after first use
+ *        (we do NOT re-initialize Tabs with forced initial="identity")
+ * - CHANGE: settings are persisted on the *Actor* flags (so respawned tokens keep it)
+ * - NEW: when a new Token for the actor is spawned, apply idle animation immediately
  *
- * Notes:
- * - Float uses TokenMagic if present (safe no-op if missing)
- * - Bounce uses PIXI mesh ticker (no dependencies)
+ * Debugging:
+ * - Set `globalThis.ONI_IDLE_ANIM_DEBUG = true` in console to enable verbose logs.
  */
 
 (() => {
@@ -21,12 +19,51 @@
   const GROUP = "main";
   const FLOAT_FILTER_ID = "oniIdleFloat";
 
+  // Toggle at runtime: globalThis.ONI_IDLE_ANIM_DEBUG = true/false
+  const isDebug = () => !!globalThis.ONI_IDLE_ANIM_DEBUG;
+  const dlog = (...args) => {
+    if (isDebug()) console.log(TAG, ...args);
+  };
+
   // ---------------------------
-  // Helpers: flags
+  // Flags: Actor persisted, Token mirrored (compat)
   // ---------------------------
-  function readFlags(doc) {
-    const f = doc?.flags?.[MODULE_ID]?.idleAnim ?? {};
-    return { float: !!f.float, bounce: !!f.bounce };
+  const FLAG_PATH = "idleAnim"; // flags[MODULE_ID].idleAnim
+
+  function readIdleAnimSettings(tokenDoc) {
+    // Token flags (legacy / per-token override)
+    const tf = tokenDoc?.flags?.[MODULE_ID]?.[FLAG_PATH];
+    const tokenHasAny =
+      tf && (typeof tf.float !== "undefined" || typeof tf.bounce !== "undefined");
+
+    // Actor flags (persisted)
+    const af = tokenDoc?.actor?.flags?.[MODULE_ID]?.[FLAG_PATH];
+
+    const src = tokenHasAny ? "token" : "actor";
+    const f = tokenHasAny ? tf : af;
+
+    const out = { float: !!f?.float, bounce: !!f?.bounce, source: src };
+    dlog("readIdleAnimSettings", { tokenId: tokenDoc?.id, actorId: tokenDoc?.actor?.id, ...out });
+    return out;
+  }
+
+  async function writeActorIdleAnimSettings(actor, settings) {
+    if (!actor) return;
+    try {
+      const prev = actor.flags?.[MODULE_ID]?.[FLAG_PATH] ?? {};
+      const next = { ...prev, float: !!settings.float, bounce: !!settings.bounce };
+
+      // Skip no-op writes
+      if (prev.float === next.float && prev.bounce === next.bounce) {
+        dlog("writeActorIdleAnimSettings: no-op", { actorId: actor.id, next });
+        return;
+      }
+
+      dlog("writeActorIdleAnimSettings: setFlag", { actorId: actor.id, next });
+      await actor.setFlag(MODULE_ID, FLAG_PATH, next);
+    } catch (err) {
+      console.error(`${TAG} Failed writing actor flags`, err);
+    }
   }
 
   // ---------------------------
@@ -97,6 +134,7 @@
       phaseOffsetMs
     });
 
+    dlog("startBounce", { tokenId: token.id });
     ensureBounceTicker();
   }
 
@@ -110,6 +148,7 @@
       token.mesh.scale.set(st.original.scaleX, st.original.scaleY);
     }
     g.active.delete(token.id);
+    dlog("stopBounce", { tokenId: token.id });
   }
 
   // ---------------------------
@@ -139,6 +178,7 @@
 
     try {
       if (enabled) {
+        dlog("applyFloat: enable", { tokenId: token?.id });
         if (typeof tm.addUpdateFilters === "function") {
           await tm.addUpdateFilters(token, params);
         } else if (typeof tm.addUpdateFiltersOnSelected === "function") {
@@ -150,7 +190,7 @@
           console.warn(`${TAG} TokenMagic API not recognized; cannot apply Float.`);
         }
       } else {
-        // remove only OUR filterId (don't break other effects)
+        dlog("applyFloat: disable", { tokenId: token?.id });
         if (typeof tm.deleteFilters === "function") {
           await tm.deleteFilters(token, FLOAT_FILTER_ID);
         } else if (typeof tm.deleteFiltersOnToken === "function") {
@@ -170,14 +210,16 @@
   }
 
   // ---------------------------
-  // Apply from token doc
+  // Apply from token doc (read settings from actor/token)
   // ---------------------------
-  async function applyFromDoc(doc) {
+  async function applyFromDoc(doc, reason = "unknown") {
     if (!canvas?.ready) return;
     const token = canvas.tokens?.get(doc.id);
     if (!token) return;
 
-    const { float, bounce } = readFlags(doc);
+    const { float, bounce, source } = readIdleAnimSettings(doc);
+
+    dlog("applyFromDoc", { reason, tokenId: doc.id, actorId: doc.actor?.id, float, bounce, source });
 
     if (bounce) startBounce(token);
     else stopBounce(token);
@@ -185,10 +227,12 @@
     await applyFloat(token, float);
   }
 
-  async function applyAllOnCanvas() {
+  async function applyAllOnCanvas(reason = "applyAll") {
     if (!canvas?.ready) return;
+    dlog("applyAllOnCanvas", { reason, count: canvas.tokens?.placeables?.length ?? 0 });
+
     for (const token of canvas.tokens?.placeables ?? []) {
-      await applyFromDoc(token.document);
+      await applyFromDoc(token.document, reason);
     }
   }
 
@@ -203,15 +247,55 @@
   }
 
   function ensureTabContentRoot($html) {
-    const $existingTabs = $html.find('.tab[data-group="main"]');
+    const $existingTabs = $html.find(`.tab[data-group="${GROUP}"]`);
     if ($existingTabs.length) return $existingTabs.first().parent();
     const $form = $html.find("form");
     return $form.length ? $form : null;
   }
 
+  // IMPORTANT: DO NOT create a new Tabs() controller here.
+  // TokenConfig already has its own tabs controller; recreating it can cause
+  // weird behavior like the tab snapping back to "identity".
+  function rebindFoundryTabsIfPossible(app, $html) {
+    const root = $html?.[0];
+    if (!root) return;
+
+    const candidates = [];
+
+    if (app?._tabs) {
+      if (Array.isArray(app._tabs)) candidates.push(...app._tabs);
+      else if (typeof app._tabs === "object") {
+        if (app._tabs[GROUP]) candidates.push(app._tabs[GROUP]);
+        if (app._tabs.tabs?.[GROUP]) candidates.push(app._tabs.tabs[GROUP]);
+        for (const v of Object.values(app._tabs)) candidates.push(v);
+      }
+    }
+
+    const seen = new Set();
+    for (const t of candidates) {
+      if (!t || seen.has(t)) continue;
+      seen.add(t);
+
+      if (typeof t.bind === "function") {
+        try {
+          t.bind(root);
+          dlog("rebindFoundryTabsIfPossible: bound existing tabs controller");
+          return;
+        } catch (e) {
+          dlog("rebindFoundryTabsIfPossible: bind failed", e);
+        }
+      }
+    }
+
+    dlog("rebindFoundryTabsIfPossible: no compatible tabs controller found");
+  }
+
   Hooks.on("renderTokenConfig", (app, $html) => {
     try {
       if ($html.find('[data-oni-idle-anim="tab"]').length) return;
+
+      const tokenDoc = app?.object; // TokenDocument
+      dlog("renderTokenConfig", { tokenId: tokenDoc?.id, actorId: tokenDoc?.actor?.id });
 
       const $nav = ensureTabNav($html);
       const $tabRoot = ensureTabContentRoot($html);
@@ -224,21 +308,23 @@
       `);
       $nav.append($btn);
 
-      // IMPORTANT: "name=flags.<moduleId>...." makes Foundry save on Update Token automatically
+      // Bind inputs to Token flags so TokenConfig can submit them.
+      // On updateToken, we propagate them to Actor flags (persistent).
       const $panel = $(`
         <div class="tab" data-tab="${TAB_ID}" data-group="${GROUP}" data-oni-idle-anim="panel">
           <div style="padding: 8px;">
             <h3 style="margin: 0 0 6px 0;">Idle Animation</h3>
             <p class="hint" style="margin: 0 0 12px 0;">
-              Toggle idle animations for this token. Press <b>Update Token</b> to apply.
+              These settings are <b>saved on the Actor</b>. Press <b>Update Token</b> to apply.
             </p>
 
             <div class="form-group">
               <label>Float</label>
               <div class="form-fields">
                 <input type="checkbox"
-                  name="flags.${MODULE_ID}.idleAnim.float"
+                  name="flags.${MODULE_ID}.${FLAG_PATH}.float"
                   data-dtype="Boolean"
+                  data-oni-idle-anim="float"
                 />
               </div>
               <p class="hint">Uses TokenMagic (if installed).</p>
@@ -248,56 +334,104 @@
               <label>Bounce</label>
               <div class="form-fields">
                 <input type="checkbox"
-                  name="flags.${MODULE_ID}.idleAnim.bounce"
+                  name="flags.${MODULE_ID}.${FLAG_PATH}.bounce"
                   data-dtype="Boolean"
+                  data-oni-idle-anim="bounce"
                 />
               </div>
               <p class="hint">Uses a lightweight PIXI mesh bobbing effect.</p>
             </div>
+
+            <hr/>
+
+            <p class="hint" style="margin: 8px 0 0 0;">
+              Debug: set <code>globalThis.ONI_IDLE_ANIM_DEBUG = true</code> in console to see logs.
+            </p>
           </div>
         </div>
       `);
 
       $tabRoot.append($panel);
 
-      // Reinitialize tabs so Foundry recognizes the new tab
-      const rootEl = $html[0];
-      const navEl =
-        rootEl.querySelector('nav.sheet-tabs.tabs[data-group="main"]') ||
-        rootEl.querySelector("nav.sheet-tabs");
+      // Prefill from Actor (or Token override if present)
+      const s = readIdleAnimSettings(tokenDoc);
+      $panel.find('[data-oni-idle-anim="float"]').prop("checked", !!s.float);
+      $panel.find('[data-oni-idle-anim="bounce"]').prop("checked", !!s.bounce);
 
-      if (navEl) {
-        new Tabs({
-          navSelector: navEl,
-          contentSelector: rootEl,
-          initial: "identity"
-        });
-      }
+      rebindFoundryTabsIfPossible(app, $html);
 
-      console.log(`${TAG} Injected Idle Animation tab into TokenConfig.`);
+      dlog("Injected Idle Animation tab into TokenConfig");
     } catch (err) {
       console.error(`${TAG} Failed injecting Idle Animation tab`, err);
     }
   });
 
   // ---------------------------
-  // Hooks: apply when saved & when canvas loads
+  // Hooks: propagate + apply
   // ---------------------------
-  Hooks.on("updateToken", async (doc) => {
+  Hooks.on("updateToken", async (doc, change) => {
     try {
-      await applyFromDoc(doc);
+      // If our flags changed on the Token, mirror them to the Actor flags
+      const changed = change?.flags?.[MODULE_ID]?.[FLAG_PATH];
+
+      if (changed && doc?.actor) {
+        const float =
+          typeof changed.float === "undefined"
+            ? doc.flags?.[MODULE_ID]?.[FLAG_PATH]?.float
+            : changed.float;
+
+        const bounce =
+          typeof changed.bounce === "undefined"
+            ? doc.flags?.[MODULE_ID]?.[FLAG_PATH]?.bounce
+            : changed.bounce;
+
+        dlog("updateToken: detected flag change", { tokenId: doc.id, actorId: doc.actor.id, float, bounce });
+        await writeActorIdleAnimSettings(doc.actor, { float, bounce });
+      } else {
+        dlog("updateToken: no relevant flag change", { tokenId: doc?.id });
+      }
+
+      await applyFromDoc(doc, "updateToken");
     } catch (e) {
       console.error(`${TAG} updateToken apply failed`, e);
     }
   });
 
+  Hooks.on("createToken", async (doc) => {
+    try {
+      dlog("createToken", { tokenId: doc?.id, actorId: doc?.actor?.id });
+      await applyFromDoc(doc, "createToken");
+    } catch (e) {
+      console.error(`${TAG} createToken apply failed`, e);
+    }
+  });
+
+  Hooks.on("updateActor", async (actor, change) => {
+    try {
+      const changed = change?.flags?.[MODULE_ID]?.[FLAG_PATH];
+      if (!changed) return;
+      if (!canvas?.ready) return;
+
+      dlog("updateActor: idle flags changed", { actorId: actor.id, changed });
+
+      // Apply to all tokens of this actor on the current canvas
+      for (const token of canvas.tokens?.placeables ?? []) {
+        if (token.document?.actor?.id === actor.id) {
+          await applyFromDoc(token.document, "updateActor");
+        }
+      }
+    } catch (e) {
+      console.error(`${TAG} updateActor apply failed`, e);
+    }
+  });
+
   Hooks.on("canvasReady", async () => {
     try {
-      await applyAllOnCanvas();
+      await applyAllOnCanvas("canvasReady");
     } catch (e) {
       console.error(`${TAG} canvasReady applyAll failed`, e);
     }
   });
 
-  console.log(`${TAG} Idle Animation bootstrap loaded.`);
+  console.log(`${TAG} Idle Animation bootstrap loaded. (debug=${!!globalThis.ONI_IDLE_ANIM_DEBUG})`);
 })();
