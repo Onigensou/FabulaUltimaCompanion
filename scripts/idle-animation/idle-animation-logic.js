@@ -3,68 +3,43 @@
  * File: scripts/idle-animation/idle-animation-logic.js
  * Foundry VTT v12
  *
- * Responsibilities:
- * - Save/load idle animation config on ACTOR flags (global persistence)
- * - Apply/remove idle animations on Tokens
- * - Sync behavior across all clients via module socket
- * - Auto-apply when:
- *    - canvas becomes ready
- *    - a new token is spawned
- *    - a token is refreshed (mesh recreated)
+ * Source of truth:
+ * - Actor flags (set from Prototype Token Config)
  *
- * Animations:
- * - Float  : TokenMagic transform filter (based on your Idle Float.js)
- * - Bounce : PIXI transform bobbing (based on your DEMO Token Idle animation.js)
+ * Applies to:
+ * - Linked and unlinked tokens (match via token.document.actorId)
+ *
+ * Sync:
+ * - Uses module socket "fabula-ultima-companion"
  * ============================================================================ */
 
 (() => {
   const MODULE_ID = "fabula-ultima-companion";
   const TAG = "[ONI][IdleAnim][Logic]";
 
-  // --------------------------------------------------------------------------
   // DEBUG TOGGLE
-  // --------------------------------------------------------------------------
-  // Turn ON/OFF logs by running in console:
-  //   globalThis.ONI_IDLE_ANIM_DEBUG = true;  (or false)
-  //
   if (globalThis.ONI_IDLE_ANIM_DEBUG === undefined) globalThis.ONI_IDLE_ANIM_DEBUG = true;
+  function dbg(...args) { if (globalThis.ONI_IDLE_ANIM_DEBUG) console.log(TAG, ...args); }
+  function warn(...args) { console.warn(TAG, ...args); }
+  function err(...args) { console.error(TAG, ...args); }
 
-  function dbg(...args) {
-    if (!globalThis.ONI_IDLE_ANIM_DEBUG) return;
-    console.log(TAG, ...args);
-  }
-  function warn(...args) {
-    console.warn(TAG, ...args);
-  }
-  function err(...args) {
-    console.error(TAG, ...args);
-  }
-
-  // --------------------------------------------------------------------------
   // GLOBAL API (NO IMPORTS)
-  // --------------------------------------------------------------------------
   const API_KEY = "__ONI_IDLE_ANIM_API__";
   if (globalThis[API_KEY]) {
     dbg("API already installed, skipping re-init.");
     return;
   }
 
-  // --------------------------------------------------------------------------
   // ACTOR FLAG STORAGE
-  // --------------------------------------------------------------------------
   const FLAG_KEY = "idleAnimation"; // flags.fabula-ultima-companion.idleAnimation
 
   function normalizeConfig(cfg) {
-    return {
-      float: !!cfg?.float,
-      bounce: !!cfg?.bounce
-    };
+    return { float: !!cfg?.float, bounce: !!cfg?.bounce };
   }
 
   async function getActorConfig(actor) {
     if (!actor) return normalizeConfig(null);
-    const cfg = actor.getFlag(MODULE_ID, FLAG_KEY);
-    return normalizeConfig(cfg);
+    return normalizeConfig(actor.getFlag(MODULE_ID, FLAG_KEY));
   }
 
   async function setActorConfig(actor, cfg) {
@@ -75,83 +50,56 @@
     return next;
   }
 
-  // --------------------------------------------------------------------------
   // TOKEN RESOLUTION HELPERS
-  // --------------------------------------------------------------------------
   function getTokenById(tokenId) {
-    try {
-      return canvas?.tokens?.get?.(tokenId) ?? null;
-    } catch {
-      return null;
-    }
+    try { return canvas?.tokens?.get?.(tokenId) ?? null; }
+    catch { return null; }
   }
 
-function getTokensForSourceActor(sourceActorId) {
-  if (!canvas?.ready) return [];
-  const list = canvas.tokens?.placeables ?? [];
-  // IMPORTANT: use token.document.actorId so this works for unlinked tokens too
-  return list.filter(t => t?.document?.actorId === sourceActorId);
-}
-
-  // --------------------------------------------------------------------------
-  // FLOAT (TokenMagic) — based on your Idle Float.js
-  // --------------------------------------------------------------------------
-  const FLOAT_FILTER_ID = "oniIdleFloat"; // stable ID so we can remove/update
-
-  function hasTokenMagic() {
-    return !!globalThis.TokenMagic;
+  function getTokensForSourceActor(sourceActorId) {
+    if (!canvas?.ready) return [];
+    const list = canvas.tokens?.placeables ?? [];
+    // Works for linked + unlinked
+    return list.filter(t => t?.document?.actorId === sourceActorId);
   }
+
+  // FLOAT (TokenMagic)
+  const FLOAT_FILTER_ID = "oniIdleFloat";
+  function hasTokenMagic() { return !!globalThis.TokenMagic; }
 
   async function applyFloat(token) {
     if (!token?.document) return;
-
     if (!hasTokenMagic()) {
       warn("Float requested, but TokenMagic is not available. Install/enable Token Magic FX.");
       return;
     }
 
-    // Based on your Idle Float.js filter shape
     const params = [{
       filterType: "transform",
       filterId: FLOAT_FILTER_ID,
       padding: 50,
       animated: {
-        translationX: {
-          animType: "sinOscillation",
-          val1: -0,
-          val2: +0,
-          loopDuration: 1400
-        },
-        translationY: {
-          animType: "cosOscillation",
-          val1: -0.05,
-          val2: +0.05,
-          loopDuration: 3000
-        }
+        translationX: { animType: "sinOscillation", val1: -0, val2: +0, loopDuration: 1400 },
+        translationY: { animType: "cosOscillation", val1: -0.05, val2: +0.05, loopDuration: 3000 }
       }
     }];
 
     try {
-      // TokenMagic has multiple APIs depending on version; we’ll be defensive.
       if (typeof TokenMagic.addUpdateFilters === "function") {
         await TokenMagic.addUpdateFilters(token, params);
         dbg("Float applied via TokenMagic.addUpdateFilters()", { token: token.name, tokenId: token.id });
         return;
       }
 
-      // Fallback: some builds expose addUpdateFiltersOnSelected only
       if (typeof TokenMagic.addUpdateFiltersOnSelected === "function") {
-        // We do NOT want to change user selection, so we do a safe temporary control swap.
         const wasControlled = token.controlled;
         const previously = canvas.tokens.controlled.map(t => t.id);
 
-        // Control this token only
         canvas.tokens.releaseAll();
         token.control({ releaseOthers: true });
 
         await TokenMagic.addUpdateFiltersOnSelected(params);
 
-        // Restore previous control state
         canvas.tokens.releaseAll();
         for (const id of previously) canvas.tokens.get(id)?.control({ releaseOthers: false });
         if (!wasControlled) token.release?.();
@@ -172,13 +120,11 @@ function getTokensForSourceActor(sourceActorId) {
 
     try {
       if (typeof TokenMagic.deleteFilters === "function") {
-        // Try removing just our filter id if supported
         try {
           await TokenMagic.deleteFilters(token, FLOAT_FILTER_ID);
           dbg("Float removed via TokenMagic.deleteFilters(token, filterId)", { token: token.name, tokenId: token.id });
           return;
         } catch {
-          // If that signature fails, try deleting all filters (last resort)
           await TokenMagic.deleteFilters(token);
           dbg("Float removed via TokenMagic.deleteFilters(token) fallback", { token: token.name, tokenId: token.id });
           return;
@@ -186,7 +132,6 @@ function getTokensForSourceActor(sourceActorId) {
       }
 
       if (typeof TokenMagic.deleteFiltersOnSelected === "function") {
-        // Same safe temporary control swap
         const wasControlled = token.controlled;
         const previously = canvas.tokens.controlled.map(t => t.id);
 
@@ -207,16 +152,14 @@ function getTokensForSourceActor(sourceActorId) {
     }
   }
 
-  // --------------------------------------------------------------------------
-  // BOUNCE (PIXI transform bobbing) — based on your DEMO script
-  // --------------------------------------------------------------------------
+  // BOUNCE (PIXI mesh scale bob)
   const BOUNCE_NS = "__ONI_IDLE_BOUNCE__";
   const BOUNCE_AMP = 0.025;
   const BOUNCE_PERIOD_MS = 2500;
 
   function bounceState() {
     return (globalThis[BOUNCE_NS] = globalThis[BOUNCE_NS] || {
-      active: new Map(), // tokenId -> state
+      active: new Map(),
       tickerFn: null,
       timeMs: 0
     });
@@ -242,11 +185,9 @@ function getTokensForSourceActor(sourceActorId) {
 
         const phase = ((g.timeMs + st.phaseOffsetMs) % BOUNCE_PERIOD_MS) / BOUNCE_PERIOD_MS;
         const scaleY = 1 + BOUNCE_AMP * Math.sin(phase * twoPi);
-
         token.mesh.scale.y = st.baseScaleY * scaleY;
       }
 
-      // stop ticker if nothing left
       if (!g.active.size) {
         canvas.app.ticker.remove(g.tickerFn);
         g.tickerFn = null;
@@ -261,7 +202,6 @@ function getTokensForSourceActor(sourceActorId) {
   function startBounce(token) {
     if (!token?.mesh) return;
     const g = bounceState();
-
     if (g.active.has(token.id)) return;
 
     const original = {
@@ -272,15 +212,9 @@ function getTokensForSourceActor(sourceActorId) {
     };
 
     token.mesh.anchor.set(0.5, 1.0);
-
     const phaseOffsetMs = Math.floor(Math.random() * BOUNCE_PERIOD_MS);
 
-    g.active.set(token.id, {
-      original,
-      baseScaleY: token.mesh.scale.y,
-      phaseOffsetMs
-    });
-
+    g.active.set(token.id, { original, baseScaleY: token.mesh.scale.y, phaseOffsetMs });
     ensureBounceTicker();
     dbg("Bounce started", { token: token.name, tokenId: token.id });
   }
@@ -300,22 +234,17 @@ function getTokensForSourceActor(sourceActorId) {
   }
 
   function refreshBounceToken(token) {
-    // If a token mesh got rebuilt (refreshToken), re-apply our stored transform state safely
     const g = bounceState();
     const st = g.active.get(token?.id);
     if (!st) return;
     if (!token?.mesh) return;
 
-    // Re-anchor and update baseScaleY to current mesh scale
     token.mesh.anchor.set(0.5, 1.0);
     st.baseScaleY = token.mesh.scale.y;
-
     dbg("Bounce refreshed on token mesh rebuild", { token: token.name, tokenId: token.id });
   }
 
-  // --------------------------------------------------------------------------
   // APPLY / REMOVE CONFIG ON A TOKEN
-  // --------------------------------------------------------------------------
   async function applyConfigToToken(token, cfg) {
     if (!token) return;
     const config = normalizeConfig(cfg);
@@ -323,52 +252,43 @@ function getTokensForSourceActor(sourceActorId) {
     dbg("Applying config to token", {
       token: token.name,
       tokenId: token.id,
-      actor: token.actor?.name,
-      actorId: token.actor?.id,
+      sourceActorId: token?.document?.actorId,
       config
     });
 
-    // Float
     if (config.float) await applyFloat(token);
     else await removeFloat(token);
 
-    // Bounce
     if (config.bounce) startBounce(token);
     else stopBounce(token);
   }
 
-async function applySourceActorConfigToAllTokens(sourceActorId) {
-  const actor = game.actors?.get(sourceActorId);
-  if (!actor) {
-    dbg("applySourceActorConfigToAllTokens: source actor not found", { sourceActorId });
-    return;
+  async function applySourceActorConfigToAllTokens(sourceActorId) {
+    const actor = game.actors?.get(sourceActorId);
+    if (!actor) {
+      dbg("applySourceActorConfigToAllTokens: source actor not found", { sourceActorId });
+      return;
+    }
+
+    const cfg = await getActorConfig(actor);
+    const tokens = getTokensForSourceActor(sourceActorId);
+
+    dbg("Applying SOURCE actor config to all tokens", {
+      actor: actor.name,
+      sourceActorId,
+      cfg,
+      tokenCount: tokens.length
+    });
+
+    for (const t of tokens) await applyConfigToToken(t, cfg);
   }
 
-  const cfg = await getActorConfig(actor);
-  const tokens = getTokensForSourceActor(sourceActorId);
-
-  dbg("Applying SOURCE actor config to all tokens", {
-    actor: actor.name,
-    sourceActorId,
-    cfg,
-    tokenCount: tokens.length
-  });
-
-  for (const t of tokens) await applyConfigToToken(t, cfg);
-}
-
-  // --------------------------------------------------------------------------
   // SOCKET SYNC
-  // --------------------------------------------------------------------------
-  const SOCKET_EVENT = "idleAnimApply"; // our message type
+  const SOCKET_EVENT = "idleAnimApply";
 
   function emitSocketApply(actorId) {
-    // Tell ALL clients to re-apply this actor’s config to their local token meshes
     try {
-      game.socket.emit(`module.${MODULE_ID}`, {
-        type: SOCKET_EVENT,
-        actorId
-      });
+      game.socket.emit(`module.${MODULE_ID}`, { type: SOCKET_EVENT, actorId });
       dbg("Socket emit -> apply", { actorId });
     } catch (e) {
       err("Socket emit failed", e);
@@ -376,7 +296,6 @@ async function applySourceActorConfigToAllTokens(sourceActorId) {
   }
 
   function installSocketListener() {
-    // Install once
     const KEY = "__ONI_IDLE_ANIM_SOCKET__";
     if (globalThis[KEY]) return;
     globalThis[KEY] = true;
@@ -384,11 +303,8 @@ async function applySourceActorConfigToAllTokens(sourceActorId) {
     game.socket.on(`module.${MODULE_ID}`, async (payload) => {
       try {
         if (!payload || payload.type !== SOCKET_EVENT) return;
-        const actorId = payload.actorId;
         dbg("Socket receive <- apply", payload);
-
-        // Apply locally on this client
-await applySourceActorConfigToAllTokens(actorId);
+        await applySourceActorConfigToAllTokens(payload.actorId);
       } catch (e) {
         err("Socket handler error", e);
       }
@@ -397,52 +313,48 @@ await applySourceActorConfigToAllTokens(actorId);
     dbg("Socket listener installed:", `module.${MODULE_ID}`);
   }
 
-  // --------------------------------------------------------------------------
   // HOOKS: AUTO-APPLY
-  // --------------------------------------------------------------------------
   function installHooks() {
-    // When canvas loads, apply to everything visible
     Hooks.on("canvasReady", async () => {
       try {
         dbg("canvasReady -> applying idle configs to all tokens");
         const tokens = canvas.tokens?.placeables ?? [];
-const sourceActorIds = new Set(tokens.map(t => t?.document?.actorId).filter(Boolean));
-for (const sourceActorId of sourceActorIds) await applySourceActorConfigToAllTokens(sourceActorId);
+        const sourceActorIds = new Set(tokens.map(t => t?.document?.actorId).filter(Boolean));
+        for (const sourceActorId of sourceActorIds) await applySourceActorConfigToAllTokens(sourceActorId);
       } catch (e) {
         err("canvasReady apply failed", e);
       }
     });
 
-    // When new token is created, auto-apply its actor config
     Hooks.on("createToken", async (doc) => {
       try {
         if (!canvas?.ready) return;
-const token = getTokenById(doc.id);
-const sourceActorId = token?.document?.actorId ?? doc.actorId;
-if (!sourceActorId) return;
 
-dbg("createToken -> auto-apply (SOURCE actor)", { tokenId: doc.id, sourceActorId });
-await applySourceActorConfigToAllTokens(sourceActorId);
+        const token = getTokenById(doc.id);
+        const sourceActorId = token?.document?.actorId ?? doc.actorId;
+        if (!sourceActorId) return;
+
+        dbg("createToken -> auto-apply (read from prototype/actor flags)", {
+          tokenId: doc.id,
+          sourceActorId,
+          actorLink: doc.actorLink
+        });
+
+        await applySourceActorConfigToAllTokens(sourceActorId);
       } catch (e) {
         err("createToken apply failed", e);
       }
     });
 
-    // When token mesh refreshes, restore bounce if active
     Hooks.on("refreshToken", (token) => {
-      try {
-        refreshBounceToken(token);
-      } catch (e) {
-        err("refreshToken handler failed", e);
-      }
+      try { refreshBounceToken(token); }
+      catch (e) { err("refreshToken handler failed", e); }
     });
 
     dbg("Hooks installed.");
   }
 
-  // --------------------------------------------------------------------------
-  // PUBLIC API for UI script (NO IMPORTS)
-  // --------------------------------------------------------------------------
+  // PUBLIC API for UI script
   globalThis[API_KEY] = {
     MODULE_ID,
     TAG,
@@ -457,9 +369,6 @@ await applySourceActorConfigToAllTokens(sourceActorId);
     emitSocketApply
   };
 
-  // --------------------------------------------------------------------------
-  // INIT
-  // --------------------------------------------------------------------------
   Hooks.once("ready", () => {
     dbg("System ready -> installing socket + hooks");
     installSocketListener();
