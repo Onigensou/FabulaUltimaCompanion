@@ -86,11 +86,12 @@
     }
   }
 
-  function getTokensForActor(actorId) {
-    if (!canvas?.ready) return [];
-    const list = canvas.tokens?.placeables ?? [];
-    return list.filter(t => t?.actor?.id === actorId);
-  }
+function getTokensForSourceActor(sourceActorId) {
+  if (!canvas?.ready) return [];
+  const list = canvas.tokens?.placeables ?? [];
+  // IMPORTANT: use token.document.actorId so this works for unlinked tokens too
+  return list.filter(t => t?.document?.actorId === sourceActorId);
+}
 
   // --------------------------------------------------------------------------
   // FLOAT (TokenMagic) — based on your Idle Float.js
@@ -336,22 +337,25 @@
     else stopBounce(token);
   }
 
-  async function applyActorConfigToAllTokens(actorId) {
-    const actor = game.actors?.get(actorId);
-    if (!actor) return;
-
-    const cfg = await getActorConfig(actor);
-    const tokens = getTokensForActor(actorId);
-
-    dbg("Applying actor config to all tokens", {
-      actor: actor.name,
-      actorId,
-      cfg,
-      tokenCount: tokens.length
-    });
-
-    for (const t of tokens) await applyConfigToToken(t, cfg);
+async function applySourceActorConfigToAllTokens(sourceActorId) {
+  const actor = game.actors?.get(sourceActorId);
+  if (!actor) {
+    dbg("applySourceActorConfigToAllTokens: source actor not found", { sourceActorId });
+    return;
   }
+
+  const cfg = await getActorConfig(actor);
+  const tokens = getTokensForSourceActor(sourceActorId);
+
+  dbg("Applying SOURCE actor config to all tokens", {
+    actor: actor.name,
+    sourceActorId,
+    cfg,
+    tokenCount: tokens.length
+  });
+
+  for (const t of tokens) await applyConfigToToken(t, cfg);
+}
 
   // --------------------------------------------------------------------------
   // SOCKET SYNC
@@ -384,7 +388,7 @@
         dbg("Socket receive <- apply", payload);
 
         // Apply locally on this client
-        await applyActorConfigToAllTokens(actorId);
+await applySourceActorConfigToAllTokens(actorId);
       } catch (e) {
         err("Socket handler error", e);
       }
@@ -402,9 +406,8 @@
       try {
         dbg("canvasReady -> applying idle configs to all tokens");
         const tokens = canvas.tokens?.placeables ?? [];
-        const actorIds = new Set(tokens.map(t => t?.actor?.id).filter(Boolean));
-
-        for (const actorId of actorIds) await applyActorConfigToAllTokens(actorId);
+const sourceActorIds = new Set(tokens.map(t => t?.document?.actorId).filter(Boolean));
+for (const sourceActorId of sourceActorIds) await applySourceActorConfigToAllTokens(sourceActorId);
       } catch (e) {
         err("canvasReady apply failed", e);
       }
@@ -414,12 +417,12 @@
     Hooks.on("createToken", async (doc) => {
       try {
         if (!canvas?.ready) return;
-        const token = getTokenById(doc.id);
-        const actorId = token?.actor?.id ?? doc.actorId;
-        if (!actorId) return;
+const token = getTokenById(doc.id);
+const sourceActorId = token?.document?.actorId ?? doc.actorId;
+if (!sourceActorId) return;
 
-        dbg("createToken -> auto-apply", { tokenId: doc.id, actorId });
-        await applyActorConfigToAllTokens(actorId);
+dbg("createToken -> auto-apply (SOURCE actor)", { tokenId: doc.id, sourceActorId });
+await applySourceActorConfigToAllTokens(sourceActorId);
       } catch (e) {
         err("createToken apply failed", e);
       }
@@ -449,7 +452,7 @@
     setActorConfig,
 
     applyConfigToToken,
-    applyActorConfigToAllTokens,
+    applySourceActorConfigToAllTokens,
 
     emitSocketApply
   };
