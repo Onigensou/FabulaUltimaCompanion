@@ -3,14 +3,20 @@
  * File: scripts/idle-animation/idle-animation-logic.js
  * Foundry VTT v12
  *
- * Source of truth:
- * - Actor flags (set from Prototype Token Config)
+ * Two-layer config:
+ *  1) Actor default (Prototype Token) -> Actor flag
+ *  2) Token override (Token Config)   -> TokenDocument flag
  *
- * Applies to:
- * - Linked and unlinked tokens (match via token.document.actorId)
+ * Apply rules:
+ *  - If token has override -> use override
+ *  - Else -> use actor default
+ *
+ * Spawn rules:
+ *  - New token spawned -> actor default applies immediately (unless token already has override)
  *
  * Sync:
- * - Uses module socket "fabula-ultima-companion"
+ *  - Prototype updates: socket "applyActor" (apply to all tokens of actor on each client)
+ *  - Token updates    : socket "applyToken" (apply to that token only)
  * ============================================================================ */
 
 (() => {
@@ -30,27 +36,74 @@
     return;
   }
 
-  // ACTOR FLAG STORAGE
-  const FLAG_KEY = "idleAnimation"; // flags.fabula-ultima-companion.idleAnimation
+  // FLAGS
+  const ACTOR_FLAG_KEY = "idleAnimation";          // flags.<module>.idleAnimation
+  const TOKEN_OVERRIDE_FLAG_KEY = "idleAnimToken"; // flags.<module>.idleAnimToken (per-token override)
 
   function normalizeConfig(cfg) {
     return { float: !!cfg?.float, bounce: !!cfg?.bounce };
   }
 
-  async function getActorConfig(actor) {
+  // ----------------------------
+  // ACTOR DEFAULT (prototype)
+  // ----------------------------
+  async function getActorDefaultConfig(actor) {
     if (!actor) return normalizeConfig(null);
-    return normalizeConfig(actor.getFlag(MODULE_ID, FLAG_KEY));
+    return normalizeConfig(actor.getFlag(MODULE_ID, ACTOR_FLAG_KEY));
   }
 
-  async function setActorConfig(actor, cfg) {
+  async function setActorDefaultConfig(actor, cfg) {
     if (!actor) return;
     const next = normalizeConfig(cfg);
-    dbg("Saving actor config", { actor: actor.name, actorId: actor.id, next });
-    await actor.setFlag(MODULE_ID, FLAG_KEY, next);
+    dbg("Saving ACTOR default config", { actor: actor.name, actorId: actor.id, next });
+    await actor.setFlag(MODULE_ID, ACTOR_FLAG_KEY, next);
     return next;
   }
 
-  // TOKEN RESOLUTION HELPERS
+  // ----------------------------
+  // TOKEN OVERRIDE
+  // ----------------------------
+  async function getTokenOverrideConfig(tokenDocOrToken) {
+    const doc = tokenDocOrToken?.document ?? tokenDocOrToken;
+    if (!doc) return null;
+    const cfg = doc.getFlag?.(MODULE_ID, TOKEN_OVERRIDE_FLAG_KEY);
+    if (!cfg) return null;
+    return normalizeConfig(cfg);
+  }
+
+  async function setTokenOverrideConfig(tokenDocOrToken, cfg) {
+    const doc = tokenDocOrToken?.document ?? tokenDocOrToken;
+    if (!doc) return;
+    const next = normalizeConfig(cfg);
+    dbg("Saving TOKEN override config", { tokenId: doc.id, name: doc.name, next });
+    await doc.setFlag(MODULE_ID, TOKEN_OVERRIDE_FLAG_KEY, next);
+    return next;
+  }
+
+  async function clearTokenOverrideConfig(tokenDocOrToken) {
+    const doc = tokenDocOrToken?.document ?? tokenDocOrToken;
+    if (!doc) return;
+    dbg("Clearing TOKEN override config", { tokenId: doc.id, name: doc.name });
+    await doc.unsetFlag(MODULE_ID, TOKEN_OVERRIDE_FLAG_KEY);
+  }
+
+  // ----------------------------
+  // EFFECTIVE CONFIG (token view)
+  // ----------------------------
+  async function getEffectiveConfigForToken(token) {
+    const sourceActorId = token?.document?.actorId;
+    const actor = sourceActorId ? game.actors?.get(sourceActorId) : null;
+
+    const override = await getTokenOverrideConfig(token);
+    if (override) return { config: override, source: "tokenOverride" };
+
+    const base = await getActorDefaultConfig(actor);
+    return { config: base, source: "actorDefault" };
+  }
+
+  // ----------------------------
+  // TOKEN RESOLUTION
+  // ----------------------------
   function getTokenById(tokenId) {
     try { return canvas?.tokens?.get?.(tokenId) ?? null; }
     catch { return null; }
@@ -59,11 +112,12 @@
   function getTokensForSourceActor(sourceActorId) {
     if (!canvas?.ready) return [];
     const list = canvas.tokens?.placeables ?? [];
-    // Works for linked + unlinked
     return list.filter(t => t?.document?.actorId === sourceActorId);
   }
 
+  // ----------------------------
   // FLOAT (TokenMagic)
+  // ----------------------------
   const FLOAT_FILTER_ID = "oniIdleFloat";
   function hasTokenMagic() { return !!globalThis.TokenMagic; }
 
@@ -87,7 +141,7 @@
     try {
       if (typeof TokenMagic.addUpdateFilters === "function") {
         await TokenMagic.addUpdateFilters(token, params);
-        dbg("Float applied via TokenMagic.addUpdateFilters()", { token: token.name, tokenId: token.id });
+        dbg("Float applied", { token: token.name, tokenId: token.id });
         return;
       }
 
@@ -104,11 +158,11 @@
         for (const id of previously) canvas.tokens.get(id)?.control({ releaseOthers: false });
         if (!wasControlled) token.release?.();
 
-        dbg("Float applied via TokenMagic.addUpdateFiltersOnSelected() fallback", { token: token.name, tokenId: token.id });
+        dbg("Float applied (fallback)", { token: token.name, tokenId: token.id });
         return;
       }
 
-      warn("TokenMagic is present, but no known addUpdateFilters API was found.");
+      warn("TokenMagic present, but unknown API for adding filters.");
     } catch (e) {
       err("Failed to apply Float", e);
     }
@@ -122,11 +176,11 @@
       if (typeof TokenMagic.deleteFilters === "function") {
         try {
           await TokenMagic.deleteFilters(token, FLOAT_FILTER_ID);
-          dbg("Float removed via TokenMagic.deleteFilters(token, filterId)", { token: token.name, tokenId: token.id });
+          dbg("Float removed", { token: token.name, tokenId: token.id });
           return;
         } catch {
           await TokenMagic.deleteFilters(token);
-          dbg("Float removed via TokenMagic.deleteFilters(token) fallback", { token: token.name, tokenId: token.id });
+          dbg("Float removed (fallback all)", { token: token.name, tokenId: token.id });
           return;
         }
       }
@@ -137,14 +191,13 @@
 
         canvas.tokens.releaseAll();
         token.control({ releaseOthers: true });
-
         await TokenMagic.deleteFiltersOnSelected();
 
         canvas.tokens.releaseAll();
         for (const id of previously) canvas.tokens.get(id)?.control({ releaseOthers: false });
         if (!wasControlled) token.release?.();
 
-        dbg("Float removed via TokenMagic.deleteFiltersOnSelected() fallback", { token: token.name, tokenId: token.id });
+        dbg("Float removed (fallback selected)", { token: token.name, tokenId: token.id });
         return;
       }
     } catch (e) {
@@ -152,14 +205,16 @@
     }
   }
 
-  // BOUNCE (PIXI mesh scale bob)
+  // ----------------------------
+  // BOUNCE (PIXI)
+  // ----------------------------
   const BOUNCE_NS = "__ONI_IDLE_BOUNCE__";
   const BOUNCE_AMP = 0.025;
   const BOUNCE_PERIOD_MS = 2500;
 
   function bounceState() {
     return (globalThis[BOUNCE_NS] = globalThis[BOUNCE_NS] || {
-      active: new Map(),
+      active: new Map(), // tokenId -> state
       tickerFn: null,
       timeMs: 0
     });
@@ -182,7 +237,6 @@
           g.active.delete(id);
           continue;
         }
-
         const phase = ((g.timeMs + st.phaseOffsetMs) % BOUNCE_PERIOD_MS) / BOUNCE_PERIOD_MS;
         const scaleY = 1 + BOUNCE_AMP * Math.sin(phase * twoPi);
         token.mesh.scale.y = st.baseScaleY * scaleY;
@@ -241,10 +295,12 @@
 
     token.mesh.anchor.set(0.5, 1.0);
     st.baseScaleY = token.mesh.scale.y;
-    dbg("Bounce refreshed on token mesh rebuild", { token: token.name, tokenId: token.id });
+    dbg("Bounce refreshed (mesh rebuild)", { token: token.name, tokenId: token.id });
   }
 
-  // APPLY / REMOVE CONFIG ON A TOKEN
+  // ----------------------------
+  // APPLY CONFIG
+  // ----------------------------
   async function applyConfigToToken(token, cfg) {
     if (!token) return;
     const config = normalizeConfig(cfg);
@@ -263,33 +319,40 @@
     else stopBounce(token);
   }
 
-  async function applySourceActorConfigToAllTokens(sourceActorId) {
-    const actor = game.actors?.get(sourceActorId);
-    if (!actor) {
-      dbg("applySourceActorConfigToAllTokens: source actor not found", { sourceActorId });
-      return;
-    }
-
-    const cfg = await getActorConfig(actor);
-    const tokens = getTokensForSourceActor(sourceActorId);
-
-    dbg("Applying SOURCE actor config to all tokens", {
-      actor: actor.name,
-      sourceActorId,
-      cfg,
-      tokenCount: tokens.length
-    });
-
-    for (const t of tokens) await applyConfigToToken(t, cfg);
+  async function applyEffectiveConfigToToken(token) {
+    if (!token) return;
+    const { config, source } = await getEffectiveConfigForToken(token);
+    dbg("applyEffectiveConfigToToken()", { tokenId: token.id, token: token.name, source, config });
+    await applyConfigToToken(token, config);
   }
 
-  // SOCKET SYNC
-  const SOCKET_EVENT = "idleAnimApply";
+  async function applyActorToAllTokens(sourceActorId) {
+    const tokens = getTokensForSourceActor(sourceActorId);
+    dbg("applyActorToAllTokens()", { sourceActorId, tokenCount: tokens.length });
 
-  function emitSocketApply(actorId) {
+    for (const t of tokens) {
+      await applyEffectiveConfigToToken(t); // respects per-token override automatically
+    }
+  }
+
+  // ----------------------------
+  // SOCKET SYNC
+  // ----------------------------
+  const SOCKET_EVENT = "idleAnimSync"; // single channel with subtypes
+
+  function emitSocketApplyActor(actorId) {
     try {
-      game.socket.emit(`module.${MODULE_ID}`, { type: SOCKET_EVENT, actorId });
-      dbg("Socket emit -> apply", { actorId });
+      game.socket.emit(`module.${MODULE_ID}`, { type: SOCKET_EVENT, mode: "applyActor", actorId });
+      dbg("Socket emit -> applyActor", { actorId });
+    } catch (e) {
+      err("Socket emit failed", e);
+    }
+  }
+
+  function emitSocketApplyToken(tokenId) {
+    try {
+      game.socket.emit(`module.${MODULE_ID}`, { type: SOCKET_EVENT, mode: "applyToken", tokenId });
+      dbg("Socket emit -> applyToken", { tokenId });
     } catch (e) {
       err("Socket emit failed", e);
     }
@@ -303,8 +366,19 @@
     game.socket.on(`module.${MODULE_ID}`, async (payload) => {
       try {
         if (!payload || payload.type !== SOCKET_EVENT) return;
-        dbg("Socket receive <- apply", payload);
-        await applySourceActorConfigToAllTokens(payload.actorId);
+
+        if (payload.mode === "applyActor") {
+          dbg("Socket receive <- applyActor", payload);
+          await applyActorToAllTokens(payload.actorId);
+          return;
+        }
+
+        if (payload.mode === "applyToken") {
+          dbg("Socket receive <- applyToken", payload);
+          const token = getTokenById(payload.tokenId);
+          if (token) await applyEffectiveConfigToToken(token);
+          return;
+        }
       } catch (e) {
         err("Socket handler error", e);
       }
@@ -313,14 +387,15 @@
     dbg("Socket listener installed:", `module.${MODULE_ID}`);
   }
 
-  // HOOKS: AUTO-APPLY
+  // ----------------------------
+  // HOOKS: AUTO APPLY
+  // ----------------------------
   function installHooks() {
     Hooks.on("canvasReady", async () => {
       try {
-        dbg("canvasReady -> applying idle configs to all tokens");
+        dbg("canvasReady -> applying effective configs to all tokens");
         const tokens = canvas.tokens?.placeables ?? [];
-        const sourceActorIds = new Set(tokens.map(t => t?.document?.actorId).filter(Boolean));
-        for (const sourceActorId of sourceActorIds) await applySourceActorConfigToAllTokens(sourceActorId);
+        for (const t of tokens) await applyEffectiveConfigToToken(t);
       } catch (e) {
         err("canvasReady apply failed", e);
       }
@@ -329,18 +404,17 @@
     Hooks.on("createToken", async (doc) => {
       try {
         if (!canvas?.ready) return;
-
         const token = getTokenById(doc.id);
-        const sourceActorId = token?.document?.actorId ?? doc.actorId;
-        if (!sourceActorId) return;
+        if (!token) return;
 
-        dbg("createToken -> auto-apply (read from prototype/actor flags)", {
+        dbg("createToken -> auto-apply effective config", {
           tokenId: doc.id,
-          sourceActorId,
+          name: doc.name,
+          actorId: doc.actorId,
           actorLink: doc.actorLink
         });
 
-        await applySourceActorConfigToAllTokens(sourceActorId);
+        await applyEffectiveConfigToToken(token);
       } catch (e) {
         err("createToken apply failed", e);
       }
@@ -354,19 +428,32 @@
     dbg("Hooks installed.");
   }
 
-  // PUBLIC API for UI script
+  // ----------------------------
+  // PUBLIC API for UI
+  // ----------------------------
   globalThis[API_KEY] = {
     MODULE_ID,
     TAG,
 
     normalizeConfig,
-    getActorConfig,
-    setActorConfig,
 
+    // actor default (prototype)
+    getActorDefaultConfig,
+    setActorDefaultConfig,
+
+    // token override
+    getTokenOverrideConfig,
+    setTokenOverrideConfig,
+    clearTokenOverrideConfig,
+
+    // apply
     applyConfigToToken,
-    applySourceActorConfigToAllTokens,
+    applyEffectiveConfigToToken,
+    applyActorToAllTokens,
 
-    emitSocketApply
+    // sockets
+    emitSocketApplyActor,
+    emitSocketApplyToken
   };
 
   Hooks.once("ready", () => {
