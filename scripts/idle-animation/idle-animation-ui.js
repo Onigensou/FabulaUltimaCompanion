@@ -3,9 +3,12 @@
  * File: scripts/idle-animation/idle-animation-ui.js
  * Foundry VTT v12
  *
- * Tabs:
- * - Prototype Token Config (Actor → Prototype Token): EDIT + SAVE (source of truth)
- * - Token Config (Token → Configure): READ-ONLY mirror (copies prototype setting)
+ * Injects into BOTH:
+ *  - Prototype Token Config: edits ACTOR default (blueprint)
+ *  - Token Config: edits TOKEN override (per token)
+ *
+ * Prototype actorId fix:
+ *  - Prototype TokenConfig has app.id: "TokenConfig-Actor.<ACTOR_ID>"  :contentReference[oaicite:2]{index=2}
  * ============================================================================ */
 
 (() => {
@@ -36,6 +39,7 @@
   }
 
   function bindTabs(app, root) {
+    // Match your test injector style: TokenConfig has app._tabs array in v12 :contentReference[oaicite:3]{index=3}
     try {
       const tabs = app?._tabs;
       if (!tabs) return { ok: false, reason: "no app._tabs" };
@@ -55,68 +59,95 @@
     return null;
   }
 
-  function findTabRoot($html) {
-    const $existingTabs = $html.find('.tab[data-group="main"]');
-    if ($existingTabs.length) {
-      const $parent = $existingTabs.first().parent();
-      return $parent?.length ? $parent : null;
-    }
-    const $form = $html.find("form");
-    return $form.length ? $form : null;
+  function insertPanel($html, $panel) {
+    const $mainPanels = $html.find('.tab[data-group="main"]');
+    if ($mainPanels.length) $mainPanels.last().after($panel);
+    else $html.find("form").append($panel);
   }
 
   function getDoc(app) {
     return app?.document ?? app?.object?.document ?? null;
   }
 
-  // Prototype Token Config detector (reliable in v12)
-  // Prototype token sheet is TokenConfig with app.id like "TokenConfig-Actor.<ACTOR_ID>"
   function isPrototypeTokenConfig(app) {
     return app?.constructor?.name === "TokenConfig"
       && typeof app?.id === "string"
       && app.id.startsWith("TokenConfig-Actor.");
   }
 
-  // "Normal" Token Config: TokenConfig but NOT the prototype one
   function isNormalTokenConfig(app) {
     return app?.constructor?.name === "TokenConfig"
       && !isPrototypeTokenConfig(app);
   }
 
-  // Resolve SOURCE actor (directory actor) no matter linked/unlinked
-  function resolveSourceActor(app) {
-    const doc = getDoc(app);
-    const sourceActorId = doc?.actorId ?? app?.token?.document?.actorId ?? null;
-    const actor = sourceActorId ? game.actors?.get(sourceActorId) : null;
-    return { actor, sourceActorId, doc };
+  function parseActorIdFromPrototypeAppId(appId) {
+    // "TokenConfig-Actor.<ACTOR_ID>"
+    if (typeof appId !== "string") return null;
+    const prefix = "TokenConfig-Actor.";
+    if (!appId.startsWith(prefix)) return null;
+    return appId.slice(prefix.length) || null;
   }
 
-  function buildPanelHTML({ readOnly, titleExtra }) {
-    const roAttr = readOnly ? "disabled" : "";
-    const roStyle = readOnly ? "opacity:0.85;" : "";
+  function resolveContext(app) {
+    const doc = getDoc(app);
 
-    const info = readOnly
-      ? `<p style="margin: 0 0 10px 0; opacity: 0.85;">
-           This page mirrors the Actor's <b>Prototype Token</b> idle animation settings.
-           To change these preferences, go to <b>Actor → Prototype Token</b>.
+    const prototypeMode = isPrototypeTokenConfig(app);
+    const normalMode = isNormalTokenConfig(app);
+
+    // PROTOTYPE: doc.actorId may be null, so parse from app.id
+    const actorId =
+      prototypeMode
+        ? (parseActorIdFromPrototypeAppId(app?.id) ?? null)
+        : (doc?.actorId ?? app?.token?.document?.actorId ?? null);
+
+    const actor = actorId ? game.actors?.get(actorId) : null;
+
+    // For token config, we also want the token document id
+    const tokenId = normalMode ? (doc?.id ?? app?.token?.id ?? null) : null;
+
+    return { prototypeMode, normalMode, actorId, actor, doc, tokenId };
+  }
+
+  function buildPanelHTML({ mode }) {
+    // mode: "prototype" | "token"
+    const isProto = mode === "prototype";
+
+    const header = isProto
+      ? "Idle Animation (Prototype Token)"
+      : "Idle Animation (Token Override)";
+
+    const info = isProto
+      ? `<p style="margin:0 0 10px 0; opacity:0.85;">
+           This sets the <b>Actor’s default blueprint</b>. Newly spawned tokens will use these settings automatically.
          </p>`
-      : `<p style="margin: 0 0 10px 0; opacity: 0.85;">
-           Set the Actor’s default idle animation behavior. Any token spawned from this Actor will auto-apply.
+      : `<p style="margin:0 0 10px 0; opacity:0.85;">
+           This can <b>override</b> the Actor’s prototype default for <b>this token only</b>.
          </p>`;
+
+    const extra = isProto
+      ? ""
+      : `<div style="display:flex; gap:8px; align-items:center; margin: 10px 0 0 0;">
+           <button type="button" class="oni-idle-reset-to-proto">
+             Reset to Prototype Default
+           </button>
+           <span style="opacity:0.75; font-size:12px;">
+             Clears this token’s override, so it follows the Actor default again.
+           </span>
+         </div>`;
 
     return $(`
       <div class="tab"
            data-tab="oni-idle-animation"
            data-group="main"
            data-oni-idle-anim="panel">
-        <div style="padding: 10px; ${roStyle}">
-          <h3 style="margin: 0 0 6px 0;">Idle Animation ${titleExtra ?? ""}</h3>
+        <div style="padding:10px;">
+          <h3 style="margin:0 0 6px 0;">${header}</h3>
           ${info}
 
           <div class="form-group">
             <label>Float</label>
             <div class="form-fields">
-              <input type="checkbox" ${roAttr} name="oniIdleAnim.float" data-oni-idle-field="float"/>
+              <input type="checkbox" name="oniIdleAnim.float" data-oni-idle-field="float"/>
             </div>
             <p class="hint">Uses TokenMagic transform filter (cos/sin oscillation).</p>
           </div>
@@ -124,17 +155,12 @@
           <div class="form-group">
             <label>Bounce</label>
             <div class="form-fields">
-              <input type="checkbox" ${roAttr} name="oniIdleAnim.bounce" data-oni-idle-field="bounce"/>
+              <input type="checkbox" name="oniIdleAnim.bounce" data-oni-idle-field="bounce"/>
             </div>
-            <p class="hint">Uses a lightweight PIXI mesh scale breathing effect. Synced to all clients.</p>
+            <p class="hint">Uses a lightweight PIXI mesh breathing effect. Synced to all clients.</p>
           </div>
 
-          ${readOnly ? `
-            <hr/>
-            <p style="margin: 0; font-size: 12px; opacity: 0.85;">
-              🔒 Read-only here. Edit in <b>Prototype Token</b>.
-            </p>
-          ` : ""}
+          ${extra}
 
           <hr/>
           <p style="margin:0; font-size:12px; opacity:0.8;">
@@ -146,120 +172,162 @@
     `);
   }
 
-  Hooks.on("renderTokenConfig", async (app, $html) => {
+  Hooks.on("renderTokenConfig", async (app, html) => {
     const api = getAPI();
     if (!api) return;
 
     try {
+      const $html = html instanceof jQuery ? html : $(html);
+
       // Avoid duplicates on rerender
       if ($html.find('[data-oni-idle-anim="tab"]').length) return;
 
       const root = ensureRoot($html, app);
-      const { actor, sourceActorId, doc } = resolveSourceActor(app);
+      const ctx = resolveContext(app);
 
-      if (!actor) {
-        dbg("No SOURCE actor found for TokenConfig, skipping UI injection.", {
-          sourceActorId,
+      if (!ctx.prototypeMode && !ctx.normalMode) return;
+
+      if (!ctx.actor) {
+        dbg("No actor resolved; skipping injection.", {
           appId: app?.id,
-          title: app?.title
+          title: app?.title,
+          prototypeMode: ctx.prototypeMode,
+          normalMode: ctx.normalMode,
+          actorId: ctx.actorId,
+          docActorId: ctx.doc?.actorId
         });
         return;
       }
 
-      const prototypeMode = isPrototypeTokenConfig(app);
-      const normalMode = isNormalTokenConfig(app);
-
-      // We only care about these two; if some other config uses TokenConfig, skip
-      if (!prototypeMode && !normalMode) return;
-
-      const readOnly = normalMode; // token config is read-only mirror
-
-      dbg("TokenConfig render detected", {
-        prototypeMode,
-        normalMode,
+      dbg("TokenConfig render -> injecting", {
         appId: app?.id,
         title: app?.title,
-        sourceActorId,
-        actorName: actor.name,
-        actorLink: doc?.actorLink
+        prototypeMode: ctx.prototypeMode,
+        normalMode: ctx.normalMode,
+        actorId: ctx.actorId,
+        actorName: ctx.actor.name,
+        tokenId: ctx.tokenId
       });
 
       const TAB_ID = "oni-idle-animation";
       const GROUP = "main";
 
       const $nav = findNav($html);
-      const $tabRoot = findTabRoot($html);
-
-      if (!$nav || !$tabRoot) {
-        warn("Could not find suitable nav/tab root to inject into.");
+      if (!$nav?.length) {
+        warn("Could not find tabs nav. Skipping.");
         return;
       }
 
       // NAV BUTTON
-      const labelSuffix = prototypeMode ? "" : "";
-      const $btn = $(`
+      $nav.append($(`
         <a class="item"
            data-tab="${TAB_ID}"
            data-group="${GROUP}"
            data-oni-idle-anim="tab">
-          <i class="fas fa-wand-magic-sparkles"></i> Idle Animation${labelSuffix}
+          <i class="fas fa-wand-magic-sparkles"></i> Idle Animation
         </a>
-      `);
-      $nav.append($btn);
+      `));
 
       // PANEL
-      const $panel = buildPanelHTML({
-        readOnly,
-        titleExtra: prototypeMode ? "(Prototype)" : "(Token)"
-      });
-      $tabRoot.append($panel);
+      const mode = ctx.prototypeMode ? "prototype" : "token";
+      const $panel = buildPanelHTML({ mode });
+      insertPanel($html, $panel);
 
-      // Rebind tabs (prevents “bounce back” issue)
+      // Rebind tabs so the new tab is clickable (same technique as your test injector) :contentReference[oaicite:4]{index=4}
       const res = bindTabs(app, root);
       dbg("bindTabs()", res);
 
-      // Prefill from ACTOR FLAG (prototype source of truth)
-      const cfg = await api.getActorConfig(actor);
-      $panel.find('[data-oni-idle-field="float"]').prop("checked", !!cfg.float);
-      $panel.find('[data-oni-idle-field="bounce"]').prop("checked", !!cfg.bounce);
+      // Prefill:
+      // - Prototype: actor default
+      // - Token: token override if exists; else actor default
+      let prefill;
+      if (ctx.prototypeMode) {
+        prefill = await api.getActorDefaultConfig(ctx.actor);
+        dbg("Prefill (prototype) from actor default", { prefill });
+      } else {
+        const token = canvas?.tokens?.get?.(ctx.tokenId) ?? null;
+        if (token) {
+          const eff = await api.applyEffectiveConfigToToken ? null : null; // (noop to avoid confusion)
+          const override = await api.getTokenOverrideConfig(token);
+          if (override) {
+            prefill = override;
+            dbg("Prefill (token) from token override", { prefill });
+          } else {
+            prefill = await api.getActorDefaultConfig(ctx.actor);
+            dbg("Prefill (token) from actor default", { prefill });
+          }
+        } else {
+          // If token isn't on canvas yet, fallback to actor default
+          prefill = await api.getActorDefaultConfig(ctx.actor);
+          dbg("Prefill (token) fallback actor default (token not found on canvas)", { prefill });
+        }
+      }
 
-      dbg("Prefill from actor flags", { actor: actor.name, sourceActorId, cfg, readOnly });
+      $panel.find('[data-oni-idle-field="float"]').prop("checked", !!prefill?.float);
+      $panel.find('[data-oni-idle-field="bounce"]').prop("checked", !!prefill?.bounce);
 
-      // SUBMIT behavior:
-      // - Prototype: SAVE actor flag, apply, sync
-      // - Token config: DO NOT SAVE, but re-apply (mirror) on update
+      // Reset button (token config only): clears override and syncs/apply
+      if (ctx.normalMode) {
+        $panel.find(".oni-idle-reset-to-proto").on("click", async () => {
+          try {
+            const token = canvas?.tokens?.get?.(ctx.tokenId) ?? null;
+            if (!token) return;
+
+            dbg("Reset to Prototype clicked", { tokenId: token.id, actorId: ctx.actorId });
+
+            await api.clearTokenOverrideConfig(token);
+            // Apply effective (now actor default)
+            await api.applyEffectiveConfigToToken(token);
+            api.emitSocketApplyToken(token.id);
+          } catch (e) {
+            err("Reset button failed", e);
+          }
+        });
+      }
+
+      // SUBMIT: bind once per window
       const $form = $html.find("form");
       if ($form.length && !$form.attr("data-oni-idle-submit-bound")) {
         $form.attr("data-oni-idle-submit-bound", "1");
 
         $form.on("submit", async () => {
           try {
-            if (prototypeMode) {
-              const next = api.normalizeConfig({
-                float: $panel.find('[data-oni-idle-field="float"]').is(":checked"),
-                bounce: $panel.find('[data-oni-idle-field="bounce"]').is(":checked")
-              });
+            const next = api.normalizeConfig({
+              float: $panel.find('[data-oni-idle-field="float"]').is(":checked"),
+              bounce: $panel.find('[data-oni-idle-field="bounce"]').is(":checked")
+            });
 
-              dbg("Prototype Token submit -> SAVE actor flag + apply + sync", {
-                actor: actor.name,
-                sourceActorId,
+            // Prototype submit -> save actor default, apply all tokens (respect overrides), sync applyActor
+            if (ctx.prototypeMode) {
+              dbg("Prototype submit -> save actor default + apply all + sync", {
+                actorId: ctx.actorId,
+                actorName: ctx.actor.name,
                 next
               });
 
-              await api.setActorConfig(actor, next);
-              await api.applySourceActorConfigToAllTokens(actor.id);
-              api.emitSocketApply(actor.id);
+              await api.setActorDefaultConfig(ctx.actor, next);
+              await api.applyActorToAllTokens(ctx.actorId);
+              api.emitSocketApplyActor(ctx.actorId);
               return;
             }
 
-            // Normal token config: mirror only
-            dbg("TokenConfig submit -> mirror mode (no save). Re-applying actor config.", {
-              actor: actor.name,
-              sourceActorId
-            });
+            // Token submit -> save token override, apply token only, sync applyToken
+            if (ctx.normalMode) {
+              const token = canvas?.tokens?.get?.(ctx.tokenId) ?? null;
+              if (!token) return;
 
-            await api.applySourceActorConfigToAllTokens(actor.id);
-            api.emitSocketApply(actor.id);
+              dbg("Token submit -> save token override + apply token + sync", {
+                tokenId: token.id,
+                tokenName: token.name,
+                actorId: ctx.actorId,
+                next
+              });
+
+              await api.setTokenOverrideConfig(token, next);
+              await api.applyEffectiveConfigToToken(token);
+              api.emitSocketApplyToken(token.id);
+              return;
+            }
           } catch (e) {
             err("Submit handler failed", e);
           }
@@ -270,5 +338,5 @@
     }
   });
 
-  dbg("Idle Animation UI loaded (prototype + token mirror mode).");
+  dbg("Idle Animation UI loaded (prototype default + token override).");
 })();
