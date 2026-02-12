@@ -11,12 +11,14 @@
  *  - If token has override -> use override
  *  - Else -> use actor default
  *
- * Spawn rules:
- *  - New token spawned -> actor default applies immediately (unless token already has override)
+ * Spawn timing:
+ *  - Token document creation happens before token object is drawn.
+ *  - We apply visuals when token is actually drawn (drawToken), with retry queue.
+ *    (This matches your spawn hook probe intent.) :contentReference[oaicite:3]{index=3}
  *
- * Sync:
- *  - Prototype updates: socket "applyActor" (apply to all tokens of actor on each client)
- *  - Token updates    : socket "applyToken" (apply to that token only)
+ * Float:
+ *  - Re-implemented to match your Idle Float script: uses TokenMagic
+ *    addUpdateFiltersOnSelected / deleteFiltersOnSelected via temporary control. :contentReference[oaicite:4]{index=4}
  * ============================================================================ */
 
 (() => {
@@ -115,19 +117,42 @@
     return list.filter(t => t?.document?.actorId === sourceActorId);
   }
 
-  // ----------------------------
-  // FLOAT (TokenMagic)
-  // ----------------------------
+  // ==========================================================================
+  // FLOAT (TokenMagic) — re-implemented to match your Idle Float.js approach
+  // (temporary control + addUpdateFiltersOnSelected / deleteFiltersOnSelected) :contentReference[oaicite:5]{index=5}
+  // ==========================================================================
   const FLOAT_FILTER_ID = "oniIdleFloat";
-  function hasTokenMagic() { return !!globalThis.TokenMagic; }
+
+  function hasTokenMagic() {
+    return !!globalThis.TokenMagic
+      && (typeof TokenMagic.addUpdateFiltersOnSelected === "function");
+  }
+
+  async function withTempControl(token, fn) {
+    // Controls token temporarily so OnSelected APIs work, then restore controls.
+    const previously = canvas.tokens.controlled.map(t => t.id);
+    const wasControlled = token.controlled;
+
+    try {
+      canvas.tokens.releaseAll();
+      token.control({ releaseOthers: true });
+      await fn();
+    } finally {
+      canvas.tokens.releaseAll();
+      for (const id of previously) canvas.tokens.get(id)?.control({ releaseOthers: false });
+      if (!wasControlled) token.release?.();
+    }
+  }
 
   async function applyFloat(token) {
     if (!token?.document) return;
+
     if (!hasTokenMagic()) {
-      warn("Float requested, but TokenMagic is not available. Install/enable Token Magic FX.");
+      warn("Float requested, but TokenMagic.addUpdateFiltersOnSelected is not available.");
       return;
     }
 
+    // Directly based on your Idle Float.js params (transform filter) :contentReference[oaicite:6]{index=6}
     const params = [{
       filterType: "transform",
       filterId: FLOAT_FILTER_ID,
@@ -139,30 +164,11 @@
     }];
 
     try {
-      if (typeof TokenMagic.addUpdateFilters === "function") {
-        await TokenMagic.addUpdateFilters(token, params);
-        dbg("Float applied", { token: token.name, tokenId: token.id });
-        return;
-      }
-
-      if (typeof TokenMagic.addUpdateFiltersOnSelected === "function") {
-        const wasControlled = token.controlled;
-        const previously = canvas.tokens.controlled.map(t => t.id);
-
-        canvas.tokens.releaseAll();
-        token.control({ releaseOthers: true });
-
+      await withTempControl(token, async () => {
         await TokenMagic.addUpdateFiltersOnSelected(params);
+      });
 
-        canvas.tokens.releaseAll();
-        for (const id of previously) canvas.tokens.get(id)?.control({ releaseOthers: false });
-        if (!wasControlled) token.release?.();
-
-        dbg("Float applied (fallback)", { token: token.name, tokenId: token.id });
-        return;
-      }
-
-      warn("TokenMagic present, but unknown API for adding filters.");
+      dbg("Float applied (OnSelected)", { token: token.name, tokenId: token.id });
     } catch (e) {
       err("Failed to apply Float", e);
     }
@@ -170,34 +176,28 @@
 
   async function removeFloat(token) {
     if (!token?.document) return;
-    if (!hasTokenMagic()) return;
+
+    if (!globalThis.TokenMagic) return;
 
     try {
+      // Prefer targeted removal if available
       if (typeof TokenMagic.deleteFilters === "function") {
         try {
           await TokenMagic.deleteFilters(token, FLOAT_FILTER_ID);
-          dbg("Float removed", { token: token.name, tokenId: token.id });
+          dbg("Float removed via TokenMagic.deleteFilters(token, filterId)", { token: token.name, tokenId: token.id });
           return;
         } catch {
-          await TokenMagic.deleteFilters(token);
-          dbg("Float removed (fallback all)", { token: token.name, tokenId: token.id });
-          return;
+          // ignore and fallback to OnSelected
         }
       }
 
       if (typeof TokenMagic.deleteFiltersOnSelected === "function") {
-        const wasControlled = token.controlled;
-        const previously = canvas.tokens.controlled.map(t => t.id);
+        await withTempControl(token, async () => {
+          // Many builds only support deleteFiltersOnSelected() (no args) like your script :contentReference[oaicite:7]{index=7}
+          await TokenMagic.deleteFiltersOnSelected();
+        });
 
-        canvas.tokens.releaseAll();
-        token.control({ releaseOthers: true });
-        await TokenMagic.deleteFiltersOnSelected();
-
-        canvas.tokens.releaseAll();
-        for (const id of previously) canvas.tokens.get(id)?.control({ releaseOthers: false });
-        if (!wasControlled) token.release?.();
-
-        dbg("Float removed (fallback selected)", { token: token.name, tokenId: token.id });
+        dbg("Float removed (OnSelected fallback)", { token: token.name, tokenId: token.id });
         return;
       }
     } catch (e) {
@@ -205,9 +205,9 @@
     }
   }
 
-  // ----------------------------
+  // ==========================================================================
   // BOUNCE (PIXI)
-  // ----------------------------
+  // ==========================================================================
   const BOUNCE_NS = "__ONI_IDLE_BOUNCE__";
   const BOUNCE_AMP = 0.025;
   const BOUNCE_PERIOD_MS = 2500;
@@ -312,9 +312,11 @@
       config
     });
 
+    // Float
     if (config.float) await applyFloat(token);
     else await removeFloat(token);
 
+    // Bounce
     if (config.bounce) startBounce(token);
     else stopBounce(token);
   }
@@ -335,10 +337,75 @@
     }
   }
 
-  // ----------------------------
+  // ==========================================================================
+  // SPAWN APPLY QUEUE (timing fix)
+  // - createToken can fire before canvas token object exists
+  // - drawToken confirms token object exists and is drawn
+  // - we also do retries in case mesh isn't ready on first draw
+  // ==========================================================================
+  const APPLY_QUEUE = new Map(); // tokenId -> { tries, reason, scheduled }
+
+  function queueApplyToken(tokenId, reason) {
+    if (!tokenId) return;
+    const cur = APPLY_QUEUE.get(tokenId) ?? { tries: 0, reason, scheduled: false };
+    cur.reason = reason;
+    APPLY_QUEUE.set(tokenId, cur);
+
+    if (!cur.scheduled) {
+      cur.scheduled = true;
+      setTimeout(() => processQueue(), 0);
+    }
+
+    dbg("queueApplyToken()", { tokenId, reason, tries: cur.tries });
+  }
+
+  async function processQueue() {
+    for (const [tokenId, st] of APPLY_QUEUE) {
+      const token = getTokenById(tokenId);
+
+      // Token object not ready yet
+      if (!token) {
+        st.tries++;
+        st.scheduled = false;
+        if (st.tries < 10) {
+          APPLY_QUEUE.set(tokenId, st);
+          setTimeout(() => queueApplyToken(tokenId, st.reason + " -> retry(no token)"), 50);
+        } else {
+          APPLY_QUEUE.delete(tokenId);
+          warn("Spawn apply gave up (token never appeared).", { tokenId, reason: st.reason });
+        }
+        continue;
+      }
+
+      // If mesh isn't ready yet, retry (TokenMagic cares about visuals being ready)
+      if (!token.mesh) {
+        st.tries++;
+        st.scheduled = false;
+        if (st.tries < 10) {
+          APPLY_QUEUE.set(tokenId, st);
+          setTimeout(() => queueApplyToken(tokenId, st.reason + " -> retry(no mesh)"), 50);
+        } else {
+          APPLY_QUEUE.delete(tokenId);
+          warn("Spawn apply gave up (mesh never appeared).", { tokenId, reason: st.reason });
+        }
+        continue;
+      }
+
+      // Good to apply now
+      APPLY_QUEUE.delete(tokenId);
+      try {
+        dbg("processQueue -> applying effective config", { tokenId, reason: st.reason });
+        await applyEffectiveConfigToToken(token);
+      } catch (e) {
+        err("processQueue apply failed", e);
+      }
+    }
+  }
+
+  // ==========================================================================
   // SOCKET SYNC
-  // ----------------------------
-  const SOCKET_EVENT = "idleAnimSync"; // single channel with subtypes
+  // ==========================================================================
+  const SOCKET_EVENT = "idleAnimSync";
 
   function emitSocketApplyActor(actorId) {
     try {
@@ -375,8 +442,7 @@
 
         if (payload.mode === "applyToken") {
           dbg("Socket receive <- applyToken", payload);
-          const token = getTokenById(payload.tokenId);
-          if (token) await applyEffectiveConfigToToken(token);
+          queueApplyToken(payload.tokenId, "socket.applyToken");
           return;
         }
       } catch (e) {
@@ -387,9 +453,9 @@
     dbg("Socket listener installed:", `module.${MODULE_ID}`);
   }
 
-  // ----------------------------
+  // ==========================================================================
   // HOOKS: AUTO APPLY
-  // ----------------------------
+  // ==========================================================================
   function installHooks() {
     Hooks.on("canvasReady", async () => {
       try {
@@ -401,31 +467,57 @@
       }
     });
 
+    // Document created (may fire before token object exists)
     Hooks.on("createToken", async (doc) => {
       try {
-        if (!canvas?.ready) return;
-        const token = getTokenById(doc.id);
-        if (!token) return;
-
-        dbg("createToken -> auto-apply effective config", {
+        dbg("createToken -> queued auto-apply", {
           tokenId: doc.id,
           name: doc.name,
           actorId: doc.actorId,
           actorLink: doc.actorLink
         });
-
-        await applyEffectiveConfigToToken(token);
+        queueApplyToken(doc.id, "createToken");
       } catch (e) {
-        err("createToken apply failed", e);
+        err("createToken handler failed", e);
+      }
+    });
+
+    // Some operations fire createTokenDocument instead
+    Hooks.on("createTokenDocument", async (doc) => {
+      try {
+        dbg("createTokenDocument -> queued auto-apply", {
+          tokenId: doc.id,
+          name: doc.name,
+          actorId: doc.actorId
+        });
+        queueApplyToken(doc.id, "createTokenDocument");
+      } catch (e) {
+        err("createTokenDocument handler failed", e);
+      }
+    });
+
+    // The BEST signal for “token exists on canvas now” (your probe includes this) :contentReference[oaicite:8]{index=8}
+    Hooks.on("drawToken", (tokenObj) => {
+      try {
+        const tokenId = tokenObj?.id ?? tokenObj?.document?.id;
+        dbg("drawToken -> queued auto-apply", { tokenId, name: tokenObj?.name });
+        queueApplyToken(tokenId, "drawToken");
+      } catch (e) {
+        err("drawToken handler failed", e);
       }
     });
 
     Hooks.on("refreshToken", (token) => {
-      try { refreshBounceToken(token); }
-      catch (e) { err("refreshToken handler failed", e); }
+      try {
+        refreshBounceToken(token);
+        // If refresh rebuilds mesh, re-apply float safely too (optional but helps)
+        queueApplyToken(token.id, "refreshToken");
+      } catch (e) {
+        err("refreshToken handler failed", e);
+      }
     });
 
-    dbg("Hooks installed.");
+    dbg("Hooks installed (createToken/createTokenDocument/drawToken/refreshToken).");
   }
 
   // ----------------------------
