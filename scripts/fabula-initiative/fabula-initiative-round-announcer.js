@@ -17,6 +17,22 @@
   const style = "color:#7fd7ff;font-weight:700;";
   const dlog = (op, ...args) => DEBUG && console.log(tag(op), style, ...args);
 
+  // =========================================================
+  // Summon filter helpers
+  // =========================================================
+  function isSummonActor(actor) {
+    if (!actor) return false;
+    const v =
+      foundry.utils.getProperty(actor, "system.props.isSummon") ??
+      foundry.utils.getProperty(actor, "system.isSummon");
+    return v === true;
+  }
+
+  function isSummonCombatant(c) {
+    const actor = c?.actor ?? (c?.actorId ? game.actors?.get?.(c.actorId) : null);
+    return isSummonActor(actor);
+  }
+
   function injectStylesOnce() {
     const id = `${NS}-style-split`;
     if (document.getElementById(id)) return;
@@ -59,6 +75,9 @@
     // Lancer Initiative tracks remaining activations here:
     // flags.lancer-initiative.activations.value
     return combat.combatants.reduce((sum, c) => {
+      // NEW: Ignore Summons entirely
+      if (isSummonCombatant(c)) return sum;
+
       const v = c.getFlag(LI, "activations.value") ?? 0;
       return sum + Math.max(0, v);
     }, 0);
@@ -205,7 +224,7 @@
 
     // Reset dedupe on new round
     Hooks.on("combatRound", async (combat) => {
-      if (!game.user?.isGM) return;
+      if (!game.user?.isGM) return
       try {
         await combat.unsetFlag(FLAG_SCOPE, FLAG_KEY_ANNOUNCED);
       } catch (e) {
