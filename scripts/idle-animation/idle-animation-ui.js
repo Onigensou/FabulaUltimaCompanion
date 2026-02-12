@@ -92,13 +92,20 @@
 
       const root = ensureRoot($html, app);
       const doc = getDoc(app);
-      const actor = doc?.actor ?? doc?.parent?.actor ?? app?.token?.actor ?? null;
 
-      // TokenConfig doc should have an actor
-      if (!actor) {
-        dbg("No actor found on TokenConfig document, skipping UI injection.");
-        return;
-      }
+// Always prefer the SOURCE actor from Actors Directory (works for linked + unlinked)
+const sourceActorId = doc?.actorId ?? app?.token?.document?.actorId ?? null;
+const actor = sourceActorId ? game.actors?.get(sourceActorId) : null;
+
+if (!actor) {
+  dbg("No SOURCE actor found for TokenConfig, skipping UI injection.", {
+    sourceActorId,
+    docActorId: doc?.actorId,
+    hasDocActor: !!doc?.actor,
+    hasAppTokenActor: !!app?.token?.actor
+  });
+  return;
+}
 
       const TAB_ID = "oni-idle-animation";
       const GROUP = "main";
@@ -196,13 +203,13 @@
             });
 
             // 1) Save globally on Actor
-            await api.setActorConfig(actor, next);
+           await api.setActorConfig(actor, next);
 
-            // 2) Apply locally (this client)
-            await api.applyActorConfigToAllTokens(actor.id);
+// Apply locally (this client) using SOURCE actor id matching
+await api.applySourceActorConfigToAllTokens(actor.id);
 
-            // 3) Sync across all clients
-            api.emitSocketApply(actor.id);
+// Sync across all clients
+api.emitSocketApply(actor.id);
           } catch (e) {
             err("Submit handler failed", e);
           }
