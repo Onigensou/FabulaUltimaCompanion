@@ -1,4 +1,3 @@
-
 /**
  * Fabula Initiative — Module Controller (Foundry V12)
  * - Auto-spawns UI for every client when combat starts (and despawns when combat ends)
@@ -17,6 +16,17 @@
   const IDS = {
     ROOT_ID: "oni-turnbar-root",
     STYLE_ID: "oni-turnbar-style",
+  };
+
+  // =========================================================
+  // Summon filter helper
+  // =========================================================
+  const isSummonActor = (actor) => {
+    if (!actor) return false;
+    const v =
+      foundry.utils.getProperty(actor, "system.props.isSummon") ??
+      foundry.utils.getProperty(actor, "system.isSummon");
+    return v === true;
   };
 
   // =========================================================
@@ -399,34 +409,44 @@
         const c = combat.combatant;
         const tok = c.tokenId ? canvas.tokens?.get(c.tokenId) : null;
 
-        const rawImg =
-          tok?.document?.texture?.src ||
-          c.token?.texture?.src ||
-          c.actor?.img ||
-          "icons/svg/mystery-man.svg";
+        // NEW: if current actor is a Summon, hide CURRENT entirely
+        const curActor = tok?.actor ?? c.actor ?? (c.actorId ? game.actors?.get?.(c.actorId) : null);
+        const isSummon = isSummonActor(curActor);
 
-        const disp =
-          c.getFlag?.(MODULE_FLAG, "disposition") ??
-          c.token?.disposition ??
-          c.actor?.prototypeToken?.disposition ??
-          0;
+        if (!isSummon) {
+          const rawImg =
+            tok?.document?.texture?.src ||
+            c.token?.texture?.src ||
+            c.actor?.img ||
+            "icons/svg/mystery-man.svg";
 
-        current = {
-          key: `current::${c.id}`,
-          combatantId: c.id,
-          tokenId: c.tokenId,
-          actorId: c.actorId,
-          name: c.name ?? c.actor?.name ?? "Current",
-          rawImg,
-          isWebm: typeof rawImg === "string" && /\.webm(\?|#|$)/i.test(rawImg),
-          disposition: Number(disp ?? 0),
-        };
+          const disp =
+            c.getFlag?.(MODULE_FLAG, "disposition") ??
+            c.token?.disposition ??
+            c.actor?.prototypeToken?.disposition ??
+            0;
+
+          current = {
+            key: `current::${c.id}`,
+            combatantId: c.id,
+            tokenId: c.tokenId,
+            actorId: c.actorId,
+            name: c.name ?? c.actor?.name ?? "Current",
+            rawImg,
+            isWebm: typeof rawImg === "string" && /\.webm(\?|#|$)/i.test(rawImg),
+            disposition: Number(disp ?? 0),
+          };
+        }
       }
 
       // QUEUE ENTRIES
       const entries = [];
       for (const tok of tokens) {
         if (!tok?.actor) continue;
+
+        // NEW: skip Summons entirely
+        if (isSummonActor(tok.actor)) continue;
+
         if (!TUNER.includeHiddenTokens && tok.document.hidden) continue;
         if (!TUNER.includeDefeated && tok.actor?.statuses?.has?.("defeated")) continue;
 
@@ -441,6 +461,10 @@
         if (combat && combat.scene?.id === scene?.id) {
           const c = combat.combatants?.find((cc) => cc?.tokenId === tok.id);
           if (c) {
+            // NEW: if the combatant actor is a Summon, ignore it (extra safety)
+            const cActor = c?.actor ?? (c?.actorId ? game.actors?.get?.(c.actorId) : null);
+            if (isSummonActor(cActor)) continue;
+
             combatantId = c.id;
             remaining = c.getFlag(MODULE_FLAG, "activations.value");
             max = c.getFlag(MODULE_FLAG, "activations.max");
