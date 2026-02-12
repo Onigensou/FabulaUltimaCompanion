@@ -1,5 +1,5 @@
-import { registerIdleAnimTokenConfigTab } from "./token-config-idle-tab.js";
-import { OniIdleAnimManager } from "./idle-anim-manager.js";
+import { registerIdleAnimTokenConfigTab } from "./idle-animation-configTab.js";
+import { OniIdleAnimManager } from "./idle-animation-manager.js";
 
 export function registerIdleAnimSystem() {
   // 1) Inject the tab
