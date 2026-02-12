@@ -3,7 +3,7 @@
 // Adds two checkboxes that SAVE into token flags automatically
 // (because of the input "name=flags.<moduleId>....")
 
-import { OniIdleAnimManager } from "./idle-anim-manager.js";
+import { OniIdleAnimManager } from "./idle-animation-manager.js";
 
 export function registerIdleAnimTokenConfigTab() {
   const TAG = "[ONI][IdleAnimTab]";
