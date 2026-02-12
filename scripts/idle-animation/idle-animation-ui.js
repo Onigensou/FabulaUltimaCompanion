@@ -6,9 +6,6 @@
  * Injects into BOTH:
  *  - Prototype Token Config: edits ACTOR default (blueprint)
  *  - Token Config: edits TOKEN override (per token)
- *
- * Prototype actorId fix:
- *  - Prototype TokenConfig has app.id: "TokenConfig-Actor.<ACTOR_ID>"  :contentReference[oaicite:2]{index=2}
  * ============================================================================ */
 
 (() => {
@@ -39,7 +36,6 @@
   }
 
   function bindTabs(app, root) {
-    // Match your test injector style: TokenConfig has app._tabs array in v12 :contentReference[oaicite:3]{index=3}
     try {
       const tabs = app?._tabs;
       if (!tabs) return { ok: false, reason: "no app._tabs" };
@@ -81,7 +77,6 @@
   }
 
   function parseActorIdFromPrototypeAppId(appId) {
-    // "TokenConfig-Actor.<ACTOR_ID>"
     if (typeof appId !== "string") return null;
     const prefix = "TokenConfig-Actor.";
     if (!appId.startsWith(prefix)) return null;
@@ -94,22 +89,18 @@
     const prototypeMode = isPrototypeTokenConfig(app);
     const normalMode = isNormalTokenConfig(app);
 
-    // PROTOTYPE: doc.actorId may be null, so parse from app.id
     const actorId =
       prototypeMode
         ? (parseActorIdFromPrototypeAppId(app?.id) ?? null)
         : (doc?.actorId ?? app?.token?.document?.actorId ?? null);
 
     const actor = actorId ? game.actors?.get(actorId) : null;
-
-    // For token config, we also want the token document id
     const tokenId = normalMode ? (doc?.id ?? app?.token?.id ?? null) : null;
 
     return { prototypeMode, normalMode, actorId, actor, doc, tokenId };
   }
 
   function buildPanelHTML({ mode }) {
-    // mode: "prototype" | "token"
     const isProto = mode === "prototype";
 
     const header = isProto
@@ -178,15 +169,12 @@
 
     try {
       const $html = html instanceof jQuery ? html : $(html);
-
-      // Avoid duplicates on rerender
       if ($html.find('[data-oni-idle-anim="tab"]').length) return;
 
       const root = ensureRoot($html, app);
       const ctx = resolveContext(app);
 
       if (!ctx.prototypeMode && !ctx.normalMode) return;
-
       if (!ctx.actor) {
         dbg("No actor resolved; skipping injection.", {
           appId: app?.id,
@@ -199,16 +187,6 @@
         return;
       }
 
-      dbg("TokenConfig render -> injecting", {
-        appId: app?.id,
-        title: app?.title,
-        prototypeMode: ctx.prototypeMode,
-        normalMode: ctx.normalMode,
-        actorId: ctx.actorId,
-        actorName: ctx.actor.name,
-        tokenId: ctx.tokenId
-      });
-
       const TAB_ID = "oni-idle-animation";
       const GROUP = "main";
 
@@ -218,7 +196,6 @@
         return;
       }
 
-      // NAV BUTTON
       $nav.append($(`
         <a class="item"
            data-tab="${TAB_ID}"
@@ -228,55 +205,34 @@
         </a>
       `));
 
-      // PANEL
       const mode = ctx.prototypeMode ? "prototype" : "token";
       const $panel = buildPanelHTML({ mode });
       insertPanel($html, $panel);
 
-      // Rebind tabs so the new tab is clickable (same technique as your test injector) :contentReference[oaicite:4]{index=4}
       const res = bindTabs(app, root);
       dbg("bindTabs()", res);
 
-      // Prefill:
-      // - Prototype: actor default
-      // - Token: token override if exists; else actor default
+      // Prefill
       let prefill;
       if (ctx.prototypeMode) {
         prefill = await api.getActorDefaultConfig(ctx.actor);
-        dbg("Prefill (prototype) from actor default", { prefill });
       } else {
         const token = canvas?.tokens?.get?.(ctx.tokenId) ?? null;
-        if (token) {
-          const eff = await api.applyEffectiveConfigToToken ? null : null; // (noop to avoid confusion)
-          const override = await api.getTokenOverrideConfig(token);
-          if (override) {
-            prefill = override;
-            dbg("Prefill (token) from token override", { prefill });
-          } else {
-            prefill = await api.getActorDefaultConfig(ctx.actor);
-            dbg("Prefill (token) from actor default", { prefill });
-          }
-        } else {
-          // If token isn't on canvas yet, fallback to actor default
-          prefill = await api.getActorDefaultConfig(ctx.actor);
-          dbg("Prefill (token) fallback actor default (token not found on canvas)", { prefill });
-        }
+        const override = token ? await api.getTokenOverrideConfig(token) : null;
+        prefill = override ?? (await api.getActorDefaultConfig(ctx.actor));
       }
 
       $panel.find('[data-oni-idle-field="float"]').prop("checked", !!prefill?.float);
       $panel.find('[data-oni-idle-field="bounce"]').prop("checked", !!prefill?.bounce);
 
-      // Reset button (token config only): clears override and syncs/apply
+      // Reset override
       if (ctx.normalMode) {
         $panel.find(".oni-idle-reset-to-proto").on("click", async () => {
           try {
             const token = canvas?.tokens?.get?.(ctx.tokenId) ?? null;
             if (!token) return;
 
-            dbg("Reset to Prototype clicked", { tokenId: token.id, actorId: ctx.actorId });
-
             await api.clearTokenOverrideConfig(token);
-            // Apply effective (now actor default)
             await api.applyEffectiveConfigToToken(token);
             api.emitSocketApplyToken(token.id);
           } catch (e) {
@@ -285,7 +241,7 @@
         });
       }
 
-      // SUBMIT: bind once per window
+      // Submit
       const $form = $html.find("form");
       if ($form.length && !$form.attr("data-oni-idle-submit-bound")) {
         $form.attr("data-oni-idle-submit-bound", "1");
@@ -297,31 +253,16 @@
               bounce: $panel.find('[data-oni-idle-field="bounce"]').is(":checked")
             });
 
-            // Prototype submit -> save actor default, apply all tokens (respect overrides), sync applyActor
             if (ctx.prototypeMode) {
-              dbg("Prototype submit -> save actor default + apply all + sync", {
-                actorId: ctx.actorId,
-                actorName: ctx.actor.name,
-                next
-              });
-
               await api.setActorDefaultConfig(ctx.actor, next);
               await api.applyActorToAllTokens(ctx.actorId);
               api.emitSocketApplyActor(ctx.actorId);
               return;
             }
 
-            // Token submit -> save token override, apply token only, sync applyToken
             if (ctx.normalMode) {
               const token = canvas?.tokens?.get?.(ctx.tokenId) ?? null;
               if (!token) return;
-
-              dbg("Token submit -> save token override + apply token + sync", {
-                tokenId: token.id,
-                tokenName: token.name,
-                actorId: ctx.actorId,
-                next
-              });
 
               await api.setTokenOverrideConfig(token, next);
               await api.applyEffectiveConfigToToken(token);
