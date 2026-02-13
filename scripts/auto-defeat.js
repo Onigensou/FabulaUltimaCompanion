@@ -2,165 +2,146 @@
  *  ONI - Auto Defeat System (Foundry V12)
  *  File: auto-defeat.js
  * ============================================
- *  What it does:
- *  - Watches HP changes on Actors
- *  - If HP hits 0, checks:
- *    1) Database option: system.props.option_autoDefeat enabled
- *    2) Token disposition is enemy (-1)  [token.document.disposition]
- *    3) Actor has system.props.npc_rank (if missing => skip)
- *    4) Rank must be Soldier/Elite (never Champion)
- *    5) Actor system.props.token_option_persist must NOT be true
- *  - If all pass => runs Defeat operation (auto)
+ *  Uses your DB Resolver public API:
+ *    await window.FUCompanion.api.getCurrentGameDb()
+ *  (NOT FUCompanion.api.DB_Resolver)
  *
- *  Debug:
- *  - Toggle globalThis.ONI_AUTO_DEFEAT_DEBUG = true/false
+ *  Gates:
+ *   - DB option: system.props.option_autoDefeat must be enabled
+ *   - Token must be ENEMY: token.document.disposition === -1
+ *   - Actor must have npc_rank; if missing => skip
+ *   - npc_rank must be Soldier or Elite (never Champion)
+ *   - token_option_persist true => skip (never auto defeat)
+ *
+ *  Debug toggle:
+ *   globalThis.ONI_AUTO_DEFEAT_DEBUG = true/false
  * ============================================ */
 
 (() => {
-  // =========================
+  // -------------------------
   // Debug Toggle
-  // =========================
+  // -------------------------
   const DEBUG =
     typeof globalThis.ONI_AUTO_DEFEAT_DEBUG === "boolean"
       ? globalThis.ONI_AUTO_DEFEAT_DEBUG
-      : true; // default ON for now
+      : true;
 
   const TAG = "[ONI][AutoDefeat]";
+  const log = (...a) => DEBUG && console.log(TAG, ...a);
+  const warn = (...a) => DEBUG && console.warn(TAG, ...a);
+  const err = (...a) => DEBUG && console.error(TAG, ...a);
 
-  function log(...args) {
-    if (!DEBUG) return;
-    console.log(TAG, ...args);
-  }
-  function warn(...args) {
-    if (!DEBUG) return;
-    console.warn(TAG, ...args);
-  }
-  function error(...args) {
-    if (!DEBUG) return;
-    console.error(TAG, ...args);
-  }
-
-  // =========================
-  // Config (edit if needed)
-  // =========================
+  // -------------------------
+  // Config
+  // -------------------------
   const MODULE_ID = "fabula-ultima-companion";
   const SOCKET_NS = `module.${MODULE_ID}`;
 
-  // Your system data paths (confirmed from your sample NPC actor JSON)
+  const PATH_DB_OPTION = "system.props.option_autoDefeat";
+  const PATH_HP = "system.props.current_hp";
+
   const PATH_NPC_RANK = "system.props.npc_rank";
   const PATH_TOKEN_PERSIST = "system.props.token_option_persist";
 
-  // Database option path (your campaign DB actor)
-  const PATH_DB_OPTION = "system.props.option_autoDefeat";
-
-  // =========================
+  // -------------------------
   // Helpers
-  // =========================
+  // -------------------------
   function get(obj, path, fallback = undefined) {
     try {
-      return foundry.utils.getProperty(obj, path) ?? fallback;
-    } catch (e) {
+      const v = foundry.utils.getProperty(obj, path);
+      return v ?? fallback;
+    } catch {
       return fallback;
     }
   }
 
-  function normalizeRank(v) {
-    if (v == null) return "";
-    return String(v).trim().toLowerCase();
-  }
-
-  function isAutoDefeatRank(rank) {
-    // Only soldier/elite are eligible. Champion is never eligible.
-    const r = normalizeRank(rank);
-    return r === "soldier" || r === "elite";
-  }
-
   function parseDbOption(value) {
-    // Support boolean true, string "ON", "true", "1", etc.
     if (typeof value === "boolean") return value;
     if (value == null) return false;
     const s = String(value).trim().toLowerCase();
     return s === "on" || s === "true" || s === "1" || s === "yes" || s === "enabled";
   }
 
-  function isHpChange(updateData) {
-    // We’re watching “current_hp” changes (Custom System Builder style)
-    // Your log shows updateActor detects HP related updates correctly already.
-    // We’ll keep it broad but safe:
+  function normalizeRank(v) {
+    return String(v ?? "").trim().toLowerCase();
+  }
+
+  function isAllowedRank(rank) {
+    const r = normalizeRank(rank);
+    if (!r) return false;
+    if (r === "champion") return false;
+    return r === "soldier" || r === "elite";
+  }
+
+  function hpUpdateDetected(updateData) {
     const flat = foundry.utils.flattenObject(updateData ?? {});
     const keys = Object.keys(flat);
-    const hit = keys.some((k) => k.includes("current_hp") || k.includes("attributeBar") || k.includes("hp"));
+    const hit = keys.some((k) => k.includes("current_hp"));
     return { hit, keys };
   }
 
-  // =========================
-  // DB Resolver (your requested fix)
-  // =========================
+  // -------------------------
+  // DB Resolver (FIXED)
+  // -------------------------
   async function resolveDatabaseActor() {
-    // 1) Preferred: FUCompanion DB_Resolver API
-    const resolver =
-      globalThis.FUCompanion?.api?.DB_Resolver ||
-      globalThis.fucompanion?.api?.DB_Resolver ||
-      globalThis.ONI?.DB_Resolver;
+    // Per your guide, the resolver API lives here:
+    // window.FUCompanion.api.getCurrentGameDb()
+    const api = globalThis?.FUCompanion?.api || window?.FUCompanion?.api;
 
-    if (resolver) {
-      log("DB_Resolver detected:", resolver);
-
-      // Try common function names (so this script survives small refactors)
-      const candidates = [
-        resolver.getDatabaseActor,
-        resolver.resolveDatabaseActor,
-        resolver.getDatabase,
-        resolver.resolveDatabase,
-        resolver.getGlobalDatabaseActor,
-      ].filter((fn) => typeof fn === "function");
-
-      for (const fn of candidates) {
-        try {
-          const db = await fn.call(resolver);
-          if (db?.id) {
-            log("DB_Resolver resolved database actor:", { name: db.name, id: db.id });
-            return db;
-          }
-        } catch (e) {
-          warn("DB_Resolver method failed, trying next:", e);
-        }
-      }
-
-      warn("DB_Resolver exists but no working resolver method was found.");
-    } else {
-      warn("DB_Resolver not found on globalThis.FUCompanion.api.DB_Resolver (or aliases).");
+    if (!api) {
+      warn("FUCompanion.api not found. AutoDefeat cannot resolve DB.");
+      warn("CHECK LOAD ORDER: scripts/db-resolver.js must be FIRST in module.json scripts array.");
+      return null;
     }
 
-    // 2) Fallback (only if DB_Resolver is missing)
-    // This is intentionally strict: if more than 1 candidate, we refuse to guess.
-    const all = game.actors?.contents ?? [];
-    const matches = all.filter((a) => get(a, PATH_DB_OPTION) !== undefined);
-
-    if (matches.length === 1) {
-      warn("Fallback DB resolve used (single match):", { name: matches[0].name, id: matches[0].id });
-      return matches[0];
+    if (typeof api.getCurrentGameDb !== "function") {
+      warn("FUCompanion.api.getCurrentGameDb() not found.");
+      warn("CHECK: your scripts/db-resolver.js is loaded and exposes getCurrentGameDb.");
+      warn("CHECK LOAD ORDER: db-resolver.js must be FIRST in module.json scripts array.");
+      return null;
     }
 
-    warn("Fallback DB resolve refused (ambiguous). Found:", matches.map((a) => `${a.name} (${a.id})`));
-    return null;
+    try {
+      const resolved = await api.getCurrentGameDb();
+      const db = resolved?.db ?? null;
+      const source = resolved?.source ?? null;
+
+      log("DB resolved via getCurrentGameDb():", {
+        gameName: resolved?.gameName ?? null,
+        db: db ? `${db.name} (${db.id})` : null,
+        source: source ? `${source.name} (${source.id})` : null,
+        rawGameId: resolved?.rawGameId ?? null,
+      });
+
+      // Use db for global options (your option_autoDefeat lives on DB actor)
+      return db;
+    } catch (e) {
+      err("getCurrentGameDb() failed:", e);
+      return null;
+    }
   }
 
-  // =========================
-  // Defeat Operation (auto)
-  // =========================
-  async function performDefeat(token) {
-    // token is a Token (placeable object) OR TokenDocument — we’ll normalize.
-    const tokenDoc = token?.document ?? token;
+  // -------------------------
+  // Defeat Operation
+  // (GM executes; players request via socket)
+  // -------------------------
+  async function performDefeat(tokenLike) {
+    const tokenDoc = tokenLike?.document ?? tokenLike; // Token or TokenDocument
     const scene = tokenDoc?.parent;
+
     if (!tokenDoc?.id || !scene?.id) {
-      warn("performDefeat aborted (bad token):", { token, tokenDoc, scene });
+      warn("performDefeat aborted: invalid tokenDoc or scene.", { tokenDoc, scene });
       return;
     }
 
-    // If not GM, ask GM to do it (token deletion/combat edits are GM operations)
+    // Non-GM: ask GM to perform deletion/combat cleanup
     if (!game.user.isGM) {
-      log("Not GM -> requesting GM defeat via socket:", { sceneId: scene.id, tokenId: tokenDoc.id });
+      log("Not GM -> sending AUTO_DEFEAT_REQUEST to GM via socket.", {
+        sceneId: scene.id,
+        tokenId: tokenDoc.id,
+        tokenName: tokenDoc.name,
+      });
+
       game.socket.emit(SOCKET_NS, {
         type: "AUTO_DEFEAT_REQUEST",
         sceneId: scene.id,
@@ -169,17 +150,15 @@
       return;
     }
 
-    log("GM performing defeat now:", {
+    log("GM performing defeat:", {
+      scene: scene.name,
       token: tokenDoc.name,
       tokenId: tokenDoc.id,
-      scene: scene.name,
-      sceneId: scene.id,
     });
 
-    // 1) Remove combatant if in combat
+    // Remove from any combats that reference this token
     try {
-      const combats = game.combats?.contents ?? [];
-      for (const c of combats) {
+      for (const c of (game.combats?.contents ?? [])) {
         const combatant = c?.combatants?.find((cb) => cb.tokenId === tokenDoc.id);
         if (combatant) {
           log("Removing combatant:", { combat: c.name, combatId: c.id, combatantId: combatant.id });
@@ -190,140 +169,120 @@
       warn("Combatant removal failed (continuing):", e);
     }
 
-    // 2) Optional: set a “defeated” visual marker before delete (very short)
-    // If you have a specific effect from your Defeat.js, swap it in here.
+    // Visual hint (optional)
     try {
       await tokenDoc.update({ alpha: 0.35 });
-    } catch (e) {
-      // ignore
-    }
+    } catch {}
 
-    // 3) Delete the token (this is the “auto defeat” end result)
+    // Delete token
     try {
-      log("Deleting token document...");
       await tokenDoc.delete();
-      log("Token deleted.");
+      ChatMessage.create({ content: `<b>${tokenDoc.name}</b> was defeated!` });
+      log("Defeat completed -> token deleted.");
     } catch (e) {
-      error("Token delete failed:", e);
+      err("Token delete failed:", e);
+      ui.notifications?.error(`Auto Defeat failed for ${tokenDoc.name}. (GM permission?)`);
     }
   }
 
-  // =========================
-  // Gate + Execute
-  // =========================
+  // -------------------------
+  // Main Gate Pipeline
+  // -------------------------
   async function tryAutoDefeatForActor(actor, updateData, options, userId) {
-    try {
-      if (!actor) return;
+    if (!actor) return;
 
-      // A) HP update gate
-      const hpCheck = isHpChange(updateData);
-      if (!hpCheck.hit) return;
+    const hpGate = hpUpdateDetected(updateData);
+    if (!hpGate.hit) return;
 
-      // We read current HP from your NPC data shape (custom system builder style)
-      const currentHp = Number(get(actor, "system.props.current_hp", NaN));
-      if (!Number.isFinite(currentHp)) {
-        // Some actors may store HP differently; if so we skip rather than guessing.
-        log("HP path not found -> skip actor:", {
-          actor: `${actor.name} (${actor.id})`,
-          triedPath: "system.props.current_hp",
-        });
-        return;
-      }
+    const hp = Number(get(actor, PATH_HP, NaN));
+    log("updateActor detected (HP related):", {
+      actor: `${actor.name} (${actor.id})`,
+      userId,
+      newHp: hp,
+      changedKeys: hpGate.keys,
+    });
 
-      log("updateActor detected (HP related):", {
+    if (!Number.isFinite(hp) || hp !== 0) return;
+
+    // DB option gate
+    const db = await resolveDatabaseActor();
+    if (!db) {
+      warn("No database actor resolved -> skip.");
+      return;
+    }
+
+    const opt = get(db, PATH_DB_OPTION);
+    const enabled = parseDbOption(opt);
+    log("DB option check:", {
+      dbActor: `${db.name} (${db.id})`,
+      optionPath: PATH_DB_OPTION,
+      rawValue: opt,
+      enabled,
+    });
+
+    if (!enabled) return;
+
+    // Persist gate
+    const persist = Boolean(get(actor, PATH_TOKEN_PERSIST, false));
+    if (persist) {
+      log("token_option_persist is TRUE -> skip auto defeat:", {
         actor: `${actor.name} (${actor.id})`,
-        userId,
-        newHp: currentHp,
-        changedKeys: hpCheck.keys,
+        path: PATH_TOKEN_PERSIST,
+        value: persist,
       });
+      return;
+    }
 
-      // Only when HP is exactly 0
-      if (currentHp !== 0) return;
-
-      // B) Resolve DB + option check
-      const dbActor = await resolveDatabaseActor();
-      if (!dbActor) {
-        warn("No database actor resolved -> skip.");
-        return;
-      }
-
-      const dbValue = get(dbActor, PATH_DB_OPTION);
-      const enabled = parseDbOption(dbValue);
-
-      log("DB option check:", {
-        dbActor: `${dbActor.name} (${dbActor.id})`,
-        optionPath: PATH_DB_OPTION,
-        rawValue: dbValue,
-        enabled,
+    // npc_rank must exist gate
+    const npcRank = get(actor, PATH_NPC_RANK, undefined);
+    if (npcRank === undefined || npcRank === null || String(npcRank).trim() === "") {
+      log("npc_rank missing -> exclude from auto defeat:", {
+        actor: `${actor.name} (${actor.id})`,
+        path: PATH_NPC_RANK,
+        value: npcRank,
       });
+      return;
+    }
 
-      if (!enabled) return;
+    // rank allowed gate
+    if (!isAllowedRank(npcRank)) {
+      log("Rank not eligible -> skip:", { actor: actor.name, npcRank });
+      return;
+    }
 
-      // C) New gate: token_option_persist
-      const persist = Boolean(get(actor, PATH_TOKEN_PERSIST, false));
-      if (persist) {
-        log("token_option_persist is TRUE -> skip auto defeat:", {
-          actor: `${actor.name} (${actor.id})`,
-          path: PATH_TOKEN_PERSIST,
-          value: persist,
-        });
-        return;
-      }
+    // Token gates: active tokens + disposition
+    const tokens = actor.getActiveTokens(true, true) ?? [];
+    if (!tokens.length) {
+      warn("Actor HP hit 0 but no active tokens found -> skip.", actor.name);
+      return;
+    }
 
-      // D) New gate: npc_rank must exist (if missing -> skip)
-      const npcRank = get(actor, PATH_NPC_RANK, undefined);
-      if (npcRank === undefined || npcRank === null || String(npcRank).trim() === "") {
-        log("npc_rank missing -> exclude from auto defeat (likely Player Actor):", {
-          actor: `${actor.name} (${actor.id})`,
-          path: PATH_NPC_RANK,
-          value: npcRank,
-        });
-        return;
-      }
+    log("Active tokens found for actor:", tokens.map((t) => `${t.name} (${t.id})`));
 
-      // E) Rank must be Soldier/Elite only
-      if (!isAutoDefeatRank(npcRank)) {
-        log("Rank not eligible -> skip:", { actor: actor.name, npcRank });
-        return;
-      }
-
-      // F) Get the active token(s) for this actor, then disposition gate on TokenDocument
-      const tokens = actor.getActiveTokens(true, true) ?? [];
-      if (!tokens.length) {
-        warn("Actor HP hit 0 but no active tokens found -> skip:", actor.name);
-        return;
-      }
-
-      log("Active tokens found for actor:", tokens.map((t) => `${t.name} (${t.id})`));
-
-      for (const token of tokens) {
-        const dispo = token?.document?.disposition; // <-- FIX (your confirmed correct path)
-        if (dispo !== -1) {
-          log("Disposition not enemy (-1) -> skip token:", {
-            token: token.name,
-            disposition: dispo,
-          });
-          continue;
-        }
-
-        // Final pass: execute defeat
-        log("AUTO DEFEAT PASSED ALL GATES -> executing:", {
+    for (const token of tokens) {
+      const disposition = token?.document?.disposition; // <-- FIXED
+      if (disposition !== -1) {
+        log("Disposition not enemy (-1) -> skip token:", {
           token: token.name,
-          actor: actor.name,
-          npcRank,
-          disposition: dispo,
+          disposition,
         });
-
-        await performDefeat(token);
+        continue;
       }
-    } catch (e) {
-      error("tryAutoDefeatForActor crashed:", e);
+
+      log("AUTO DEFEAT PASSED ALL GATES -> executing:", {
+        token: token.name,
+        actor: actor.name,
+        npcRank,
+        disposition,
+      });
+
+      await performDefeat(token);
     }
   }
 
-  // =========================
-  // Socket (GM executes requests)
-  // =========================
+  // -------------------------
+  // Socket Listener (GM executes requests)
+  // -------------------------
   function installSocketListener() {
     game.socket.off(SOCKET_NS, onSocketMessage);
     game.socket.on(SOCKET_NS, onSocketMessage);
@@ -339,34 +298,36 @@
       const scene = game.scenes.get(sceneId);
       const tokenDoc = scene?.tokens?.get(tokenId);
 
-      log("GM received AUTO_DEFEAT_REQUEST:", { sceneId, tokenId, hasScene: !!scene, hasToken: !!tokenDoc });
+      log("GM received AUTO_DEFEAT_REQUEST:", {
+        sceneId,
+        tokenId,
+        hasScene: !!scene,
+        hasToken: !!tokenDoc,
+      });
 
       if (!scene || !tokenDoc) return;
       await performDefeat(tokenDoc);
     } catch (e) {
-      error("Socket handler crashed:", e);
+      err("Socket handler crashed:", e);
     }
   }
 
-  // =========================
-  // Hook Install
-  // =========================
+  // -------------------------
+  // Hooks
+  // -------------------------
+  async function onUpdateActor(actor, updateData, options, userId) {
+    await tryAutoDefeatForActor(actor, updateData, options, userId);
+  }
+
   function installHooks() {
-    // IMPORTANT: updateActor is what your HP bar change is firing (from your log),
-    // so we hook there and then find active tokens for that actor.
     Hooks.off("updateActor", onUpdateActor);
     Hooks.on("updateActor", onUpdateActor);
     log("Hook installed: updateActor");
   }
 
-  async function onUpdateActor(actor, updateData, options, userId) {
-    // Don’t run on compendium/synthetic weirdness; try anyway but safely.
-    await tryAutoDefeatForActor(actor, updateData, options, userId);
-  }
-
-  // =========================
+  // -------------------------
   // Boot
-  // =========================
+  // -------------------------
   Hooks.once("ready", () => {
     log("Booting Auto Defeat system...", { DEBUG });
     installSocketListener();
