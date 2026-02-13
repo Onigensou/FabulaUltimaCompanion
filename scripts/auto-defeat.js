@@ -162,60 +162,108 @@
   // -------------------------
   // Defeat Operation
   // -------------------------
-  async function performDefeat(tokenLike) {
-    const tokenDoc = tokenLike?.document ?? tokenLike; // Token or TokenDocument
-    const scene = tokenDoc?.parent;
+ async function performDefeat(tokenLike) {
+  // Normalize: tokenLike can be Token (placeable) or TokenDocument
+  const token = tokenLike?.object ?? tokenLike; // if TokenDocument, .object is the placeable
+  const tokenDoc = tokenLike?.document ?? tokenLike; // if Token, .document is TokenDocument
+  const scene = tokenDoc?.parent;
 
-    if (!tokenDoc?.id || !scene?.id) {
-      warn("performDefeat aborted: invalid tokenDoc or scene.", { tokenDoc, scene });
-      return;
-    }
+  if (!tokenDoc?.id || !scene?.id) {
+    warn("performDefeat aborted: invalid tokenDoc or scene.", { tokenDoc, scene });
+    return;
+  }
 
-    // Non-GM -> request GM
-    if (!game.user.isGM) {
-      log("Not GM -> sending AUTO_DEFEAT_REQUEST via socket:", {
-        sceneId: scene.id,
-        tokenId: tokenDoc.id,
-        tokenName: tokenDoc.name,
-      });
-
-      game.socket.emit(SOCKET_NS, {
-        type: "AUTO_DEFEAT_REQUEST",
-        sceneId: scene.id,
-        tokenId: tokenDoc.id,
-      });
-      return;
-    }
-
-    log("GM performing defeat:", {
-      scene: scene.name,
-      token: tokenDoc.name,
+  // Non-GM -> request GM (deleting/combat edits must be GM)
+  if (!game.user.isGM) {
+    log("Not GM -> sending AUTO_DEFEAT_REQUEST via socket:", {
+      sceneId: scene.id,
       tokenId: tokenDoc.id,
+      tokenName: tokenDoc.name,
     });
 
-    // Remove from combats
-    try {
-      for (const c of (game.combats?.contents ?? [])) {
-        const combatant = c?.combatants?.find((cb) => cb.tokenId === tokenDoc.id);
-        if (combatant) {
-          log("Removing combatant:", { combat: c.name, combatId: c.id, combatantId: combatant.id });
-          await c.deleteEmbeddedDocuments("Combatant", [combatant.id]);
-        }
-      }
-    } catch (e) {
-      warn("Combatant removal failed (continuing):", e);
-    }
-
-    // Delete token
-    try {
-      await tokenDoc.delete();
-      ChatMessage.create({ content: `<b>${tokenDoc.name}</b> was defeated!` });
-      log("Defeat completed -> token deleted.");
-    } catch (e) {
-      err("Token delete failed:", e);
-      ui.notifications?.error(`Auto Defeat failed for ${tokenDoc.name}.`);
-    }
+    game.socket.emit(SOCKET_NS, {
+      type: "AUTO_DEFEAT_REQUEST",
+      sceneId: scene.id,
+      tokenId: tokenDoc.id,
+    });
+    return;
   }
+
+  // Need the placeable token for Sequencer .on(token)
+  if (!token) {
+    warn("performDefeat aborted: TokenDocument has no placeable object (not rendered?).", {
+      tokenId: tokenDoc.id,
+      sceneId: scene.id,
+    });
+    return;
+  }
+
+  log("GM performing defeat:", {
+    scene: scene.name,
+    token: tokenDoc.name,
+    tokenId: tokenDoc.id,
+  });
+
+  // --- Combat detection + removeTokenFromCombatIfNeeded (copied behavior style from Defeated.js) ---
+  const getActiveCombatOnActiveScene = () => {
+    const activeScene = canvas?.scene ?? null;
+    const activeSceneId = activeScene?.id ?? null;
+
+    const combats = game.combats?.contents ?? [];
+    const matches = activeSceneId ? combats.filter(c => c.scene?.id === activeSceneId) : [];
+
+    const picked =
+      matches.find(c => (typeof c.started === "boolean" ? c.started : Number(c.round ?? 0) > 0)) ??
+      matches.find(c => (typeof c.active === "boolean" ? c.active : false)) ??
+      matches.find(c => (c.combatants?.size ?? 0) > 0) ??
+      null;
+
+    return picked;
+  };
+
+  const activeCombat = getActiveCombatOnActiveScene();
+  const isInCombatOnThisScene = !!activeCombat;
+
+  const removeTokenFromCombatIfNeeded = async (tokenDocToRemove) => {
+    if (!isInCombatOnThisScene || !activeCombat) return;
+
+    const combatant =
+      activeCombat.combatants?.find(c => c.tokenId === tokenDocToRemove.id) ??
+      null;
+
+    if (!combatant) return;
+
+    try {
+      await activeCombat.deleteEmbeddedDocuments("Combatant", [combatant.id]);
+    } catch (e) {
+      console.warn(`${TAG} Failed to remove combatant for token "${tokenDocToRemove.name}"`, e);
+    }
+  };
+
+  // --- EXACT animation chain from your Defeated.js (no dialog, auto-run) ---
+  try {
+    await new Sequence()
+      .sound("https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/Enemy_Death.ogg")
+      .animation().on(token).tint("#ff0000").waitUntilFinished()
+      .animation().on(token).fadeOut(1000).waitUntilFinished()
+      .thenDo(async () => {
+        // 1) remove from combat first
+        await removeTokenFromCombatIfNeeded(tokenDoc);
+
+        // 2) delete token AFTER animation
+        await tokenDoc.delete();
+
+        // 3) chat message
+        ChatMessage.create({ content: `<b>${token.name}</b> was defeated!` });
+
+        log("Defeat completed -> token deleted (after animation).");
+      })
+      .play();
+  } catch (e) {
+    err("performDefeat failed:", e);
+    ui.notifications?.error(`Auto Defeat failed for ${tokenDoc.name}.`);
+  }
+}
 
   // -------------------------
   // Main Gate Pipeline
