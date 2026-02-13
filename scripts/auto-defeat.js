@@ -23,7 +23,7 @@
   const DEBUG =
     typeof globalThis.ONI_AUTO_DEFEAT_DEBUG === "boolean"
       ? globalThis.ONI_AUTO_DEFEAT_DEBUG
-      : true;
+      : false;
 
   const TAG = "[ONI][AutoDefeat]";
   const log = (...a) => DEBUG && console.log(TAG, ...a);
