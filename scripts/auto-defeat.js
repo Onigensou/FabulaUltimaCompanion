@@ -2,16 +2,15 @@
  *  ONI - Auto Defeat System (Foundry V12)
  *  File: auto-defeat.js
  * ============================================
- *  Uses your DB Resolver public API:
+ *  DB Resolver:
  *    await window.FUCompanion.api.getCurrentGameDb()
- *  (NOT FUCompanion.api.DB_Resolver)
  *
  *  Gates:
- *   - DB option: system.props.option_autoDefeat must be enabled
- *   - Token must be ENEMY: token.document.disposition === -1
- *   - Actor must have npc_rank; if missing => skip
+ *   - DB option: system.props.option_autoDefeat enabled
+ *   - Token disposition enemy: -1
+ *   - Actor must have npc_rank (missing => skip)
  *   - npc_rank must be Soldier or Elite (never Champion)
- *   - token_option_persist true => skip (never auto defeat)
+ *   - token_option_persist true => skip
  *
  *  Debug toggle:
  *   globalThis.ONI_AUTO_DEFEAT_DEBUG = true/false
@@ -80,40 +79,79 @@
     return { hit, keys };
   }
 
-  // -------------------------
-  // DB Resolver (FIXED)
-  // -------------------------
-  async function resolveDatabaseActor() {
-    // Per your guide, the resolver API lives here:
-    // window.FUCompanion.api.getCurrentGameDb()
-    const api = globalThis?.FUCompanion?.api || window?.FUCompanion?.api;
-
-    if (!api) {
-      warn("FUCompanion.api not found. AutoDefeat cannot resolve DB.");
-      warn("CHECK LOAD ORDER: scripts/db-resolver.js must be FIRST in module.json scripts array.");
-      return null;
+  /**
+   * ✅ Bulletproof disposition getter (Foundry v12 safe)
+   *
+   * tokenLike can be:
+   * - Token (placeable object) -> has .document (TokenDocument)
+   * - TokenDocument -> has .disposition
+   */
+  function getDisposition(tokenLike) {
+    // Case A: TokenDocument
+    if (tokenLike?.documentName === "Token" && typeof tokenLike?.disposition !== "undefined") {
+      return tokenLike.disposition;
     }
 
-    if (typeof api.getCurrentGameDb !== "function") {
-      warn("FUCompanion.api.getCurrentGameDb() not found.");
-      warn("CHECK: your scripts/db-resolver.js is loaded and exposes getCurrentGameDb.");
-      warn("CHECK LOAD ORDER: db-resolver.js must be FIRST in module.json scripts array.");
+    // Case B: placeable Token
+    if (tokenLike?.document && typeof tokenLike.document.disposition !== "undefined") {
+      return tokenLike.document.disposition;
+    }
+
+    // Case C: sometimes Token has direct .disposition getter (rare but possible)
+    if (typeof tokenLike?.disposition !== "undefined") {
+      return tokenLike.disposition;
+    }
+
+    return undefined;
+  }
+
+  function debugDispositionFailure(tokenLike) {
+    if (!DEBUG) return;
+    const tokenDoc = tokenLike?.document ?? tokenLike;
+
+    log("Disposition debug dump:", {
+      tokenLikeClass: tokenLike?.constructor?.name,
+      tokenLikeDocumentName: tokenLike?.documentName,
+      tokenLikeHasDocument: !!tokenLike?.document,
+      tokenDocClass: tokenDoc?.constructor?.name,
+      tokenDocDocumentName: tokenDoc?.documentName,
+      tokenDocHasDispositionProp: tokenDoc ? Object.prototype.hasOwnProperty.call(tokenDoc, "disposition") : false,
+      tokenDocDispositionValue: tokenDoc?.disposition,
+      tokenLikeDispositionValue: tokenLike?.disposition,
+      tokenLikeDocumentDispositionValue: tokenLike?.document?.disposition,
+      tokenName: tokenDoc?.name ?? tokenLike?.name,
+      tokenId: tokenDoc?.id ?? tokenLike?.id,
+    });
+
+    // Also try to print a compact key list (helpful for synthetic edge cases)
+    try {
+      const keys = Object.keys(tokenLike ?? {});
+      log("tokenLike keys (first 30):", keys.slice(0, 30));
+    } catch {}
+  }
+
+  // -------------------------
+  // DB Resolver
+  // -------------------------
+  async function resolveDatabaseActor() {
+    const api = globalThis?.FUCompanion?.api || window?.FUCompanion?.api;
+
+    if (!api || typeof api.getCurrentGameDb !== "function") {
+      warn("FUCompanion.api.getCurrentGameDb() not found. Check load order for db-resolver.");
       return null;
     }
 
     try {
       const resolved = await api.getCurrentGameDb();
       const db = resolved?.db ?? null;
-      const source = resolved?.source ?? null;
 
       log("DB resolved via getCurrentGameDb():", {
         gameName: resolved?.gameName ?? null,
         db: db ? `${db.name} (${db.id})` : null,
-        source: source ? `${source.name} (${source.id})` : null,
+        source: resolved?.source ? `${resolved.source.name} (${resolved.source.id})` : null,
         rawGameId: resolved?.rawGameId ?? null,
       });
 
-      // Use db for global options (your option_autoDefeat lives on DB actor)
       return db;
     } catch (e) {
       err("getCurrentGameDb() failed:", e);
@@ -123,7 +161,6 @@
 
   // -------------------------
   // Defeat Operation
-  // (GM executes; players request via socket)
   // -------------------------
   async function performDefeat(tokenLike) {
     const tokenDoc = tokenLike?.document ?? tokenLike; // Token or TokenDocument
@@ -134,9 +171,9 @@
       return;
     }
 
-    // Non-GM: ask GM to perform deletion/combat cleanup
+    // Non-GM -> request GM
     if (!game.user.isGM) {
-      log("Not GM -> sending AUTO_DEFEAT_REQUEST to GM via socket.", {
+      log("Not GM -> sending AUTO_DEFEAT_REQUEST via socket:", {
         sceneId: scene.id,
         tokenId: tokenDoc.id,
         tokenName: tokenDoc.name,
@@ -156,7 +193,7 @@
       tokenId: tokenDoc.id,
     });
 
-    // Remove from any combats that reference this token
+    // Remove from combats
     try {
       for (const c of (game.combats?.contents ?? [])) {
         const combatant = c?.combatants?.find((cb) => cb.tokenId === tokenDoc.id);
@@ -169,11 +206,6 @@
       warn("Combatant removal failed (continuing):", e);
     }
 
-    // Visual hint (optional)
-    try {
-      await tokenDoc.update({ alpha: 0.35 });
-    } catch {}
-
     // Delete token
     try {
       await tokenDoc.delete();
@@ -181,7 +213,7 @@
       log("Defeat completed -> token deleted.");
     } catch (e) {
       err("Token delete failed:", e);
-      ui.notifications?.error(`Auto Defeat failed for ${tokenDoc.name}. (GM permission?)`);
+      ui.notifications?.error(`Auto Defeat failed for ${tokenDoc.name}.`);
     }
   }
 
@@ -213,6 +245,7 @@
 
     const opt = get(db, PATH_DB_OPTION);
     const enabled = parseDbOption(opt);
+
     log("DB option check:", {
       dbActor: `${db.name} (${db.id})`,
       optionPath: PATH_DB_OPTION,
@@ -225,22 +258,14 @@
     // Persist gate
     const persist = Boolean(get(actor, PATH_TOKEN_PERSIST, false));
     if (persist) {
-      log("token_option_persist is TRUE -> skip auto defeat:", {
-        actor: `${actor.name} (${actor.id})`,
-        path: PATH_TOKEN_PERSIST,
-        value: persist,
-      });
+      log("token_option_persist TRUE -> skip:", { actor: actor.name, persist });
       return;
     }
 
     // npc_rank must exist gate
     const npcRank = get(actor, PATH_NPC_RANK, undefined);
     if (npcRank === undefined || npcRank === null || String(npcRank).trim() === "") {
-      log("npc_rank missing -> exclude from auto defeat:", {
-        actor: `${actor.name} (${actor.id})`,
-        path: PATH_NPC_RANK,
-        value: npcRank,
-      });
+      log("npc_rank missing -> skip:", { actor: actor.name, npcRank });
       return;
     }
 
@@ -250,17 +275,24 @@
       return;
     }
 
-    // Token gates: active tokens + disposition
+    // Active tokens + disposition gate
     const tokens = actor.getActiveTokens(true, true) ?? [];
     if (!tokens.length) {
-      warn("Actor HP hit 0 but no active tokens found -> skip.", actor.name);
+      warn("HP hit 0 but no active tokens found -> skip.", actor.name);
       return;
     }
 
     log("Active tokens found for actor:", tokens.map((t) => `${t.name} (${t.id})`));
 
     for (const token of tokens) {
-      const disposition = token?.document?.disposition; // <-- FIXED
+      const disposition = getDisposition(token);
+
+      if (typeof disposition === "undefined") {
+        warn("Disposition is undefined -> cannot evaluate enemy gate.");
+        debugDispositionFailure(token);
+        continue;
+      }
+
       if (disposition !== -1) {
         log("Disposition not enemy (-1) -> skip token:", {
           token: token.name,
@@ -281,7 +313,7 @@
   }
 
   // -------------------------
-  // Socket Listener (GM executes requests)
+  // Socket Listener (GM executes)
   // -------------------------
   function installSocketListener() {
     game.socket.off(SOCKET_NS, onSocketMessage);
