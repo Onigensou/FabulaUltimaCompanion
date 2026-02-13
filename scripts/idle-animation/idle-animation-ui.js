@@ -16,7 +16,7 @@
   if (globalThis[INSTALLED_KEY]) return;
   globalThis[INSTALLED_KEY] = true;
 
-  if (globalThis.ONI_IDLE_ANIM_DEBUG === undefined) globalThis.ONI_IDLE_ANIM_DEBUG = true;
+  if (globalThis.ONI_IDLE_ANIM_DEBUG === undefined) globalThis.ONI_IDLE_ANIM_DEBUG = false;
   function dbg(...args) { if (globalThis.ONI_IDLE_ANIM_DEBUG) console.log(TAG, ...args); }
   function warn(...args) { console.warn(TAG, ...args); }
   function err(...args) { console.error(TAG, ...args); }
