@@ -594,7 +594,6 @@ Hooks.once("ready", async () => {
         by: confirmingUserId ?? game.userId
       });
 
-      ui.notifications?.info("Action confirmed.");
       console.log(`[${MODULE_ID}] Confirm resolved`, { chatMsgId: chatMsg.id, hitUUIDs, missUUIDs });
 
     } catch (err) {
