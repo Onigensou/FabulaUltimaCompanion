@@ -1,9 +1,10 @@
 // scripts/warehouse/PayloadManager.js
 // ----------------------------------------------------------------------------
 // ONI Warehouse — Payload Manager (Foundry V12)
-// - Creates the universal payload ONCE
-// - Payload NEVER shrinks (only grows)
-// - Stores payload globally: globalThis.__WAREHOUSE_PAYLOAD
+// - Creates a universal payload (global) but DOES NOT lock actor context forever
+// - Each "open" should refresh ctx.actorUuid based on the caller's current context
+// - If actorUuid is not provided, we CLEAR it so resolver can fall back to
+//   game.user.character AT THE MOMENT OF USE.
 // ----------------------------------------------------------------------------
 
 import { WarehouseDebug } from "./warehouse-debug.js";
@@ -19,12 +20,65 @@ export class WarehousePayloadManager {
   }
 
   /**
+   * Refresh run-time context so payload doesn't get "stuck" with old actorUuid.
+   * Rules:
+   * - Always update meta.initial to latest initial input (debug trace).
+   * - Always refresh ctx.userId + ctx.sceneId (helps track GM edge cases).
+   * - If initial.actorUuid is provided => set it now (live "moment of use").
+   * - If initial.actorUuid is NOT provided => clear ctx.actorUuid
+   *   so WarehouseAPI.resolveContext can pull game.user.character NOW.
+   */
+  static refresh(payload, initial = {}) {
+    payload.meta = payload.meta ?? {};
+    payload.ctx = payload.ctx ?? {};
+
+    // Keep an always-up-to-date snapshot of the latest call that opened the system
+    payload.meta.initial = initial ?? {};
+    payload.meta.lastOpenedAt = Date.now();
+
+    // Refresh user + scene every run (useful for GM edge-case probes)
+    payload.ctx.userId = initial.userId ?? game.user?.id ?? payload.ctx.userId ?? null;
+    payload.ctx.sceneId = canvas?.scene?.id ?? payload.ctx.sceneId ?? null;
+
+    // Live actor context refresh
+    if (initial?.actorUuid) {
+      payload.ctx.actorUuid = initial.actorUuid;
+    } else {
+      // Important: do NOT keep stale actorUuid; allow resolver to decide "now"
+      payload.ctx.actorUuid = null;
+    }
+
+    // Allow caller to override storage pointers if they ever pass them (optional)
+    if (initial?.storageDbUuid) payload.ctx.storageDbUuid = initial.storageDbUuid;
+    if (initial?.storageActorUuid) payload.ctx.storageActorUuid = initial.storageActorUuid;
+
+    // Prevent stale labels if UI shows actorName
+    if ("actorName" in payload.ctx) payload.ctx.actorName = null;
+
+    // Debug flag can be refreshed too
+    if (typeof initial?.debug === "boolean") {
+      payload.meta.debug = initial.debug;
+    }
+
+    WarehouseDebug.log(payload, "PAYLOAD", "Payload refreshed (live context)", {
+      payloadId: payload.meta.payloadId,
+      userId: payload.ctx.userId,
+      actorUuid: payload.ctx.actorUuid,
+      sceneId: payload.ctx.sceneId
+    });
+
+    return payload;
+  }
+
+  /**
    * Get (or create) the global payload.
-   * If it already exists, we return it unchanged (Manager rule).
+   * NEW behavior:
+   * - If it exists, we REFRESH it with the latest initial context.
+   * - This prevents "Database Actor / Database Actor" from getting stuck until reload.
    */
   static getOrCreate(initial = {}) {
     const existing = globalThis[this.GLOBAL_KEY];
-    if (existing) return existing;
+    if (existing) return this.refresh(existing, initial);
 
     const payload = this.create(initial);
     globalThis[this.GLOBAL_KEY] = payload;
@@ -44,7 +98,11 @@ export class WarehousePayloadManager {
         createdAt: Date.now(),
         system: "ONI_Warehouse",
         version: "0.1.0",
-        debug: initial.debug ?? true
+        debug: initial.debug ?? true,
+
+        // Latest "open" input snapshot (updated every run in refresh())
+        initial: initial ?? {},
+        lastOpenedAt: Date.now()
       },
 
       // ----------------------------------------------------------------------
@@ -126,9 +184,6 @@ export class WarehousePayloadManager {
       audit: []
     };
 
-    // Allow adding extra initial fields (niche specs) without overwriting core shape
-    payload.meta.initial = initial;
-
     WarehouseDebug.log(payload, "BOOT", "Payload created", {
       payloadId,
       userId: payload.ctx.userId,
@@ -183,5 +238,14 @@ export class WarehousePayloadManager {
     payload.meta.closedAt = Date.now();
     payload.meta.closeReason = reason;
     WarehouseDebug.log(payload, "CLOSE", "Payload marked closed", { reason });
+  }
+
+  /**
+   * Optional helper: hard reset payload (useful if you want a "Reset Warehouse" macro later).
+   */
+  static hardReset(reason = "hardReset") {
+    const existing = globalThis[this.GLOBAL_KEY];
+    if (existing) this.markClosed(existing, reason);
+    delete globalThis[this.GLOBAL_KEY];
   }
 }
