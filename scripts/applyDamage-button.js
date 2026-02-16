@@ -202,10 +202,46 @@ Hooks.once("ready", async () => {
         }
       }
 
+// ------------------------------------------------------------
+// Custom Logic — Resolution Phase (GM-side confirm)
+// ------------------------------------------------------------
+const clResMacroName = "CustomLogic-Resolution";
+
+// We treat blank as "no custom logic"
+const clResRaw = String(flagged?.customLogicResolutionRaw ?? flagged?.meta?.customLogicResolutionRaw ?? "").trim();
+const hasCLRes = !!clResRaw;
+
+console.log(`${RUN_TAG} custom logic (resolution)`, {
+  runId,
+  hasCLRes,
+  clResLen: clResRaw.length,
+  clResPreview: clResRaw.slice(0, 140)
+});
+
+if (hasCLRes) {
+  const cl = game.macros.getName(clResMacroName);
+  if (!cl) {
+    console.warn(`${RUN_TAG} CustomLogic-Resolution macro missing`, { runId, clResMacroName });
+  } else {
+    // IMPORTANT:
+    // - Pass the SAME payload object so the snippet can mutate it (advPayload, targets, meta, etc.)
+    // - Also pass the "args" in case you want snippet to read them later (optional convenience)
+    flagged.__confirmArgs = args;
+
+    console.log(`${RUN_TAG} Calling CustomLogic-Resolution`, { runId, clResMacroName });
+    await cl.execute({ __AUTO: true, __PAYLOAD: flagged });
+    console.log(`${RUN_TAG} Returned from CustomLogic-Resolution`, {
+      runId,
+      metaMarks: flagged?.meta?.__customLogicResolution?.lastRun ?? null,
+      err: flagged?.meta?.__customLogicResolution?.error ?? null
+    });
+  }
+}
+
       const {
         advMacroName     = "AdvanceDamage",
         missMacroName    = "Miss",
-        advPayload       = {},
+        advPayload       = (flagged?.advPayload ?? {}),
         elementType      = "physical",
         isSpellish       = false,
 
