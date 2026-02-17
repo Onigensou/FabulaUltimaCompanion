@@ -2,7 +2,15 @@
  * [ONI][PseudoAnim] Listener (Foundry VTT v12)
  * - Boots on every client
  * - Listens for socket events on "module.fabula-ultima-companion"
- * - Executes registered pseudo animations by scriptId (safe registry)
+ * - Plays pseudo animations locally on each client
+ *
+ * DESIGN:
+ * - Dynamic mode: payload provides `scriptSource` (JS string) executed on each client.
+ * - Optional mode: payload provides `scriptId` (looked up in REGISTRY).
+ *
+ * SECURITY NOTE (intentional design choice):
+ * - `scriptSource` executes code. Only do this if you trust the sender/scripts in your module.
+ * - We do NOT pass `game` into the dynamic function by default.
  */
 
 (() => {
@@ -16,194 +24,148 @@
 
   const wait = (ms) => new Promise(r => setTimeout(r, ms));
 
-  // ---------------------------------------------------------------------------
-  // Registry: add more pseudo animations here over time
-  // ---------------------------------------------------------------------------
+  // Optional registry (empty by default). You can add presets later if you want.
   const REGISTRY = {};
 
   // Dedupe guard: prevents double-play on same client (local + socket, or accidental echo)
   globalThis.__ONI_PSEUDO_SEEN_RUNIDS__ ??= new Set();
 
-  // Tween helper (same idea as your demo)
-  function animateJump(obj, fromX, fromY, toX, toY, duration, heightPx) {
-    return new Promise(resolve => {
-      const startTime = performance.now();
-      const ticker = canvas.app.ticker;
-
-      const update = () => {
-        const now = performance.now();
-        const elapsed = now - startTime;
-        const t = Math.min(elapsed / duration, 1);
-
-        const x = fromX + (toX - fromX) * t;
-        const y = fromY + (toY - fromY) * t;
-
-        const arc = Math.sin(t * Math.PI) * heightPx;
-        obj.x = x;
-        obj.y = y - arc;
-
-        if (t >= 1) {
-          ticker.remove(update);
-          resolve();
-        }
-      };
-
-      ticker.add(update);
-    });
-  }
-
-  // Clone token into PIXI.Sprite (texture-safe approach from your demos)
-  async function createActorSpriteFromToken(token) {
-    const texSrc = token.document.texture.src;
-    const baseObj = token.mesh ?? token.icon;
-    let texture;
-
-    if (baseObj?.texture) texture = baseObj.texture;
-    else texture = await loadTexture(texSrc);
-
-    const sprite = new PIXI.Sprite(texture);
-    sprite.anchor.set(0.5);
-    sprite.x = token.center.x;
-    sprite.y = token.center.y;
-
-    if (baseObj) {
-      sprite.width  = baseObj.width;
-      sprite.height = baseObj.height;
+  // ---------------------------------------------------------------------------
+  // Dynamic Script Runner (scriptSource)
+  // ---------------------------------------------------------------------------
+  async function runDynamicScript(scriptSource, ctx) {
+    if (typeof scriptSource !== "string" || !scriptSource.trim()) {
+      throw new Error("scriptSource is empty or not a string.");
     }
 
-    sprite.zIndex = 5000;
-    canvas.stage.sortableChildren = true;
-    canvas.stage.addChild(sprite);
-    canvas.stage.sortChildren();
+    // We compile a function that runs an async IIFE containing the scriptSource.
+    // The script can use: ctx, canvas, PIXI, AudioHelper, loadTexture, fromUuid, wait, foundry
+    //
+    // NOTE: We intentionally do NOT pass `game` here by default.
+    // If you need it later, you can add it explicitly as a parameter.
+    const fn = new Function(
+      "ctx",
+      "canvas",
+      "PIXI",
+      "AudioHelper",
+      "loadTexture",
+      "fromUuid",
+      "wait",
+      "foundry",
+      `
+      "use strict";
+      return (async () => {
+        ${scriptSource}
+      })();
+      `
+    );
 
-    return sprite;
+    return await fn(
+      ctx,
+      canvas,
+      PIXI,
+      AudioHelper,
+      loadTexture,
+      fromUuid,
+      wait,
+      foundry
+    );
   }
 
   // ---------------------------------------------------------------------------
-  // TEST SCRIPT: jumpSelf
-  // - Uses casterTokenUuid as performer
-  // - Plays sound during jump
+  // Helpers: resolve tokens from UUIDs
   // ---------------------------------------------------------------------------
-  REGISTRY.jumpSelf = async function jumpSelf(ctx) {
-    const { runId, casterToken, params } = ctx;
+  async function resolveTokenFromUuid(uuid) {
+    if (!uuid) return null;
 
-    if (!casterToken) throw new Error("jumpSelf requires casterTokenUuid to resolve a caster token.");
+    const doc = await fromUuid(uuid);
+    // doc might be TokenDocument (preferred), or something else
+    const tok = doc?.object ?? canvas.tokens?.get(doc?.id) ?? null;
+    return tok ?? null;
+  }
 
-    const jumpHeight = Number(params?.jumpHeight ?? 80);
-    const durationUp = Number(params?.durationUp ?? 180);
-    const durationDown = Number(params?.durationDown ?? 220);
-    const soundSrc = params?.soundSrc ?? "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/Fall.ogg";
-    const soundVolume = Number(params?.soundVolume ?? 1.0);
-
-    // Per-client concurrency guard (prevents spam overlap on the same client)
-    globalThis.__ONI_PSEUDO_ANIM_GUARD__ ??= new Set();
-    if (globalThis.__ONI_PSEUDO_ANIM_GUARD__.has(runId)) {
-      warn("Guard: already running runId:", runId);
-      return;
+  async function resolveTokensFromUuids(uuids) {
+    const out = [];
+    for (const u of (uuids ?? [])) {
+      const tok = await resolveTokenFromUuid(u);
+      if (tok) out.push(tok);
     }
-    globalThis.__ONI_PSEUDO_ANIM_GUARD__.add(runId);
-
-    const baseMesh = casterToken.mesh ?? casterToken.icon;
-    const originalTokenVisible = casterToken.visible;
-    const originalMeshVisible = baseMesh?.visible ?? true;
-
-    let sprite;
-
-    try {
-      if (!canvas?.ready) throw new Error("Canvas not ready on this client.");
-
-      sprite = await createActorSpriteFromToken(casterToken);
-
-      // Hide the real token on THIS client (same technique as your demo)
-      if (baseMesh) baseMesh.visible = false;
-      casterToken.visible = false;
-
-      // play sound (broadcast=false here: we already synced by socket)
-      AudioHelper.play({ src: soundSrc, volume: soundVolume, autoplay: true, loop: false }, false);
-
-      const startX = sprite.x;
-      const startY = sprite.y;
-
-      // Jump up & down in-place
-      await animateJump(sprite, startX, startY, startX, startY, durationUp, jumpHeight);
-      await wait(40);
-      await animateJump(sprite, startX, startY, startX, startY, durationDown, jumpHeight);
-
-    } finally {
-      if (sprite) {
-        canvas.stage.removeChild(sprite);
-        // IMPORTANT: do NOT destroy(true) (texture safety per your demos)
-        sprite.destroy();
-      }
-      if (baseMesh) baseMesh.visible = originalMeshVisible;
-      casterToken.visible = originalTokenVisible;
-
-      globalThis.__ONI_PSEUDO_ANIM_GUARD__.delete(runId);
-    }
-  };
+    return out;
+  }
 
   // ---------------------------------------------------------------------------
-  // Socket Receiver
+  // Socket Receiver (and local receiver entry point)
   // ---------------------------------------------------------------------------
   async function onSocketMessage(msg) {
     try {
+      // Only handle our message type
       if (!msg || msg.type !== "oni.pseudo.play") return;
 
-     const runId = msg.runId ?? "NO_RUNID";
+      const runId = msg.runId ?? "NO_RUNID";
 
-// Dedupe guard
-if (globalThis.__ONI_PSEUDO_SEEN_RUNIDS__.has(runId)) {
-  warn(`SKIP (dedupe) runId=${runId} scriptId=${msg.scriptId}`);
-  return;
-}
-globalThis.__ONI_PSEUDO_SEEN_RUNIDS__.add(runId);
+      // Dedupe guard
+      if (globalThis.__ONI_PSEUDO_SEEN_RUNIDS__.has(runId)) {
+        warn(`SKIP (dedupe) runId=${runId} scriptId=${msg.scriptId}`);
+        return;
+      }
+      globalThis.__ONI_PSEUDO_SEEN_RUNIDS__.add(runId);
 
-log(`RECV runId=${runId} scriptId=${msg.scriptId}`, msg);
+      log(`RECV runId=${runId} scriptId=${msg.scriptId ?? "(none)"}`, msg);
 
-      const scriptFn = REGISTRY[msg.scriptId];
-      if (!scriptFn) throw new Error(`Unknown scriptId="${msg.scriptId}" (not registered on this client).`);
-
-      // Resolve caster token (if present)
-      let casterToken = null;
-      if (msg.casterTokenUuid) {
-        const casterDoc = await fromUuid(msg.casterTokenUuid);
-        // casterDoc may be TokenDocument
-        casterToken = casterDoc?.object ?? canvas.tokens?.get(casterDoc?.id) ?? null;
+      if (!canvas?.ready) {
+        throw new Error("Canvas not ready on this client.");
       }
 
-      // Resolve targets (optional)
-      const targetTokens = [];
-      for (const tuuid of (msg.targetTokenUuids ?? [])) {
-        const tdoc = await fromUuid(tuuid);
-        const tok = tdoc?.object ?? canvas.tokens?.get(tdoc?.id) ?? null;
-        if (tok) targetTokens.push(tok);
-      }
+      // Resolve caster + targets
+      const casterToken = await resolveTokenFromUuid(msg.casterTokenUuid);
+      const targetTokens = await resolveTokensFromUuids(msg.targetTokenUuids);
 
+      // Build context passed to the animation script
       const ctx = {
         runId,
-        msg,
+        msg, // raw message for advanced needs
         casterToken,
         targetTokens,
         params: msg.params ?? {},
+        meta: msg.meta ?? {},
       };
 
+      // Dynamic script mode
+      if (msg.scriptSource) {
+        log(`RUN (dynamic) runId=${runId}`, { scriptBytes: msg.scriptSource.length });
+        await runDynamicScript(msg.scriptSource, ctx);
+        log(`DONE (dynamic) runId=${runId}`);
+        return;
+      }
+
+      // Optional registry fallback mode
+      const scriptId = msg.scriptId;
+      const scriptFn = scriptId ? REGISTRY[scriptId] : null;
+      if (!scriptFn) {
+        throw new Error(
+          `No scriptSource provided and unknown scriptId="${scriptId}". ` +
+          `Either include msg.scriptSource or register msg.scriptId in REGISTRY.`
+        );
+      }
+
       await scriptFn(ctx);
-      log(`DONE runId=${runId} scriptId=${msg.scriptId}`);
+      log(`DONE runId=${runId} scriptId=${scriptId}`);
 
     } catch (e) {
       err("Socket playback error:", e);
     }
   }
 
- Hooks.once("ready", () => {
-  game.socket.on(SOCKET_NS, onSocketMessage);
+  Hooks.once("ready", () => {
+    // Listen for broadcasts from other clients
+    game.socket.on(SOCKET_NS, onSocketMessage);
 
-  // Expose local entry point so broadcaster can run it locally
-  game.ONI ??= {};
-  game.ONI.pseudo ??= {};
-  game.ONI.pseudo._receive = onSocketMessage;
+    // Expose local entry point so broadcaster can run it locally (no socket echo)
+    game.ONI ??= {};
+    game.ONI.pseudo ??= {};
+    game.ONI.pseudo._receive = onSocketMessage;
 
-  log("Listener ready. Registered scripts:", Object.keys(REGISTRY));
-});
+    log("Listener ready. Dynamic scriptSource enabled. Registry keys:", Object.keys(REGISTRY));
+  });
 
 })();
