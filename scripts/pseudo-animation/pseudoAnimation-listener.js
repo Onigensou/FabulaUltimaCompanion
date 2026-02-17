@@ -43,33 +43,25 @@
     //
     // NOTE: We intentionally do NOT pass `game` here by default.
     // If you need it later, you can add it explicitly as a parameter.
-    const fn = new Function(
-      "ctx",
-      "canvas",
-      "PIXI",
-      "AudioHelper",
-      "loadTexture",
-      "fromUuid",
-      "wait",
-      "foundry",
-      `
-      "use strict";
-      return (async () => {
-        ${scriptSource}
-      })();
-      `
-    );
+const fn = new Function(
+  "ctx",
+  "canvas",
+  "PIXI",
+  "FAudioHelper",
+  "loadTexture",
+  "fromUuid",
+  "wait",
+  "foundry",
+  `
+  "use strict";
+  return (async () => {
+    ${scriptSource}
+  })();
+  `
+);
 
-    return await fn(
-      ctx,
-      canvas,
-      PIXI,
-      AudioHelper,
-      loadTexture,
-      fromUuid,
-      wait,
-      foundry
-    );
+const audio = foundry?.audio?.AudioHelper ?? globalThis.AudioHelper; // fallback just in case
+return await fn(ctx, canvas, PIXI, audio, loadTexture, fromUuid, wait, foundry);
   }
 
   // ---------------------------------------------------------------------------
