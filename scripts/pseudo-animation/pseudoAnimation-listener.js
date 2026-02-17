@@ -21,6 +21,9 @@
   // ---------------------------------------------------------------------------
   const REGISTRY = {};
 
+  // Dedupe guard: prevents double-play on same client (local + socket, or accidental echo)
+  globalThis.__ONI_PSEUDO_SEEN_RUNIDS__ ??= new Set();
+
   // Tween helper (same idea as your demo)
   function animateJump(obj, fromX, fromY, toX, toY, duration, heightPx) {
     return new Promise(resolve => {
@@ -146,8 +149,16 @@
     try {
       if (!msg || msg.type !== "oni.pseudo.play") return;
 
-      const runId = msg.runId ?? "NO_RUNID";
-      log(`RECV runId=${runId} scriptId=${msg.scriptId}`, msg);
+     const runId = msg.runId ?? "NO_RUNID";
+
+// Dedupe guard
+if (globalThis.__ONI_PSEUDO_SEEN_RUNIDS__.has(runId)) {
+  warn(`SKIP (dedupe) runId=${runId} scriptId=${msg.scriptId}`);
+  return;
+}
+globalThis.__ONI_PSEUDO_SEEN_RUNIDS__.add(runId);
+
+log(`RECV runId=${runId} scriptId=${msg.scriptId}`, msg);
 
       const scriptFn = REGISTRY[msg.scriptId];
       if (!scriptFn) throw new Error(`Unknown scriptId="${msg.scriptId}" (not registered on this client).`);
@@ -184,10 +195,15 @@
     }
   }
 
-  Hooks.once("ready", () => {
-    // install socket listener
-    game.socket.on(SOCKET_NS, onSocketMessage);
-    log("Listener ready. Registered scripts:", Object.keys(REGISTRY));
-  });
+ Hooks.once("ready", () => {
+  game.socket.on(SOCKET_NS, onSocketMessage);
+
+  // Expose local entry point so broadcaster can run it locally
+  game.ONI ??= {};
+  game.ONI.pseudo ??= {};
+  game.ONI.pseudo._receive = onSocketMessage;
+
+  log("Listener ready. Registered scripts:", Object.keys(REGISTRY));
+});
 
 })();
