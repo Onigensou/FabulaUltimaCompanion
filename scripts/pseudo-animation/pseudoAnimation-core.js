@@ -23,10 +23,11 @@
     return game[API_PATH[0]][API_PATH[1]];
   }
 
-  function makeRunId() {
-    // stable enough for debugging across clients
-    return `${Date.now()}-${randomID(6)}`;
-  }
+function makeRunId() {
+  // Foundry v12+: use foundry.utils.randomID (global randomID is deprecated)
+  const rid = foundry?.utils?.randomID ? foundry.utils.randomID(6) : `${Math.random()}`.slice(2, 8);
+  return `${Date.now()}-${rid}`;
+}
 
   function normalizePayload(input) {
     const p = foundry.utils.deepClone(input ?? {});
