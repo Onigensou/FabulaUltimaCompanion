@@ -46,6 +46,20 @@
     return null;
   }
 
+  async function runLocallyIfPossible(msg) {
+  const fn = game.ONI?.pseudo?._receive;
+  if (typeof fn !== "function") {
+    warn("Local receive not installed yet (listener missing or not ready).");
+    return;
+  }
+  // Run locally on the broadcaster client
+  try {
+    await fn(msg);
+  } catch (e) {
+    err("Local playback error:", e);
+  }
+}
+
   function emitToAllClients(payload) {
     const msg = normalizePayload(payload);
     const bad = validateOutgoing(msg);
@@ -58,8 +72,13 @@
     log(`EMIT runId=${msg.runId} scriptId=${msg.scriptId}`, msg);
 
     // Broadcast to everyone (including the sender)
-    game.socket.emit(SOCKET_NS, msg);
-    return msg.runId;
+game.socket.emit(SOCKET_NS, msg);
+
+// IMPORTANT: Foundry module sockets may not echo back to sender,
+// so we also run locally on the broadcaster client.
+runLocallyIfPossible(msg);
+
+return msg.runId;
   }
 
   Hooks.once("init", () => {
