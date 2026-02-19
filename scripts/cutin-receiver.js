@@ -131,6 +131,8 @@
       flashPeak = 0.9, flashInMs = 70, flashOutMs = 180, flashDelayMs = 60,
       slideInMs = 650, holdMs = 900, slideOutMs = 650,
       portraitHeightRatio = 0.9, portraitBottomMargin = 40, portraitInsetX = 220,
+      // NEW: portrait offset (Y only). Positive moves UP, negative moves DOWN.
+      portraitOffsetY = 0,
       sfxVol = 0.9
     } = payload || {};
 
@@ -158,7 +160,11 @@
     const scale = (H * portraitHeightRatio) / (p.texture.height || p.texture.baseTexture?.realHeight || 512);
     p.scale.set(scale, scale);
     const finalX = portraitInsetX;
-    const finalY = H - portraitBottomMargin;
+
+    // NEW: apply portraitOffsetY (positive => up)
+    const offY = Number.isFinite(Number(portraitOffsetY)) ? Number(portraitOffsetY) : 0;
+    const finalY = (H - portraitBottomMargin) - offY;
+
     p.x = -p.width - 80; p.y = finalY; p.alpha = 1;
 
     __layer.visible = true;
@@ -277,29 +283,29 @@
       });
 
       // PRELOAD manifest handler: GM sends a list of {key,url,type:"img"|"sfx"} for a combat
-socket.register(ACTION_PRELOAD, async (manifest) => {
-  try {
-    const cId  = manifest?.combatId ?? null;
-    const list = Array.isArray(manifest?.items) ? manifest.items : [];
-    if (!cId || !list.length) return;
+      socket.register(ACTION_PRELOAD, async (manifest) => {
+        try {
+          const cId  = manifest?.combatId ?? null;
+          const list = Array.isArray(manifest?.items) ? manifest.items : [];
+          if (!cId || !list.length) return;
 
-    // For each item, preload strictly from URL now (only during preload)
-    for (const it of list) {
-      if (!it?.key || !it?.url) continue;
-      if (it.type === "img") {
-        try { await preloadTexture(it.key, it.url); setCombatKey(cId, it.key); }
-        catch (e) { cacheBag()[it.key] = { miss:true, cachedAt:Date.now(), note:"LOAD_ERROR" }; setCombatKey(cId, it.key); }
-      } else if (it.type === "sfx") {
-        try { await preloadAudio(it.key, it.url); setCombatKey(cId, it.key); }
-        catch (e) { /* sfx load failure is non-fatal */ }
-      }
-    }
+          // For each item, preload strictly from URL now (only during preload)
+          for (const it of list) {
+            if (!it?.key || !it?.url) continue;
+            if (it.type === "img") {
+              try { await preloadTexture(it.key, it.url); setCombatKey(cId, it.key); }
+              catch (e) { cacheBag()[it.key] = { miss:true, cachedAt:Date.now(), note:"LOAD_ERROR" }; setCombatKey(cId, it.key); }
+            } else if (it.type === "sfx") {
+              try { await preloadAudio(it.key, it.url); setCombatKey(cId, it.key); }
+              catch (e) { /* sfx load failure is non-fatal */ }
+            }
+          }
 
-    console.log("[FU Cut-In] Preloaded via GM manifest for combat:", cId, "items:", list.length);
-  } catch (e) {
-    console.error("[FU Cut-In] Preload manifest error:", e);
-  }
-});
+          console.log("[FU Cut-In] Preloaded via GM manifest for combat:", cId, "items:", list.length);
+        } catch (e) {
+          console.error("[FU Cut-In] Preload manifest error:", e);
+        }
+      });
 
       window.__FU_CUTIN_PLAY = playCutInFromCache;
 
@@ -315,99 +321,99 @@ socket.register(ACTION_PRELOAD, async (manifest) => {
         }
       });
 
-// ------------------------------ Combat hooks: preload & forget (robust) ------------------------------
-// We listen to three hooks to catch all end paths:
-//  • combatEnd            – when the active flag is cleared via UI
-//  • deleteCombat         – when the Combat document is deleted
-//  • updateCombat(active) – when active flips to false (some modules/UIs do this)
-Hooks.on("combatStart", async (combat) => {
-  try {
-    const cId = combat?.id ?? `combat:${Date.now()}`;
-    const list = combat?.combatants?.contents ?? [];
+      // ------------------------------ Combat hooks: preload & forget (robust) ------------------------------
+      // We listen to three hooks to catch all end paths:
+      //  • combatEnd            – when the active flag is cleared via UI
+      //  • deleteCombat         – when the Combat document is deleted
+      //  • updateCombat(active) – when active flips to false (some modules/UIs do this)
+      Hooks.on("combatStart", async (combat) => {
+        try {
+          const cId = combat?.id ?? `combat:${Date.now()}`;
+          const list = combat?.combatants?.contents ?? [];
 
-    // Build a manifest only on the GM (players will receive it and preload)
-    if (game.user?.isGM) {
-      const items = [];
+          // Build a manifest only on the GM (players will receive it and preload)
+          if (game.user?.isGM) {
+            const items = [];
 
-      // SFX entries (GM decides final URLs)
-      for (const t of ["critical","zero_power","fumble"]) {
-        items.push({ type:"sfx", key:`sfx:${t}`, url:SFX_URLS[t] });
-      }
+            // SFX entries (GM decides final URLs)
+            for (const t of ["critical","zero_power","fumble"]) {
+              items.push({ type:"sfx", key:`sfx:${t}`, url:SFX_URLS[t] });
+            }
 
-      // Portraits per combatant
-      for (const c of list) {
-        const actor = c?.actor; if (!actor) continue;
-        const aId = actor.id;
-        const props = actor?.system?.props ?? {};
-        const defs = {
-          critical:   props.cut_in_critical || null,
-          zero_power: props.cut_in_zero_power || null,
-          fumble:     props.cut_in_fumble || null
-        };
-        for (const [type, url] of Object.entries(defs)) {
-          const key = `cutin:${aId}:${type}`;
-          if (url) items.push({ type:"img", key, url });
-          else     items.push({ type:"img", key, url:null }); // still create a slot; receivers will mark MISS
+            // Portraits per combatant
+            for (const c of list) {
+              const actor = c?.actor; if (!actor) continue;
+              const aId = actor.id;
+              const props = actor?.system?.props ?? {};
+              const defs = {
+                critical:   props.cut_in_critical || null,
+                zero_power: props.cut_in_zero_power || null,
+                fumble:     props.cut_in_fumble || null
+              };
+              for (const [type, url] of Object.entries(defs)) {
+                const key = `cutin:${aId}:${type}`;
+                if (url) items.push({ type:"img", key, url });
+                else     items.push({ type:"img", key, url:null }); // still create a slot; receivers will mark MISS
+              }
+            }
+
+            // Broadcast the manifest to every active user
+            const sock  = socketlib.registerModule(MODULE_ID);
+            const users = (game.users?.filter(u => u.active) ?? []).map(u => u.id);
+            await (typeof sock.executeForUsers === "function" && users.length
+              ? sock.executeForUsers(ACTION_PRELOAD, users, { combatId:cId, items })
+              : sock.executeForEveryone(ACTION_PRELOAD, { combatId:cId, items }));
+
+            // GM also preloads locally using the same path (call our own handler)
+            await socketlib.registerModule(MODULE_ID).executeForUser
+              ?.call(null, game.user.id, ACTION_PRELOAD, { combatId:cId, items });
+
+            ui.notifications.info("FU Cut-In: Assets cached for this combat.");
+            console.log("[FU Cut-In] GM broadcasted preload manifest for combat:", cId, "items:", items.length);
+          } else {
+            // Non-GM: do nothing here — we rely on the GM’s manifest handler above
+          }
+        } catch (e) {
+          console.error("[FU Cut-In] combatStart preload error:", e);
+        }
+      });
+
+      // unified cleanup function + console/notification
+      function _fuCleanupCombatCache(combat, reason) {
+        try {
+          const cId = combat?.id ?? null;
+          if (cId) forgetCombat(cId);
+          if (game.user?.isGM) {
+            ui.notifications.info("FU Cut-In: Cleared combat cache.");
+            console.log("[FU Cut-In] Cleared combat cache via", reason, "combatId:", cId);
+          } else {
+            console.log("[FU Cut-In] Cleared combat cache (non-GM) via", reason, "combatId:", cId);
+          }
+        } catch (e) {
+          console.error("[FU Cut-In] cleanup error:", e);
         }
       }
 
-      // Broadcast the manifest to every active user
-      const sock  = socketlib.registerModule(MODULE_ID);
-      const users = (game.users?.filter(u => u.active) ?? []).map(u => u.id);
-      await (typeof sock.executeForUsers === "function" && users.length
-        ? sock.executeForUsers(ACTION_PRELOAD, users, { combatId:cId, items })
-        : sock.executeForEveryone(ACTION_PRELOAD, { combatId:cId, items }));
+      // 1) Normal end
+      Hooks.on("combatEnd", (combat) => _fuCleanupCombatCache(combat, "combatEnd"));
 
-      // GM also preloads locally using the same path (call our own handler)
-      await socketlib.registerModule(MODULE_ID).executeForUser
-        ?.call(null, game.user.id, ACTION_PRELOAD, { combatId:cId, items });
+      // 2) Document deleted
+      Hooks.on("deleteCombat", (combat) => _fuCleanupCombatCache(combat, "deleteCombat"));
 
-      ui.notifications.info("FU Cut-In: Assets cached for this combat.");
-      console.log("[FU Cut-In] GM broadcasted preload manifest for combat:", cId, "items:", items.length);
-    } else {
-      // Non-GM: do nothing here — we rely on the GM’s manifest handler above
-    }
-  } catch (e) {
-    console.error("[FU Cut-In] combatStart preload error:", e);
-  }
-});
+      // 3) Active → false
+      Hooks.on("updateCombat", (combat, changed) => {
+        if (Object.prototype.hasOwnProperty.call(changed, "active") && changed.active === false) {
+          _fuCleanupCombatCache(combat, "updateCombat(active=false)");
+        }
+      });
 
-// unified cleanup function + console/notification
-function _fuCleanupCombatCache(combat, reason) {
-  try {
-    const cId = combat?.id ?? null;
-    if (cId) forgetCombat(cId);
-    if (game.user?.isGM) {
-      ui.notifications.info("FU Cut-In: Cleared combat cache.");
-      console.log("[FU Cut-In] Cleared combat cache via", reason, "combatId:", cId);
-    } else {
-      console.log("[FU Cut-In] Cleared combat cache (non-GM) via", reason, "combatId:", cId);
-    }
-  } catch (e) {
-    console.error("[FU Cut-In] cleanup error:", e);
-  }
-}
-
-// 1) Normal end
-Hooks.on("combatEnd", (combat) => _fuCleanupCombatCache(combat, "combatEnd"));
-
-// 2) Document deleted
-Hooks.on("deleteCombat", (combat) => _fuCleanupCombatCache(combat, "deleteCombat"));
-
-// 3) Active → false
-Hooks.on("updateCombat", (combat, changed) => {
-  if (Object.prototype.hasOwnProperty.call(changed, "active") && changed.active === false) {
-    _fuCleanupCombatCache(combat, "updateCombat(active=false)");
-  }
-});
-
-// Expose a tiny API for debugging (UNCHANGED — keep this)
-window[NS] = window[NS] || {};
-window[NS].cutin = {
-  cacheInfo: () => ({ size: cacheBag().size, keys: Object.keys(cacheBag()).filter(k=>!k.startsWith("__")) }),
-  preload:    preloadTexture,
-  play:       playCutInFromCache
-};
+      // Expose a tiny API for debugging (UNCHANGED — keep this)
+      window[NS] = window[NS] || {};
+      window[NS].cutin = {
+        cacheInfo: () => ({ size: cacheBag().size, keys: Object.keys(cacheBag()).filter(k=>!k.startsWith("__")) }),
+        preload:    preloadTexture,
+        play:       playCutInFromCache
+      };
 
       window[FLAG] = true;
       console.log("[FU Cut-In] Receiver+Cache installed.");
