@@ -10,18 +10,44 @@
   const warn = (...a) => console.warn(TAG, ...a);
   const err  = (...a) => console.error(TAG, ...a);
 
+  // ---------------------------------------------------------------------------
+  // Socket (GM-authoritative)
+  // ---------------------------------------------------------------------------
+  const SOCKET = `module.${MODULE_ID}`;
+
+  // Dedupe cache on GM: key -> timestamp
+  const _gmDedupe = new Map();
+  const DEDUPE_WINDOW_MS = 1500;
+
+  function makeDedupeKey({ actorUuid, hpCur, hpMax, trigger }) {
+    return `${actorUuid}::${trigger ?? "no-trigger"}::${hpCur}/${hpMax}`;
+  }
+
+  function gmShouldProcessOnce(key) {
+    const now = Date.now();
+
+    // Cleanup old entries opportunistically
+    for (const [k, t] of _gmDedupe.entries()) {
+      if (now - t > DEDUPE_WINDOW_MS) _gmDedupe.delete(k);
+    }
+
+    const last = _gmDedupe.get(key);
+    if (last && (now - last) <= DEDUPE_WINDOW_MS) return false;
+
+    _gmDedupe.set(key, now);
+    return true;
+  }
 
   // Reaction System integration -----------------------------------------------
   // We emit "oni:reactionPhase" with trigger keys:
   //   - creature_enter_crisis
   //   - creature_exit_crisis
   //
-  // This is designed to mirror your other trigger emit sites.
+  // IMPORTANT (GM-authoritative):
+  // - Only the GM client should emit reaction triggers for crisis enter/exit.
   function emitReactionPhase(payload) {
     try {
       if (globalThis?.ONI?.emit) {
-        // Local-only is fine because the GM client will also receive the actor update
-        // and therefore emit on its own client.
         globalThis.ONI.emit("oni:reactionPhase", payload, { local: true, world: false });
         return;
       }
@@ -69,7 +95,6 @@
 
   // Track "before" crisis state so we can detect ENTER/EXIT transitions cleanly
   const _preUpdateCrisisState = new WeakMap();
-
 
   function toNumber(v) {
     const n = Number(v);
@@ -195,6 +220,42 @@
   Hooks.once("ready", () => {
     log("Loaded.");
 
+    // -------------------------------------------------------------------------
+    // GM socket receiver: GM is the only one who applies/removes Crisis effects
+    // and emits crisis enter/exit reaction triggers.
+    // -------------------------------------------------------------------------
+    game.socket.on(SOCKET, async (msg) => {
+      try {
+        if (!game.user.isGM) return;
+        if (!msg || msg.type !== "autoCrisis:syncRequest") return;
+
+        const { actorUuid, after, trigger, thresholdAfter, reactionPayload } = msg;
+        if (!actorUuid) return;
+
+        const hpCur = after?.cur;
+        const hpMax = after?.max;
+
+        const key = makeDedupeKey({ actorUuid, hpCur, hpMax, trigger });
+        if (!gmShouldProcessOnce(key)) return;
+
+        const actor = await fromUuid(actorUuid);
+        if (!actor) return;
+
+        // Always sync Crisis AE (authoritative on GM)
+        await evaluateActorCrisis(actor);
+
+        // Only emit reaction if a transition trigger was supplied
+        if (trigger && reactionPayload) {
+          emitReactionPhase(reactionPayload);
+          log(`(GM) Socket processed crisis trigger: ${trigger} for ${actor.name}`);
+        } else {
+          log(`(GM) Socket synced Crisis AE (no trigger) for ${actor.name}`);
+        }
+      } catch (e) {
+        err("(GM) Socket sync failed:", e);
+      }
+    });
+
     // Capture the crisis state *before* HP updates so we can detect enter/exit transitions
     Hooks.on("preUpdateActor", (actor, changed, options) => {
       if (options?.oniAutoCrisis) return;
@@ -236,9 +297,9 @@
       });
     });
 
-
-    // Main hook: after an Actor updates, check if they should gain/lose Crisis
-    
+    // Main hook: after an Actor updates, request GM to sync Crisis state
+    // - GM: applies/removes AE and emits enter/exit trigger (once)
+    // - Non-GM: sends socket request to GM (no permission errors)
     Hooks.on("updateActor", (actor, changed, options) => {
       // Prevent recursion when we add/remove effects ourselves
       if (options?.oniAutoCrisis) return;
@@ -249,39 +310,88 @@
       const pre = _preUpdateCrisisState.get(actor) ?? null;
       _preUpdateCrisisState.delete(actor);
 
-      evaluateActorCrisis(actor)
-        .then(() => {
-          // After we sync the actual ActiveEffect, emit a Reaction trigger
-          // only if we detected an ENTER/EXIT transition across the threshold.
-          if (!pre) return;
+      // Build optional trigger payload (only when threshold crossed)
+      let trigger = null;
+      let reactionPayload = null;
+      let after = null;
+      let thresholdAfter = null;
 
-          const { wasInCrisis, willBeInCrisis, after, thresholdAfter } = pre;
-          if (wasInCrisis === willBeInCrisis) return;
+      if (pre) {
+        after = pre.after;
+        thresholdAfter = pre.thresholdAfter;
 
+        if (pre.wasInCrisis !== pre.willBeInCrisis) {
           const tokenUuids = getRelevantTokenUuids(actor);
           if (tokenUuids.length === 0) {
-            // We can still emit, but disposition filtering may not work without a token on canvas.
             warn("Crisis transition detected, but no active token found on canvas/combat scene:", actor.name);
           }
 
-          const trigger = willBeInCrisis ? "creature_enter_crisis" : "creature_exit_crisis";
-          const payload = buildCrisisReactionPayload(actor, tokenUuids, {
+          trigger = pre.willBeInCrisis ? "creature_enter_crisis" : "creature_exit_crisis";
+          reactionPayload = buildCrisisReactionPayload(actor, tokenUuids, {
             trigger,
             hpCur: after.cur,
             hpMax: after.max,
             threshold: thresholdAfter
           });
+        }
+      } else {
+        // Fallback: still allow GM to sync AE even if preUpdate missed
+        const hpNow = getHp(actor);
+        after = { cur: hpNow.cur, max: hpNow.max };
+        thresholdAfter = (hpNow.max && hpNow.max > 0) ? crisisThreshold(hpNow.max) : null;
+      }
 
-          emitReactionPhase(payload);
-          log(`Emitted Crisis Reaction trigger: ${trigger} for ${actor.name}`);
-        })
-        .catch(e => err("evaluateActorCrisis failed:", e));
+      // -----------------------------
+      // GM path: do the real work
+      // -----------------------------
+      if (game.user.isGM) {
+        // Dedupe here too, just in case (multiple rapid updates / unusual client setups)
+        const key = makeDedupeKey({
+          actorUuid: actor.uuid,
+          hpCur: after?.cur,
+          hpMax: after?.max,
+          trigger
+        });
+
+        if (!gmShouldProcessOnce(key)) return;
+
+        evaluateActorCrisis(actor)
+          .then(() => {
+            if (trigger && reactionPayload) {
+              emitReactionPhase(reactionPayload);
+              log(`(GM) Emitted Crisis Reaction trigger: ${trigger} for ${actor.name}`);
+            }
+          })
+          .catch(e => err("evaluateActorCrisis failed:", e));
+
+        return;
+      }
+
+      // -----------------------------
+      // Non-GM path: request GM to do it
+      // -----------------------------
+      try {
+        game.socket.emit(SOCKET, {
+          type: "autoCrisis:syncRequest",
+          actorUuid: actor.uuid,
+          after,
+          trigger,
+          thresholdAfter,
+          reactionPayload
+        });
+        log(`(Client) Sent socket syncRequest to GM for ${actor.name}`, { trigger });
+      } catch (e) {
+        err("(Client) Failed to send socket syncRequest:", e);
+      }
     });
 
     // Optional: on ready, do a one-time sync across ALL actors in the world
     // so existing actors immediately get correct Crisis state after a reload.
-    for (const actor of game.actors ?? []) {
-      evaluateActorCrisis(actor).catch(e => err("Initial sync failed:", e));
+    // GM ONLY (authoritative) to avoid permission issues.
+    if (game.user.isGM) {
+      for (const actor of game.actors ?? []) {
+        evaluateActorCrisis(actor).catch(e => err("Initial sync failed:", e));
+      }
     }
   });
 })();
