@@ -2,6 +2,7 @@
 //  FU Portrait Cut-In • Broadcaster (Cache-Keys Only) (V12)
 //  • Sends imgKey/sfxKey + shared t0/expiry + visual params
 //  • Assumes receiver has preloaded assets at combat start
+//  • UPDATE: Critical-only portraitOffsetY from actor.system.props.cut_in_offset_y
 // ─────────────────────────────────────────────────────────────
 (() => {
   const MODULE_ID    = "fabula-ultima-companion";
@@ -22,36 +23,63 @@
 
   // Build cache keys — must match receiver’s preloading scheme
   function imgKeyFor(anyUuid, type) {
-  // Accept either a Token UUID or an Actor UUID.
-  // We will resolve to an Actor and return:  cutin:<actorId>:<type>
-  try {
-    const doc = fromUuidSync?.(anyUuid);
-    if (!doc) return null;
+    // Accept either a Token UUID or an Actor UUID.
+    // We will resolve to an Actor and return:  cutin:<actorId>:<type>
+    try {
+      const doc = fromUuidSync?.(anyUuid);
+      if (!doc) return null;
 
-    // Token → Actor
-    if (doc.documentName === "Token" || doc.isToken) {
-      const actor = doc.actor ?? doc.document?.actor ?? null;
-      const actorId = actor?.id ?? null;
+      // Token → Actor
+      if (doc.documentName === "Token" || doc.isToken) {
+        const actor = doc.actor ?? doc.document?.actor ?? null;
+        const actorId = actor?.id ?? null;
+        return actorId ? `cutin:${actorId}:${type}` : null;
+      }
+
+      // Actor directly
+      if (doc.documentName === "Actor" || doc.constructor?.name === "Actor") {
+        const actorId = doc.id ?? null;
+        return actorId ? `cutin:${actorId}:${type}` : null;
+      }
+
+      // Some UUID variants still expose .actor
+      const actorId = doc.actor?.id ?? doc.document?.actor?.id ?? null;
       return actorId ? `cutin:${actorId}:${type}` : null;
+    } catch {
+      return null;
     }
-
-    // Actor directly
-    if (doc.documentName === "Actor" || doc.constructor?.name === "Actor") {
-      const actorId = doc.id ?? null;
-      return actorId ? `cutin:${actorId}:${type}` : null;
-    }
-
-    // Some UUID variants still expose .actor
-    const actorId = doc.actor?.id ?? doc.document?.actor?.id ?? null;
-    return actorId ? `cutin:${actorId}:${type}` : null;
-  } catch {
-    return null;
   }
-}
+
   function sfxKeyFor(type) {
     return `sfx:${type}`;
   }
-  function num(v, d) { const n = Number(v); return Number.isFinite(n) ? n : d; }
+
+  function num(v, d) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : d;
+  }
+
+  // Resolve actor from a Token UUID or Actor UUID
+  function actorFromUuid(anyUuid) {
+    try {
+      const doc = fromUuidSync?.(anyUuid);
+      if (!doc) return null;
+
+      // Token → Actor
+      if (doc.documentName === "Token" || doc.isToken) {
+        return doc.actor ?? doc.document?.actor ?? null;
+      }
+
+      // Actor directly
+      if (doc.documentName === "Actor" || doc.constructor?.name === "Actor") {
+        return doc;
+      }
+
+      return doc.actor ?? doc.document?.actor ?? null;
+    } catch {
+      return null;
+    }
+  }
 
   async function cutinBroadcast({
     tokenUuid,
@@ -104,31 +132,46 @@
       ttlMs:                num(ttlMs,                DEFAULTS.ttlMs)
     };
 
+    // Critical-only: read offset from actor template field
+    let portraitOffsetY = 0;
+    if (type === "critical" && tokenUuid) {
+      const actor = actorFromUuid(tokenUuid);
+      const raw = actor?.system?.props?.cut_in_offset_y;
+      portraitOffsetY = num(raw, 0);
+    }
+
     // Shared start & expiry
     const t0       = Date.now() + v.delayMs;
     const expireAt = t0 + v.ttlMs;
 
     const activeUsers = (game.users?.filter(u => u.active) ?? []).map(u => u.id);
 
-    console.log("[FU Cut-In • Broadcast] resolved keys:", { imgKey, sfxKey, type, tokenUuid });
+    console.log("[FU Cut-In • Broadcast] resolved keys:", { imgKey, sfxKey, type, tokenUuid, portraitOffsetY });
 
     const payload = {
       t0, expireAt,
       imgKey,           // ← strictly a cache key; receiver will skip if missing
       sfxKey,           // ← strictly a cache key; receiver will skip if missing
       sfxVol: v.sfxVol,
+
       dimAlpha: v.dimAlpha,
       dimFadeMs: v.dimFadeMs,
       flashPeak: v.flashPeak,
       flashInMs: v.flashInMs,
       flashOutMs: v.flashOutMs,
       flashDelayMs: v.flashDelayMs,
+
       slideInMs: v.slideInMs,
       holdMs: v.holdMs,
       slideOutMs: v.slideOutMs,
+
       portraitHeightRatio: v.portraitHeightRatio,
       portraitBottomMargin: v.portraitBottomMargin,
       portraitInsetX: v.portraitInsetX,
+
+      // NEW: receiver uses this to shift finalY (positive => up)
+      portraitOffsetY,
+
       allowedUserIds: activeUsers
     };
 
