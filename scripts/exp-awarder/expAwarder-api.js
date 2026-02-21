@@ -1,8 +1,9 @@
 // ============================================================================
 // expAwarder-api.js (Foundry V12 Module Script)
 // - Public API: window.FUCompanion.api.expAwarder.awardExp(payload)
-// - Updates Actor EXP at: actor.system.experience (decimal supported)
+// - Updates Actor EXP at: actor.system.props.experience (decimal supported)
 // - Emits UI signal (decoupled snapshot): Hooks.callAll("oni:expAwarded", {...})
+// - UI percent conversion matches BattleEnd Summary behavior (0..10 => 0..100%)
 // ============================================================================
 
 (() => {
@@ -35,6 +36,19 @@
     return t.length ? t : "";
   }
 
+  function clamp(n, a, b) {
+    return Math.max(a, Math.min(b, n));
+  }
+
+  // Same idea as BattleEnd SummaryUI expToPct(): (exp - start) / (cap - start) * 100
+  function expToPct(exp, expStart, levelUpAt) {
+    const start = Number(expStart);
+    const cap = Number(levelUpAt);
+    const denom = Math.max(1e-6, (cap - start));
+    const t = (Number(exp) - start) / denom;
+    return clamp(t * 100, 0, 100);
+  }
+
   function normalizeTargets(targets) {
     // Accept:
     // - ["Actor.xxx", "Actor.yyy"]
@@ -64,8 +78,6 @@
   }
 
   function emitExpAwardedSignal(payload) {
-    // Local signal only (decoupled UI listens to this)
-    // UI should queue and show 1 at a time.
     try {
       Hooks.callAll("oni:expAwarded", payload);
     } catch (e) {
@@ -100,6 +112,10 @@
         return { ok: false, runId, error: "NO_TARGETS" };
       }
 
+      // Your sheet behavior: exp is a 0..10 meter, displayed as % (x10)
+      const EXP_START = 0;
+      const LEVELUP_AT = 10;
+
       const entries = [];
       for (const t of targets) {
         const actorUuid = t.actorUuid;
@@ -118,56 +134,57 @@
         }
 
         // --- Read EXP from Custom System Builder fields ---
-const expBefore = asNumber(actor.system?.props?.experience, 0);
-const expAfter = expBefore + amount;
+        const expBefore = asNumber(actor.system?.props?.experience, 0);
+        const expAfter = expBefore + amount;
 
-// Optional level snapshot (your actors store level under system.props.level)
-const levelBefore =
-  actor.system?.props?.level ??
-  actor.system?.level ??
-  null;
+        // Optional level snapshot (your actors store level under system.props.level)
+        const levelBefore =
+          actor.system?.props?.level ??
+          actor.system?.level ??
+          null;
 
-// --- Update EXP (Custom System Builder path) ---
-try {
-  await actor.update({ "system.props.experience": expAfter });
-} catch (e) {
-  err(`runId=${runId} Failed to update actor EXP`, actorUuid, e);
-  ui.notifications?.error?.(`EXP Awarder: Failed to update ${actor.name}.`);
-  continue;
-}
+        // --- Update EXP (Custom System Builder path) ---
+        try {
+          await actor.update({ "system.props.experience": expAfter });
+        } catch (e) {
+          err(`runId=${runId} Failed to update actor EXP`, actorUuid, e);
+          ui.notifications?.error?.(`EXP Awarder: Failed to update ${actor.name}.`);
+          continue;
+        }
 
-// --- Provide UI percent directly so UI starts at the correct existing value ---
-// Assumption (based on your sheet showing "52.5%"): experience is already a 0-100 meter.
-// If later you decide experience is 0-10, we’ll adjust here.
-const expPctFrom = expBefore;
-const expPctTo = expAfter;
+        // --- UI percent conversion (matches BattleEnd SummaryUI logic style) ---
+        const expPctFrom = expToPct(expBefore, EXP_START, LEVELUP_AT);
+        const expPctTo = expToPct(expAfter, EXP_START, LEVELUP_AT);
 
-const entry = {
-  actorUuid,
-  actorName: actor.name,
-  group: t.group ?? "",
-  label: t.label ?? "",
-  amount,
-  source,
-  awardedBy: awardingUser,
+        const entry = {
+          actorUuid,
+          actorName: actor.name,
+          group: t.group ?? "",
+          label: t.label ?? "",
+          amount,
+          source,
+          awardedBy: awardingUser,
 
-  // Decoupled snapshot
-  expBefore,
-  expAfter,
-  levelBefore,
+          // Decoupled snapshot
+          expBefore,
+          expAfter,
+          levelBefore,
 
-  // UI gets the “real” starting percent now (no more 0% start)
-  levelAfter: null,
-  expPctFrom,
-  expPctTo,
-};
+          // UI snapshot values
+          levelAfter: null,
+          expPctFrom,
+          expPctTo,
+        };
 
         entries.push(entry);
+
         log(`runId=${runId} Updated`, {
           actor: actor.name,
           expBefore,
           expAfter,
           amount,
+          expPctFrom,
+          expPctTo,
         });
       }
 
@@ -176,7 +193,6 @@ const entry = {
         return { ok: false, runId, error: "NO_UPDATES" };
       }
 
-      // Emit UI signal (single event containing all entries)
       if (playUi) {
         emitExpAwardedSignal({
           runId,
@@ -203,10 +219,9 @@ const entry = {
     const api = ensureNamespace();
     api.awardExp = awardExp;
 
-    // Optional tiny helpers for debugging / inspection
     api._debug = api._debug ?? {};
     api._debug.TAG = TAG;
-    api._debug.version = "v1";
+    api._debug.version = "v2-expPctFix";
     log("API registered: window.FUCompanion.api.expAwarder.awardExp");
   }
 
