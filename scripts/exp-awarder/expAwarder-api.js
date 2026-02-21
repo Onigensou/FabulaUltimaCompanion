@@ -117,41 +117,50 @@
           continue;
         }
 
-        const expBefore = asNumber(actor.system?.experience, 0);
-        const expAfter = expBefore + amount;
+        // --- Read EXP from Custom System Builder fields ---
+const expBefore = asNumber(actor.system?.props?.experience, 0);
+const expAfter = expBefore + amount;
 
-        // Optional level snapshot (safe fallback)
-        const levelBefore =
-          actor.system?.props?.level ??
-          actor.system?.level ??
-          null;
+// Optional level snapshot (your actors store level under system.props.level)
+const levelBefore =
+  actor.system?.props?.level ??
+  actor.system?.level ??
+  null;
 
-        // Update EXP
-        try {
-          await actor.update({ "system.experience": expAfter });
-        } catch (e) {
-          err(`runId=${runId} Failed to update actor EXP`, actorUuid, e);
-          ui.notifications?.error?.(`EXP Awarder: Failed to update ${actor.name}.`);
-          continue;
-        }
+// --- Update EXP (Custom System Builder path) ---
+try {
+  await actor.update({ "system.props.experience": expAfter });
+} catch (e) {
+  err(`runId=${runId} Failed to update actor EXP`, actorUuid, e);
+  ui.notifications?.error?.(`EXP Awarder: Failed to update ${actor.name}.`);
+  continue;
+}
 
-        const entry = {
-          actorUuid,
-          actorName: actor.name,
-          group: t.group ?? "",
-          label: t.label ?? "",
-          amount,
-          source,
-          awardedBy: awardingUser,
-          // Decoupled snapshot for UI:
-          expBefore,
-          expAfter,
-          levelBefore,
-          // Future-proof fields (UI can ignore):
-          levelAfter: null,
-          expPctFrom: null,
-          expPctTo: null,
-        };
+// --- Provide UI percent directly so UI starts at the correct existing value ---
+// Assumption (based on your sheet showing "52.5%"): experience is already a 0-100 meter.
+// If later you decide experience is 0-10, we’ll adjust here.
+const expPctFrom = expBefore;
+const expPctTo = expAfter;
+
+const entry = {
+  actorUuid,
+  actorName: actor.name,
+  group: t.group ?? "",
+  label: t.label ?? "",
+  amount,
+  source,
+  awardedBy: awardingUser,
+
+  // Decoupled snapshot
+  expBefore,
+  expAfter,
+  levelBefore,
+
+  // UI gets the “real” starting percent now (no more 0% start)
+  levelAfter: null,
+  expPctFrom,
+  expPctTo,
+};
 
         entries.push(entry);
         log(`runId=${runId} Updated`, {
