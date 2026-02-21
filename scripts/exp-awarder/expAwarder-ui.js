@@ -1,11 +1,9 @@
 // ============================================================================
 // expAwarder-ui.js (Foundry V12 Module Script)  — UPDATED
 // Changes:
-// 1) UI panel anchored TOP-LEFT (responsive for any resolution)
-// 2) Screen dimmer REMOVED entirely
-// 3) Intro animation changed to: Fade in + slide in from LEFT
-//    Outro: Fade out + slide out to LEFT
-// - Queue system unchanged (ONLY 1 UI at a time)
+// - Percent display now shows 1 decimal (e.g. 62.5%)
+// - Prefers API-provided expPctFrom/expPctTo (no “0% start” fallback if provided)
+// - Queue + top-left + fade/slide unchanged
 // ============================================================================
 
 (() => {
@@ -63,7 +61,6 @@
   // ----------------------------------------------------------------------------
   const LOOP_ENABLED = false;
 
-  // New intro/outro feel
   const INTRO_MS = 260;   // fade+slide in
   const OUTRO_MS = 220;   // fade+slide out
   const HOLD_MS = 650;
@@ -72,7 +69,6 @@
   const GAP_MS = 250;     // between queued actors
   const SLIDE_PX = 18;    // how far it slides from left
 
-  // Top-left placement padding (responsive)
   const PAD_X = 18;
   const PAD_Y = 18;
 
@@ -111,7 +107,6 @@
         font-family: "Signika","Segoe UI",sans-serif;
       }
 
-      /* Top-left anchor container */
       .oni-exp-ui{
         position: absolute;
         top: ${PAD_Y}px;
@@ -130,7 +125,6 @@
         box-shadow: var(--oni-exp-shadow);
         backdrop-filter: blur(10px);
 
-        /* New intro: start hidden, slightly left */
         transform: translateX(-${SLIDE_PX}px);
         opacity: 0;
 
@@ -199,7 +193,6 @@
 
       .oni-exp-levelup-float{
         position: absolute;
-        /* float above the card, aligned to card left */
         top: -44px;
         left: 0px;
 
@@ -230,33 +223,37 @@
   }
 
   // ----------------------------------------------------------------------------
-  // Decoupled data shaping (fallbacks for early testing)
+  // Decoupled data shaping
   // ----------------------------------------------------------------------------
   function shapeData(entry) {
-    const expBefore = Number(entry?.expBefore ?? 0);
-    const expAfter = Number(entry?.expAfter ?? expBefore);
-
     let levelBefore = entry?.levelBefore;
     let levelAfter = entry?.levelAfter;
 
-    // UI-only fallback model (does not read game state mid-animation)
-    const FALLBACK_STEP = 100;
-
-    if (levelBefore == null) levelBefore = Math.floor(expBefore / FALLBACK_STEP) + 1;
-    if (levelAfter == null) levelAfter = Math.floor(expAfter / FALLBACK_STEP) + 1;
-
+    // Prefer API-provided percent snapshot (now correct)
     let expPctFrom = entry?.expPctFrom;
     let expPctTo = entry?.expPctTo;
 
-    if (expPctFrom == null) expPctFrom = (expBefore % FALLBACK_STEP) / FALLBACK_STEP * 100;
-    if (expPctTo == null) expPctTo = (expAfter % FALLBACK_STEP) / FALLBACK_STEP * 100;
+    // Fallback only if API didn't provide
+    if (expPctFrom == null || expPctTo == null) {
+      const expBeforeRaw = Number(entry?.expBefore ?? 0);
+      const expAfterRaw = Number(entry?.expAfter ?? expBeforeRaw);
+
+      // Old fallback model (kept for safety)
+      const FALLBACK_STEP = 100;
+
+      if (levelBefore == null) levelBefore = Math.floor(expBeforeRaw / FALLBACK_STEP) + 1;
+      if (levelAfter == null) levelAfter = Math.floor(expAfterRaw / FALLBACK_STEP) + 1;
+
+      if (expPctFrom == null) expPctFrom = (expBeforeRaw % FALLBACK_STEP) / FALLBACK_STEP * 100;
+      if (expPctTo == null) expPctTo = (expAfterRaw % FALLBACK_STEP) / FALLBACK_STEP * 100;
+    }
 
     return {
       actorName: entry?.actorName ?? "Unknown",
-      levelBefore,
-      levelAfter,
-      expPctFrom,
-      expPctTo,
+      levelBefore: levelBefore ?? 1,
+      levelAfter: levelAfter ?? (levelBefore ?? 1),
+      expPctFrom: Number(expPctFrom ?? 0),
+      expPctTo: Number(expPctTo ?? 0),
     };
   }
 
@@ -307,7 +304,7 @@
 
     const pct = document.createElement("div");
     pct.className = "oni-exp-pct";
-    pct.textContent = `${Math.round(Number(data.expPctFrom || 0))}%`;
+    pct.textContent = `${Number(data.expPctFrom || 0).toFixed(1)}%`;
     row.appendChild(pct);
 
     const bar = document.createElement("div");
@@ -334,7 +331,7 @@
   function setBar(ui, pct) {
     const p = clamp(Number(pct), 0, 100);
     ui.fill.style.width = `${p.toFixed(2)}%`;
-    ui.pct.textContent = `${Math.round(p)}%`;
+    ui.pct.textContent = `${p.toFixed(1)}%`; // <<< 1 decimal
   }
 
   function flashLevelUp(ui) {
@@ -366,9 +363,7 @@
   }
 
   async function teardown(ui) {
-    // Fade out + slide left
     ui.card.classList.remove("is-in");
-    // Add a quick "slide out" feel via inline transform update after removing class
     ui.card.style.transition = `transform ${OUTRO_MS}ms ease, opacity ${OUTRO_MS}ms ease`;
     ui.card.style.transform = `translateX(-${SLIDE_PX}px)`;
     ui.card.style.opacity = "0";
@@ -402,7 +397,6 @@
       flashLevelUp(ui);
     }
 
-    // Hold + outro
     await sleep(HOLD_MS);
     await teardown(ui);
   }
