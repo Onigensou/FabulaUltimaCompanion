@@ -1,11 +1,11 @@
 // ============================================================================
-// expAwarder-ui.js (Foundry V12 Module Script)
-// - Listens for: Hooks.on("oni:expAwarded", payload)
-// - Shows EXP award UI (decoupled snapshot)
-// - Multiple targets => queue => ONLY 1 UI at a time
-//
-// NOTE: This is based on Sample_EXPAwarder_UI.js "EXACTLY" in structure/styling,
-//       but wired to real event payload + queue system.
+// expAwarder-ui.js (Foundry V12 Module Script)  — UPDATED
+// Changes:
+// 1) UI panel anchored TOP-LEFT (responsive for any resolution)
+// 2) Screen dimmer REMOVED entirely
+// 3) Intro animation changed to: Fade in + slide in from LEFT
+//    Outro: Fade out + slide out to LEFT
+// - Queue system unchanged (ONLY 1 UI at a time)
 // ============================================================================
 
 (() => {
@@ -29,7 +29,6 @@
       const entries = Array.isArray(payload?.entries) ? payload.entries : [];
       if (!entries.length) return;
 
-      // Push all entries into queue (sequential display)
       for (const e of entries) UI_STATE.queue.push({ meta: payload, entry: e });
 
       log("Event received; queued entries=", entries.length, "queueSize=", UI_STATE.queue.length);
@@ -60,18 +59,25 @@
   }
 
   // ----------------------------------------------------------------------------
-  // TUNING KNOBS (kept from sample)
+  // TUNING KNOBS
   // ----------------------------------------------------------------------------
-  const DIM_ENABLED = true;       // keep
-  const LOOP_ENABLED = false;     // loop disabled in real UI
-  const INTRO_MS = 280;
-  const OUTRO_MS = 260;
+  const LOOP_ENABLED = false;
+
+  // New intro/outro feel
+  const INTRO_MS = 260;   // fade+slide in
+  const OUTRO_MS = 220;   // fade+slide out
   const HOLD_MS = 650;
   const BAR_ANIM_MS = 900;
-  const GAP_MS = 250;            // gap between queued actors
+
+  const GAP_MS = 250;     // between queued actors
+  const SLIDE_PX = 18;    // how far it slides from left
+
+  // Top-left placement padding (responsive)
+  const PAD_X = 18;
+  const PAD_Y = 18;
 
   // ----------------------------------------------------------------------------
-  // Utilities (kept from sample)
+  // Utilities
   // ----------------------------------------------------------------------------
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
   function clamp(n, a, b) { return Math.min(Math.max(n, a), b); }
@@ -82,7 +88,7 @@
   }
 
   function ensureStyles() {
-    const id = "oni-exp-tuner-style";
+    const id = "oni-exp-ui-style";
     const old = document.getElementById(id);
     if (old) old.remove();
 
@@ -105,37 +111,36 @@
         font-family: "Signika","Segoe UI",sans-serif;
       }
 
-      .oni-exp-dim{
-        position: absolute;
-        inset: 0;
-        background: rgba(0,0,0,0.25);
-        opacity: 0;
-        transition: opacity ${INTRO_MS}ms ease;
-      }
-      .oni-exp-dim.is-in{ opacity: 1; }
-
+      /* Top-left anchor container */
       .oni-exp-ui{
         position: absolute;
-        inset: 0;
-        display: grid;
-        place-items: center;
+        top: ${PAD_Y}px;
+        left: ${PAD_X}px;
+        right: auto;
+        bottom: auto;
       }
 
       .oni-exp-card{
         width: 520px;
-        max-width: calc(100vw - 80px);
+        max-width: calc(100vw - ${PAD_X * 2}px);
         padding: 18px 18px 16px;
         border-radius: 16px;
         background: var(--oni-exp-bg);
         border: 1px solid var(--oni-exp-border);
         box-shadow: var(--oni-exp-shadow);
         backdrop-filter: blur(10px);
-        transform: translateY(10px) scale(0.98);
+
+        /* New intro: start hidden, slightly left */
+        transform: translateX(-${SLIDE_PX}px);
         opacity: 0;
-        transition: transform ${INTRO_MS}ms ease, opacity ${INTRO_MS}ms ease;
+
+        transition:
+          transform ${INTRO_MS}ms ease,
+          opacity ${INTRO_MS}ms ease;
       }
+
       .oni-exp-card.is-in{
-        transform: translateY(0) scale(1);
+        transform: translateX(0);
         opacity: 1;
       }
 
@@ -194,7 +199,10 @@
 
       .oni-exp-levelup-float{
         position: absolute;
-        translate: 0 -110px;
+        /* float above the card, aligned to card left */
+        top: -44px;
+        left: 0px;
+
         padding: 10px 18px;
         border-radius: 999px;
         background: rgba(0,0,0,0.35);
@@ -203,6 +211,7 @@
         font-weight: 900;
         letter-spacing: 1px;
         text-transform: uppercase;
+
         opacity: 0;
         transform: translateY(10px) scale(0.98);
         transition: opacity 220ms ease, transform 220ms ease;
@@ -224,15 +233,13 @@
   // Decoupled data shaping (fallbacks for early testing)
   // ----------------------------------------------------------------------------
   function shapeData(entry) {
-    // Preferred: API later can send expPctFrom/To + levelAfter
     const expBefore = Number(entry?.expBefore ?? 0);
     const expAfter = Number(entry?.expAfter ?? expBefore);
 
     let levelBefore = entry?.levelBefore;
     let levelAfter = entry?.levelAfter;
 
-    // Fallback visual model (ONLY for UI testing): 100 EXP per level
-    // (This does NOT affect real actor data; UI is decoupled.)
+    // UI-only fallback model (does not read game state mid-animation)
     const FALLBACK_STEP = 100;
 
     if (levelBefore == null) levelBefore = Math.floor(expBefore / FALLBACK_STEP) + 1;
@@ -254,17 +261,13 @@
   }
 
   // ----------------------------------------------------------------------------
-  // UI build + animation (same flow as sample, but data-driven)
+  // UI build + animation
   // ----------------------------------------------------------------------------
   function buildUI(data) {
     removeRoot();
 
     const root = document.createElement("div");
     root.className = "oni-exp-root";
-
-    const dim = document.createElement("div");
-    dim.className = "oni-exp-dim";
-    if (DIM_ENABLED) root.appendChild(dim);
 
     const ui = document.createElement("div");
     ui.className = "oni-exp-ui";
@@ -319,14 +322,10 @@
 
     return {
       root,
-      dim,
       ui,
       card,
-      name,
-      lv,
       lvNum: lv.querySelector(".oni-exp-lv-num"),
       pct,
-      bar,
       fill,
       levelUp,
     };
@@ -367,8 +366,13 @@
   }
 
   async function teardown(ui) {
+    // Fade out + slide left
     ui.card.classList.remove("is-in");
-    if (ui.dim) ui.dim.classList.remove("is-in");
+    // Add a quick "slide out" feel via inline transform update after removing class
+    ui.card.style.transition = `transform ${OUTRO_MS}ms ease, opacity ${OUTRO_MS}ms ease`;
+    ui.card.style.transform = `translateX(-${SLIDE_PX}px)`;
+    ui.card.style.opacity = "0";
+
     await sleep(OUTRO_MS + 10);
     removeRoot();
   }
@@ -379,14 +383,13 @@
     const data = shapeData(entry);
     const ui = buildUI(data);
 
-    // Intro
-    await sleep(0);
-    if (ui.dim) ui.dim.classList.add("is-in");
-    ui.card.classList.add("is-in");
-
-    // Start
+    // Set initial
     ui.lvNum.textContent = String(Math.floor(Number(data.levelBefore || 1)));
     setBar(ui, data.expPctFrom);
+
+    // Intro: fade+slide in
+    await sleep(0);
+    ui.card.classList.add("is-in");
 
     // Animate bar
     await animateBar(ui, data.expPctFrom, data.expPctTo, BAR_ANIM_MS);
