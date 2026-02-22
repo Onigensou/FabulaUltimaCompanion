@@ -1,9 +1,9 @@
 // ============================================================================
-// expAwarder-ui.js (Foundry V12 Module Script)  — UPDATED
-// Changes:
-// - Percent display now shows 1 decimal (e.g. 62.5%)
-// - Prefers API-provided expPctFrom/expPctTo (no “0% start” fallback if provided)
-// - Queue + top-left + fade/slide unchanged
+// expAwarder-ui.js (Foundry V12 Module Script) — MULTI-CLIENT UPDATE
+// - Listens to local Hooks.on("oni:expAwarded", ...)
+// - ALSO listens to socket "module.fabula-ultima-companion"
+//   and re-fires Hooks.callAll("oni:expAwarded", payload) on every client
+// - Includes runId de-dupe to prevent double UI on the sender
 // ============================================================================
 
 (() => {
@@ -15,6 +15,62 @@
   function err(...args) { console.error(TAG, ...args); }
 
   // ----------------------------------------------------------------------------
+  // Multi-client socket
+  // ----------------------------------------------------------------------------
+  const SOCKET_NS = "module.fabula-ultima-companion";
+
+  // De-dupe so the sender doesn’t play twice (local emit + socket echo)
+  const SEEN_RUNIDS = new Set();
+  const SEEN_RUNIDS_MAX = 250;
+
+  function rememberRunId(runId) {
+    if (!runId) return false;
+    if (SEEN_RUNIDS.has(runId)) return true;
+
+    SEEN_RUNIDS.add(runId);
+
+    // simple cap to avoid unbounded growth
+    if (SEEN_RUNIDS.size > SEEN_RUNIDS_MAX) {
+      // remove oldest-ish by recreating the set (good enough here)
+      const keep = Array.from(SEEN_RUNIDS).slice(-Math.floor(SEEN_RUNIDS_MAX * 0.8));
+      SEEN_RUNIDS.clear();
+      for (const k of keep) SEEN_RUNIDS.add(k);
+    }
+
+    return false;
+  }
+
+  Hooks.once("ready", () => {
+    try {
+      if (!game.socket?.on) {
+        warn("game.socket.on not available; multi-client UI disabled.");
+        return;
+      }
+
+      game.socket.on(SOCKET_NS, (msg) => {
+        try {
+          if (!msg || msg.type !== "oni:expAwarded") return;
+
+          const payload = msg.payload;
+          const runId = payload?.runId;
+
+          // if we’ve already handled this runId on this client, skip
+          if (runId && rememberRunId(runId)) return;
+
+          // Re-fire locally so the rest of this script stays unchanged
+          Hooks.callAll("oni:expAwarded", payload);
+        } catch (e) {
+          err("Socket handler crashed", e);
+        }
+      });
+
+      log(`Socket listener ready on "${SOCKET_NS}"`);
+    } catch (e) {
+      err("Failed to register socket listener", e);
+    }
+  });
+
+  // ----------------------------------------------------------------------------
   // Queue system (hard rule: only 1 UI at a time)
   // ----------------------------------------------------------------------------
   const UI_STATE = {
@@ -24,6 +80,14 @@
 
   Hooks.on("oni:expAwarded", (payload) => {
     try {
+      // Also de-dupe here as a safety net (in case local + socket arrive)
+      const runId = payload?.runId;
+      if (runId && rememberRunId(runId)) {
+        // If it’s already seen, we still might want to allow multi-entry payloads
+        // BUT your API emits once per award run, so skipping is correct here.
+        return;
+      }
+
       const entries = Array.isArray(payload?.entries) ? payload.entries : [];
       if (!entries.length) return;
 
@@ -345,7 +409,7 @@
   function setBar(ui, pct) {
     const p = clamp(Number(pct), 0, 100);
     ui.fill.style.width = `${p.toFixed(2)}%`;
-    ui.pct.textContent = `${p.toFixed(1)}%`; // <<< 1 decimal
+    ui.pct.textContent = `${p.toFixed(1)}%`; // 1 decimal
   }
 
   function flashLevelUp(ui) {
@@ -405,13 +469,6 @@
     await sleep(0);
     ui.card.classList.add("is-in");
 
-    // ------------------------------------------------------------------------
-    // Bar animation rules
-    // - Normal: animate from -> to
-    // - Level-up (overflow): animate to 100%, reset to 0%, then animate to overflow %
-    //   If multiple levels gained: repeat 0% -> 100% for each extra level.
-    // ------------------------------------------------------------------------
-
     // Helper: duration scaled by distance (keeps “speed” consistent)
     const durScaled = (from, to, base) => {
       const dist = Math.abs(clamp(Number(to), 0, 100) - clamp(Number(from), 0, 100));
@@ -455,8 +512,7 @@
     await teardown(ui);
   }
 
-
   Hooks.once("ready", () => {
-    log("UI script ready. Listening for oni:expAwarded");
+    log("UI script ready. Listening for oni:expAwarded + socket broadcast.");
   });
 })();
