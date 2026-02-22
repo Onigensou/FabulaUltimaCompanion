@@ -1,100 +1,87 @@
 // ============================================================================
-// expAwarder-ui.js (Foundry V12 Module Script) — MULTI-CLIENT + HEAVY DEBUG
-//
-// Goal:
-// - EXP award UI appears on ALL connected clients.
-// - Uses socket channel: "fabula-ultima-companion"  ✅ (per your system)
-// - Also listens to "module.fabula-ultima-companion" as DEBUG fallback.
-// - Socket message format expected:
-//    { type: "oni:expAwarded", payload: { runId, entries:[...] } }
-//
-// IMPORTANT:
-// - This script does NOT require socketlib.
-// - It uses Foundry core game.socket
+// expAwarder-ui.js (Foundry V12 Module Script)  — UPDATED
+// Changes:
+// - Percent display now shows 1 decimal (e.g. 62.5%)
+// - Prefers API-provided expPctFrom/expPctTo (no “0% start” fallback if provided)
+// - Queue + top-left + fade/slide unchanged
 // ============================================================================
 
 (() => {
   const TAG = "[ONI][EXPAwarder][UI]";
+  const DBG = true;
 
-  // --------------------------------------------------------------------------
-  // DEBUG SWITCH (TURN OFF later)
-  // --------------------------------------------------------------------------
-  const DEBUG = {
-    enabled: true,
-    socket: true,
-    hook: true,
-    queue: true,
-    ui: true,
-  };
+  function log(...args) { if (DBG) console.log(TAG, ...args); }
+  function warn(...args) { console.warn(TAG, ...args); }
+  function err(...args) { console.error(TAG, ...args); }
 
-  const dlog = (section, ...a) => {
-    if (!DEBUG.enabled) return;
-    if (section && DEBUG[section] === false) return;
-    console.log(TAG, ...a);
-  };
-  const dwarn = (...a) => console.warn(TAG, ...a);
-  const derr  = (...a) => console.error(TAG, ...a);
-
-  // --------------------------------------------------------------------------
-  // SOCKET CHANNELS
-  // --------------------------------------------------------------------------
-  const SOCKET_PRIMARY = "fabula-ultima-companion";        // ✅ your required one
-  const SOCKET_FALLBACK = "module.fabula-ultima-companion"; // debug fallback
-
-  // De-dupe so sender doesn’t double-play (local + echo)
-  const SEEN_RUNIDS = new Set();
-  const SEEN_MAX = 500;
-
-  function rememberRunId(runId, source) {
-    if (!runId) return false;
-    if (SEEN_RUNIDS.has(runId)) {
-      dlog("socket", `[DEDUPE] skip runId=${runId} (source=${source})`);
-      return true;
-    }
-    SEEN_RUNIDS.add(runId);
-    dlog("socket", `[DEDUPE] remember runId=${runId} (source=${source}) size=${SEEN_RUNIDS.size}`);
-
-    // cap memory
-    if (SEEN_RUNIDS.size > SEEN_MAX) {
-      const keep = Array.from(SEEN_RUNIDS).slice(-Math.floor(SEEN_MAX * 0.8));
-      SEEN_RUNIDS.clear();
-      for (const k of keep) SEEN_RUNIDS.add(k);
-      dlog("socket", `[DEDUPE] trimmed -> size=${SEEN_RUNIDS.size}`);
-    }
-    return false;
-  }
-
-  // --------------------------------------------------------------------------
-  // QUEUE (1 UI at a time)
-  // --------------------------------------------------------------------------
+  // ----------------------------------------------------------------------------
+  // Queue system (hard rule: only 1 UI at a time)
+  // ----------------------------------------------------------------------------
   const UI_STATE = {
     lock: false,
     queue: [],
   };
 
-  // --------------------------------------------------------------------------
+  Hooks.on("oni:expAwarded", (payload) => {
+    try {
+      const entries = Array.isArray(payload?.entries) ? payload.entries : [];
+      if (!entries.length) return;
+
+      for (const e of entries) UI_STATE.queue.push({ meta: payload, entry: e });
+
+      log("Event received; queued entries=", entries.length, "queueSize=", UI_STATE.queue.length);
+
+      if (!UI_STATE.lock) drainQueue();
+    } catch (e) {
+      err("oni:expAwarded handler crashed", e);
+    }
+  });
+
+  async function drainQueue() {
+    UI_STATE.lock = true;
+    try {
+      while (UI_STATE.queue.length) {
+        const { meta, entry } = UI_STATE.queue.shift();
+        log("UI start", { actorName: entry?.actorName, actorUuid: entry?.actorUuid, runId: meta?.runId });
+        await runOnce(entry, meta);
+        log("UI end", { actorName: entry?.actorName, remaining: UI_STATE.queue.length });
+        await sleep(GAP_MS);
+      }
+    } catch (e) {
+      err("Queue drain crashed", e);
+    } finally {
+      UI_STATE.lock = false;
+      removeRoot();
+      log("Queue drain complete");
+    }
+  }
+
+  // ----------------------------------------------------------------------------
   // TUNING KNOBS
-  // --------------------------------------------------------------------------
-  const INTRO_MS = 260;
-  const OUTRO_MS = 220;
+  // ----------------------------------------------------------------------------
+  const LOOP_ENABLED = false;
+
+  const INTRO_MS = 260;   // fade+slide in
+  const OUTRO_MS = 220;   // fade+slide out
   const HOLD_MS = 650;
   const BAR_ANIM_MS = 900;
 
-  const GAP_MS = 250;
-  const SLIDE_PX = 18;
+  const GAP_MS = 250;     // between queued actors
+  const SLIDE_PX = 18;    // how far it slides from left
 
   const PAD_X = 18;
   const PAD_Y = 18;
 
-  // Floating LEVEL UP! position tuning
+  // Floating LEVEL UP! text position tuning (relative to the EXP panel)
+  // +Y moves it DOWN (less likely to go off-screen)
   const LEVELUP_OFFSET_X = 0;
   const LEVELUP_OFFSET_Y = 22;
 
-  // --------------------------------------------------------------------------
+  // ----------------------------------------------------------------------------
   // Utilities
-  // --------------------------------------------------------------------------
-  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-  const clamp = (n, a, b) => Math.min(Math.max(n, a), b);
+  // ----------------------------------------------------------------------------
+  function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+  function clamp(n, a, b) { return Math.min(Math.max(n, a), b); }
 
   function removeRoot() {
     const old = document.querySelector(".oni-exp-root");
@@ -150,6 +137,7 @@
           transform ${INTRO_MS}ms ease,
           opacity ${INTRO_MS}ms ease;
 
+        /* IMPORTANT: allow floating elements above the card */
         overflow: visible;
       }
 
@@ -233,6 +221,7 @@
       .oni-exp-levelup-float.is-show{
         animation: oniExpLevelUp 1400ms ease-in-out forwards;
       }
+
       @keyframes oniExpLevelUp{
         0%{ opacity: 0; transform: translateY(-10px) scale(1.18); }
         18%{ opacity: 1; transform: translateY(0px) scale(1.22); }
@@ -247,37 +236,44 @@
     document.head.appendChild(style);
   }
 
-  // --------------------------------------------------------------------------
-  // Data shaping (uses API-provided expPctFrom/expPctTo)
-  // --------------------------------------------------------------------------
+  // ----------------------------------------------------------------------------
+  // Decoupled data shaping
+  // ----------------------------------------------------------------------------
   function shapeData(entry) {
-    let levelBefore = entry?.levelBefore ?? 1;
-    let levelAfter  = entry?.levelAfter ?? levelBefore;
+    let levelBefore = entry?.levelBefore;
+    let levelAfter = entry?.levelAfter;
 
+    // Prefer API-provided percent snapshot (now correct)
     let expPctFrom = entry?.expPctFrom;
-    let expPctTo   = entry?.expPctTo;
+    let expPctTo = entry?.expPctTo;
 
-    // If API didn't provide (shouldn't happen now), fallback
+    // Fallback only if API didn't provide
     if (expPctFrom == null || expPctTo == null) {
       const expBeforeRaw = Number(entry?.expBefore ?? 0);
-      const expAfterRaw  = Number(entry?.expAfter ?? expBeforeRaw);
+      const expAfterRaw = Number(entry?.expAfter ?? expBeforeRaw);
+
+      // Old fallback model (kept for safety)
       const FALLBACK_STEP = 100;
-      expPctFrom = (expBeforeRaw % FALLBACK_STEP) / FALLBACK_STEP * 100;
-      expPctTo   = (expAfterRaw  % FALLBACK_STEP) / FALLBACK_STEP * 100;
+
+      if (levelBefore == null) levelBefore = Math.floor(expBeforeRaw / FALLBACK_STEP) + 1;
+      if (levelAfter == null) levelAfter = Math.floor(expAfterRaw / FALLBACK_STEP) + 1;
+
+      if (expPctFrom == null) expPctFrom = (expBeforeRaw % FALLBACK_STEP) / FALLBACK_STEP * 100;
+      if (expPctTo == null) expPctTo = (expAfterRaw % FALLBACK_STEP) / FALLBACK_STEP * 100;
     }
 
     return {
       actorName: entry?.actorName ?? "Unknown",
-      levelBefore: Number(levelBefore),
-      levelAfter: Number(levelAfter),
+      levelBefore: levelBefore ?? 1,
+      levelAfter: levelAfter ?? (levelBefore ?? 1),
       expPctFrom: Number(expPctFrom ?? 0),
       expPctTo: Number(expPctTo ?? 0),
     };
   }
 
-  // --------------------------------------------------------------------------
-  // UI build
-  // --------------------------------------------------------------------------
+  // ----------------------------------------------------------------------------
+  // UI build + animation
+  // ----------------------------------------------------------------------------
   function buildUI(data) {
     removeRoot();
 
@@ -335,28 +331,21 @@
 
     document.body.appendChild(root);
 
-    // Heavy debug: confirm it exists + where it is
-    if (DEBUG.enabled && DEBUG.ui) {
-      const rect = card.getBoundingClientRect();
-      dlog("ui", "[UI] appended root/card", {
-        inDOM: document.body.contains(root),
-        rect: { x: rect.x, y: rect.y, w: rect.width, h: rect.height },
-        zIndex: getComputedStyle(root).zIndex,
-        opacity: getComputedStyle(card).opacity,
-      });
-    }
-
     return {
-      root, ui, card,
+      root,
+      ui,
+      card,
       lvNum: lv.querySelector(".oni-exp-lv-num"),
-      pct, fill, levelUp
+      pct,
+      fill,
+      levelUp,
     };
   }
 
   function setBar(ui, pct) {
     const p = clamp(Number(pct), 0, 100);
     ui.fill.style.width = `${p.toFixed(2)}%`;
-    ui.pct.textContent = `${p.toFixed(1)}%`;
+    ui.pct.textContent = `${p.toFixed(1)}%`; // <<< 1 decimal
   }
 
   function flashLevelUp(ui) {
@@ -369,7 +358,10 @@
     const a = clamp(Number(fromPct), 0, 100);
     const b = clamp(Number(toPct), 0, 100);
 
-    if (durationMs <= 0) { setBar(ui, b); return; }
+    if (durationMs <= 0) {
+      setBar(ui, b);
+      return;
+    }
 
     const start = performance.now();
     return new Promise((resolve) => {
@@ -389,13 +381,11 @@
     ui.card.style.transition = `transform ${OUTRO_MS}ms ease, opacity ${OUTRO_MS}ms ease`;
     ui.card.style.transform = `translateX(-${SLIDE_PX}px)`;
     ui.card.style.opacity = "0";
+
     await sleep(OUTRO_MS + 10);
     removeRoot();
   }
 
-  // --------------------------------------------------------------------------
-  // Main runOnce (supports overflow level-ups)
-  // --------------------------------------------------------------------------
   async function runOnce(entry, meta) {
     ensureStyles();
 
@@ -403,20 +393,26 @@
     const ui = buildUI(data);
 
     const lvBefore = Math.floor(Number(data.levelBefore || 1));
-    const lvAfter  = Math.floor(Number(data.levelAfter || lvBefore));
+    const lvAfter = Math.floor(Number(data.levelAfter || lvBefore));
     const gainedRaw = Number(entry?.levelsGained);
-    const levelsGained =
-      Number.isFinite(gainedRaw)
-        ? Math.max(0, Math.floor(gainedRaw))
-        : Math.max(0, lvAfter - lvBefore);
+    const levelsGained = Number.isFinite(gainedRaw) ? Math.max(0, Math.floor(gainedRaw)) : Math.max(0, lvAfter - lvBefore);
 
     // Set initial
     ui.lvNum.textContent = String(lvBefore);
     setBar(ui, data.expPctFrom);
 
+    // Intro: fade+slide in
     await sleep(0);
     ui.card.classList.add("is-in");
 
+    // ------------------------------------------------------------------------
+    // Bar animation rules
+    // - Normal: animate from -> to
+    // - Level-up (overflow): animate to 100%, reset to 0%, then animate to overflow %
+    //   If multiple levels gained: repeat 0% -> 100% for each extra level.
+    // ------------------------------------------------------------------------
+
+    // Helper: duration scaled by distance (keeps “speed” consistent)
     const durScaled = (from, to, base) => {
       const dist = Math.abs(clamp(Number(to), 0, 100) - clamp(Number(from), 0, 100));
       const ms = base * (dist / 100);
@@ -426,149 +422,41 @@
     if (levelsGained <= 0) {
       await animateBar(ui, data.expPctFrom, data.expPctTo, BAR_ANIM_MS);
     } else {
-      // Fill -> 100 on old level
-      await animateBar(ui, data.expPctFrom, 100, durScaled(data.expPctFrom, 100, BAR_ANIM_MS));
+      // 1) Fill to 100% on the old level (from current %)
+      const d1 = durScaled(data.expPctFrom, 100, BAR_ANIM_MS);
+      await animateBar(ui, data.expPctFrom, 100, d1);
       await sleep(90);
 
       let shownLv = lvBefore;
 
+      // 2) For each level gained: flash, reset bar to 0
       for (let i = 0; i < levelsGained; i++) {
         shownLv += 1;
         ui.lvNum.textContent = String(shownLv);
         flashLevelUp(ui);
 
+        // reset bar to 0 for new level
         setBar(ui, 0);
         await sleep(80);
 
+        // If there are MORE levels still to gain after this one, fill 0->100 again
         if (i < levelsGained - 1) {
           await animateBar(ui, 0, 100, BAR_ANIM_MS);
           await sleep(90);
         }
       }
 
-      // Final overflow fill
-      await animateBar(ui, 0, data.expPctTo, durScaled(0, data.expPctTo, BAR_ANIM_MS));
+      // 3) Finally fill to the overflow value on the last gained level
+      const dLast = durScaled(0, data.expPctTo, BAR_ANIM_MS);
+      await animateBar(ui, 0, data.expPctTo, dLast);
     }
 
     await sleep(HOLD_MS);
     await teardown(ui);
   }
 
-  async function drainQueue() {
-    UI_STATE.lock = true;
-    try {
-      while (UI_STATE.queue.length) {
-        const { meta, entry } = UI_STATE.queue.shift();
-        dlog("queue", "[QUEUE] UI start", {
-          actorName: entry?.actorName,
-          actorUuid: entry?.actorUuid,
-          runId: meta?.runId,
-          fromSocket: meta?.__fromSocket ?? false,
-          queueRemain: UI_STATE.queue.length
-        });
-        await runOnce(entry, meta);
-        dlog("queue", "[QUEUE] UI end", { actorName: entry?.actorName, queueRemain: UI_STATE.queue.length });
-        await sleep(GAP_MS);
-      }
-    } catch (e) {
-      derr("[QUEUE] drain crashed", e);
-    } finally {
-      UI_STATE.lock = false;
-      removeRoot();
-      dlog("queue", "[QUEUE] drain complete");
-    }
-  }
-
-  // --------------------------------------------------------------------------
-  // Local hook receive
-  // --------------------------------------------------------------------------
-  Hooks.on("oni:expAwarded", (payload) => {
-    try {
-      const runId = payload?.runId;
-
-      dlog("hook", "[HOOK] oni:expAwarded received", {
-        runId,
-        entriesLen: Array.isArray(payload?.entries) ? payload.entries.length : 0,
-        hasSocketMarker: payload?.__fromSocket ?? false,
-      });
-
-      // De-dupe at hook layer too (protect against echo)
-      if (runId && rememberRunId(runId, "hook")) return;
-
-      const entries = Array.isArray(payload?.entries) ? payload.entries : [];
-      if (!entries.length) return;
-
-      for (const e of entries) UI_STATE.queue.push({ meta: payload, entry: e });
-
-      dlog("queue", "[QUEUE] enqueued", { runId, added: entries.length, queueSize: UI_STATE.queue.length });
-
-      if (!UI_STATE.lock) drainQueue();
-    } catch (e) {
-      derr("[HOOK] handler crashed", e);
-    }
-  });
-
-  // --------------------------------------------------------------------------
-  // Socket receive (THIS is what makes all clients show UI)
-  // --------------------------------------------------------------------------
-  function onSocketMessage(channelName, msg) {
-    try {
-      dlog("socket", `[SOCKET] recv on "${channelName}"`, msg);
-
-      if (!msg) return;
-      if (msg.type !== "oni:expAwarded") {
-        dlog("socket", `[SOCKET] ignore type="${msg.type}"`);
-        return;
-      }
-
-      const payload = msg.payload;
-      const runId = payload?.runId;
-
-      dlog("socket", "[SOCKET] oni:expAwarded payload", {
-        runId,
-        entriesLen: Array.isArray(payload?.entries) ? payload.entries.length : 0,
-        fromUser: payload?.awardedBy?.name ?? payload?.awardedBy?.id ?? null,
-      });
-
-      if (runId && rememberRunId(runId, `socket:${channelName}`)) return;
-
-      // Mark it came from socket (helps debugging)
-      const marked = { ...payload, __fromSocket: true };
-
-      // Re-fire locally so the rest of the UI system is unchanged
-      Hooks.callAll("oni:expAwarded", marked);
-
-      dlog("socket", "[SOCKET] re-fired Hooks.callAll(oni:expAwarded)", { runId });
-    } catch (e) {
-      derr("[SOCKET] handler crashed", e);
-    }
-  }
 
   Hooks.once("ready", () => {
-    try {
-      dlog("socket", "READY", {
-        user: { id: game.user?.id, name: game.user?.name, isGM: game.user?.isGM },
-        socketHasOn: !!game.socket?.on,
-        primary: SOCKET_PRIMARY,
-        fallback: SOCKET_FALLBACK
-      });
-
-      if (!game.socket?.on) {
-        dwarn("game.socket.on not available — cannot receive multi-client UI.");
-        return;
-      }
-
-      // ✅ correct channel
-      game.socket.on(SOCKET_PRIMARY, (msg) => onSocketMessage(SOCKET_PRIMARY, msg));
-      dlog("socket", `[SOCKET] listening on "${SOCKET_PRIMARY}"`);
-
-      // debug fallback (helps catch API emitting to module.* by mistake)
-      game.socket.on(SOCKET_FALLBACK, (msg) => onSocketMessage(SOCKET_FALLBACK, msg));
-      dlog("socket", `[SOCKET] also listening on fallback "${SOCKET_FALLBACK}" (debug)`);
-
-      dlog("ui", "UI script ready: listening to hook + socket");
-    } catch (e) {
-      derr("Failed to register socket listeners", e);
-    }
+    log("UI script ready. Listening for oni:expAwarded");
   });
 })();
