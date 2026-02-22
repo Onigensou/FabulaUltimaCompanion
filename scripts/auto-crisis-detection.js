@@ -6,6 +6,10 @@
   // Your provided Crisis Active Effect UUID
   const CRISIS_EFFECT_UUID = "Item.0gIBYzSpjdXS6f25.ActiveEffect.4ldx00srGNv5AJBr";
 
+  // User-provided UUID check (can be an existing embedded AE UUID from a scene/token/actor)
+  // We treat it as an *additional* identifier to recognize Crisis effects.
+  const CRISIS_EFFECT_UUID_FALLBACK = "Scene.T0Eo2forSEruOgO0.Token.1vXKtXKTqk9EMC4p.Actor.sr56xgKsKlkgdBXt.ActiveEffect.NSAaDpXeKidoqvk2";
+
   const log  = (...a) => console.log(TAG, ...a);
   const warn = (...a) => console.warn(TAG, ...a);
   const err  = (...a) => console.error(TAG, ...a);
@@ -96,6 +100,23 @@
   // Track "before" crisis state so we can detect ENTER/EXIT transitions cleanly
   const _preUpdateCrisisState = new WeakMap();
 
+  // Per-actor operation lock (GM side) to avoid duplicate apply/remove when updates fire rapidly.
+  // key: actorUuid -> Promise chain
+  const _actorOpLock = new Map();
+
+  function queueActorOp(actorUuid, fn) {
+    const prev = _actorOpLock.get(actorUuid) ?? Promise.resolve();
+    const next = prev
+      .catch(() => {})
+      .then(fn)
+      .finally(() => {
+        // Only clear if we're still the latest promise for this actor
+        if (_actorOpLock.get(actorUuid) === next) _actorOpLock.delete(actorUuid);
+      });
+    _actorOpLock.set(actorUuid, next);
+    return next;
+  }
+
   function toNumber(v) {
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
@@ -131,13 +152,36 @@
     return { cur, max };
   }
 
-  function findExistingCrisisEffect(actor) {
-    // Prefer removing only the effect that matches your template UUID,
-    // or the one we applied (flagged).
-    return actor.effects.find(e =>
-      e?.origin === CRISIS_EFFECT_UUID ||
-      e?.flags?.[MODULE_ID]?.autoCrisis === true
-    );
+  function isEffectActive(e) {
+    // "Active" here means not disabled.
+    // (Foundry uses the field "disabled" on ActiveEffect.)
+    return !!e && e.disabled !== true;
+  }
+
+  function isCrisisEffect(e) {
+    if (!e) return false;
+
+    // 1) UUID match (user requested)
+    if (e.uuid === CRISIS_EFFECT_UUID_FALLBACK) return true;
+
+    // 2) Origin match to our template or fallback
+    if (e.origin === CRISIS_EFFECT_UUID || e.origin === CRISIS_EFFECT_UUID_FALLBACK) return true;
+
+    // 3) Flag (our own)
+    if (e?.flags?.[MODULE_ID]?.autoCrisis === true) return true;
+
+    // 4) Name fallback
+    if (String(e.name ?? "").trim().toLowerCase() === "crisis") return true;
+
+    return false;
+  }
+
+  function findAllCrisisEffects(actor) {
+    return (actor?.effects ?? []).filter(e => isCrisisEffect(e));
+  }
+
+  function findAnyActiveCrisisEffect(actor) {
+    return findAllCrisisEffects(actor).find(isEffectActive) ?? null;
   }
 
   async function buildCrisisEffectData() {
@@ -164,14 +208,32 @@
   }
 
   async function applyCrisis(actor) {
-    const existing = findExistingCrisisEffect(actor);
-    if (existing) return;
+    // If an active Crisis effect already exists, do nothing.
+    if (findAnyActiveCrisisEffect(actor)) return;
+
+    // If duplicates already exist (disabled or otherwise), clean them up first.
+    const allBefore = findAllCrisisEffects(actor);
+    if (allBefore.length > 1) {
+      // Keep the first, delete the rest
+      const keep = allBefore[0];
+      const toDelete = allBefore.slice(1).map(e => e.id).filter(Boolean);
+      if (toDelete.length) {
+        await actor.deleteEmbeddedDocuments("ActiveEffect", toDelete, { oniAutoCrisis: true });
+        log(`(Cleanup) Removed duplicate Crisis effects on: ${actor.name}`, { kept: keep?.id, deleted: toDelete });
+      }
+      // If the kept one is active, we're done.
+      if (keep && isEffectActive(keep)) return;
+      // Otherwise continue to apply a fresh one below.
+    }
 
     const data = await buildCrisisEffectData();
     if (!data) {
       warn("Could not resolve Crisis ActiveEffect UUID:", CRISIS_EFFECT_UUID);
       return;
     }
+
+    // Re-check right before create (extra safety if multiple calls happen quickly)
+    if (findAnyActiveCrisisEffect(actor)) return;
 
     await actor.createEmbeddedDocuments("ActiveEffect", [data], {
       oniAutoCrisis: true
@@ -181,14 +243,13 @@
   }
 
   async function removeCrisis(actor) {
-    const existing = findExistingCrisisEffect(actor);
-    if (!existing) return;
+    // User request: when recovering, clear ALL Crisis effects by name/uuid/origin/flag.
+    const all = findAllCrisisEffects(actor);
+    if (!all.length) return;
 
-    await actor.deleteEmbeddedDocuments("ActiveEffect", [existing.id], {
-      oniAutoCrisis: true
-    });
-
-    log(`Removed Crisis from: ${actor.name}`);
+    const ids = all.map(e => e.id).filter(Boolean);
+    await actor.deleteEmbeddedDocuments("ActiveEffect", ids, { oniAutoCrisis: true });
+    log(`Removed Crisis (cleared ${ids.length} effect(s)) from: ${actor.name}`);
   }
 
   async function evaluateActorCrisis(actor) {
@@ -200,8 +261,11 @@
     const threshold = crisisThreshold(max);
     const inCrisis = cur <= threshold;
 
-    if (inCrisis) await applyCrisis(actor);
-    else await removeCrisis(actor);
+    // Serialize operations per actor (prevents duplicate creates/deletes under rapid updates)
+    await queueActorOp(actor.uuid, async () => {
+      if (inCrisis) await applyCrisis(actor);
+      else await removeCrisis(actor);
+    });
   }
 
   function hpWasTouched(changed) {
