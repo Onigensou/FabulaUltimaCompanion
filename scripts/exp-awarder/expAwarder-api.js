@@ -2,18 +2,13 @@
 // expAwarder-api.js (Foundry V12 Module Script)
 // - Public API: window.FUCompanion.api.expAwarder.awardExp(payload)
 // - Updates Actor EXP at: actor.system.props.experience (decimal supported)
-// - Level-up overflow: exp gauge 0..10; when reaching 10, level +1 and rollover
-// - Emits UI signal (snapshot):
-//    1) Local: Hooks.callAll("oni:expAwarded", {...})
-//    2) Multi-client: socket broadcast on "module.fabula-ultima-companion"
+// - Emits UI signal (decoupled snapshot): Hooks.callAll("oni:expAwarded", {...})
+// - UI percent conversion matches BattleEnd Summary behavior (0..10 => 0..100%)
 // ============================================================================
 
 (() => {
   const TAG = "[ONI][EXPAwarder][API]";
   const DBG = true;
-
-  // Multi-client socket channel (per your request)
-  const SOCKET_NS = "module.fabula-ultima-companion";
 
   function log(...args) { if (DBG) console.log(TAG, ...args); }
   function warn(...args) { console.warn(TAG, ...args); }
@@ -127,21 +122,9 @@
 
   function emitExpAwardedSignal(payload) {
     try {
-      // 1) Local client UI (whoever ran the API)
       Hooks.callAll("oni:expAwarded", payload);
-
-      // 2) Multi-client UI broadcast (all connected clients)
-      // UI script will listen and re-fire Hooks.callAll locally
-      if (game.socket?.emit) {
-        game.socket.emit(SOCKET_NS, {
-          type: "oni:expAwarded",
-          payload,
-        });
-      } else {
-        warn("game.socket.emit not available; cannot broadcast EXP UI.");
-      }
     } catch (e) {
-      err("Failed to emit oni:expAwarded (local/socket)", e);
+      err("Failed to emit oni:expAwarded", e);
     }
   }
 
@@ -254,9 +237,6 @@
           amount,
           expPctFrom,
           expPctTo,
-          levelBefore,
-          levelAfter,
-          levelsGained: calc.levelsGained,
         });
       }
 
@@ -273,7 +253,7 @@
           awardedBy: awardingUser,
           entries,
         });
-        log(`runId=${runId} Emitted oni:expAwarded (local + socket)`, { count: entries.length });
+        log(`runId=${runId} Emitted oni:expAwarded`, { count: entries.length });
       } else {
         log(`runId=${runId} playUi=false (no UI signal emitted)`);
       }
@@ -293,7 +273,7 @@
 
     api._debug = api._debug ?? {};
     api._debug.TAG = TAG;
-    api._debug.version = "v4-levelupOverflow-multiclientUI";
+    api._debug.version = "v3-levelupOverflow";
     log("API registered: window.FUCompanion.api.expAwarder.awardExp");
   }
 
