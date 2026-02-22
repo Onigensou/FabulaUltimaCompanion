@@ -49,6 +49,49 @@
     return clamp(t * 100, 0, 100);
   }
 
+  // EXP meter rules:
+  // - experience is a 0..LEVELUP_AT gauge
+  // - if exp reaches LEVELUP_AT, level increases and exp rolls over (overflow supported)
+  // - negative awards will not reduce level; exp clamps to 0
+  function applyLevelUpOverflow(expBefore, levelBefore, delta, levelUpAt) {
+    const cap = Math.max(1e-6, Number(levelUpAt));
+    let level = Math.max(1, Math.floor(asNumber(levelBefore, 1)));
+    let exp0 = asNumber(expBefore, 0);
+
+    // If old data already exceeded cap, normalize it first
+    if (exp0 >= cap) {
+      const gained0 = Math.floor(exp0 / cap);
+      level += gained0;
+      exp0 = exp0 - gained0 * cap;
+    } else if (exp0 < 0) {
+      exp0 = 0;
+    }
+
+    let exp = exp0 + asNumber(delta, 0);
+
+    // Clamp negative (no level-down logic)
+    if (exp < 0) exp = 0;
+
+    // Apply overflow level-ups
+    let gained = 0;
+    // Use a tiny epsilon to avoid floating precision issues (e.g. 9.9999999997)
+    const EPS = 1e-9;
+    while (exp + EPS >= cap) {
+      exp -= cap;
+      level += 1;
+      gained += 1;
+      // safety against infinite loops on weird cap
+      if (gained > 9999) break;
+    }
+
+    return {
+      expStart: exp0,
+      expFinal: exp,
+      levelFinal: level,
+      levelsGained: gained,
+    };
+  }
+
   function normalizeTargets(targets) {
     // Accept:
     // - ["Actor.xxx", "Actor.yyy"]
@@ -135,17 +178,24 @@
 
         // --- Read EXP from Custom System Builder fields ---
         const expBefore = asNumber(actor.system?.props?.experience, 0);
-        const expAfter = expBefore + amount;
 
         // Optional level snapshot (your actors store level under system.props.level)
         const levelBefore =
           actor.system?.props?.level ??
           actor.system?.level ??
-          null;
+          1;
 
-        // --- Update EXP (Custom System Builder path) ---
+        // --- Apply level-up + overflow (0..10 gauge) ---
+        const calc = applyLevelUpOverflow(expBefore, levelBefore, amount, LEVELUP_AT);
+        const expAfter = calc.expFinal;
+        const levelAfter = calc.levelFinal;
+
+        // --- Update EXP + Level (Custom System Builder paths) ---
         try {
-          await actor.update({ "system.props.experience": expAfter });
+          await actor.update({
+            "system.props.experience": expAfter,
+            "system.props.level": levelAfter,
+          });
         } catch (e) {
           err(`runId=${runId} Failed to update actor EXP`, actorUuid, e);
           ui.notifications?.error?.(`EXP Awarder: Failed to update ${actor.name}.`);
@@ -153,7 +203,7 @@
         }
 
         // --- UI percent conversion (matches BattleEnd SummaryUI logic style) ---
-        const expPctFrom = expToPct(expBefore, EXP_START, LEVELUP_AT);
+        const expPctFrom = expToPct(calc.expStart, EXP_START, LEVELUP_AT);
         const expPctTo = expToPct(expAfter, EXP_START, LEVELUP_AT);
 
         const entry = {
@@ -166,12 +216,14 @@
           awardedBy: awardingUser,
 
           // Decoupled snapshot
-          expBefore,
+          expBeforeRaw: expBefore,
+          expBefore: calc.expStart,
           expAfter,
           levelBefore,
+          levelAfter,
+          levelsGained: calc.levelsGained,
 
           // UI snapshot values
-          levelAfter: null,
           expPctFrom,
           expPctTo,
         };
@@ -221,7 +273,7 @@
 
     api._debug = api._debug ?? {};
     api._debug.TAG = TAG;
-    api._debug.version = "v2-expPctFix";
+    api._debug.version = "v3-levelupOverflow";
     log("API registered: window.FUCompanion.api.expAwarder.awardExp");
   }
 
