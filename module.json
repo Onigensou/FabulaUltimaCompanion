@@ -78,8 +78,8 @@
   "scripts/gacha-system/gacha-socket-banner.js",
   "scripts/treasure-chest-system/treasureChest-configUI.js",
   "scripts/treasure-chest-system/treasureChest-core.js",
-  "scripts/expAwarder-ui-listener.js",
-  "scripts/expAwarder-ui.js"
+  "scripts/exp-awarder/expAwarder-ui-listener.js",
+  "scripts/exp-awarder/expAwarder-ui.js"
 ],
 
   "esmodules": [
