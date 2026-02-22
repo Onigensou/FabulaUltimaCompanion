@@ -131,6 +131,9 @@
         transition:
           transform ${INTRO_MS}ms ease,
           opacity ${INTRO_MS}ms ease;
+
+        /* IMPORTANT: allow floating elements above the card */
+        overflow: visible;
       }
 
       .oni-exp-card.is-in{
@@ -193,26 +196,32 @@
 
       .oni-exp-levelup-float{
         position: absolute;
-        top: -44px;
-        left: 0px;
-
-        padding: 10px 18px;
-        border-radius: 999px;
-        background: rgba(0,0,0,0.35);
-        border: 1px solid rgba(255,255,255,0.16);
-        color: var(--oni-exp-accent);
-        font-weight: 900;
+        left: 12px;
+        top: -32px;
+        font-weight: 1000;
+        font-size: 18px;
         letter-spacing: 1px;
-        text-transform: uppercase;
-
+        color: rgba(255,255,255,0.96);
+        text-shadow:
+          -1px  0px 0 rgba(0,0,0,0.85),
+           1px  0px 0 rgba(0,0,0,0.85),
+           0px -1px 0 rgba(0,0,0,0.85),
+           0px  1px 0 rgba(0,0,0,0.85),
+           0 2px 0 rgba(0,0,0,0.35);
         opacity: 0;
-        transform: translateY(10px) scale(0.98);
-        transition: opacity 220ms ease, transform 220ms ease;
-        text-shadow: 0 2px 10px rgba(0,0,0,0.35);
+        transform: translateY(-8px) scale(1.2);
+        pointer-events:none;
+        z-index: 3;
       }
       .oni-exp-levelup-float.is-show{
-        opacity: 1;
-        transform: translateY(0) scale(1);
+        animation: oniExpLevelUp 1400ms ease-in-out forwards;
+      }
+
+      @keyframes oniExpLevelUp{
+        0%{ opacity: 0; transform: translateY(-10px) scale(1.18); }
+        18%{ opacity: 1; transform: translateY(0px) scale(1.22); }
+        80%{ opacity: 1; transform: translateY(0px) scale(1.22); }
+        100%{ opacity: 0; transform: translateY(-8px) scale(1.18); }
       }
     `;
 
