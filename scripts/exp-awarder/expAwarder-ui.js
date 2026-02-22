@@ -378,28 +378,69 @@
     const data = shapeData(entry);
     const ui = buildUI(data);
 
+    const lvBefore = Math.floor(Number(data.levelBefore || 1));
+    const lvAfter = Math.floor(Number(data.levelAfter || lvBefore));
+    const gainedRaw = Number(entry?.levelsGained);
+    const levelsGained = Number.isFinite(gainedRaw) ? Math.max(0, Math.floor(gainedRaw)) : Math.max(0, lvAfter - lvBefore);
+
     // Set initial
-    ui.lvNum.textContent = String(Math.floor(Number(data.levelBefore || 1)));
+    ui.lvNum.textContent = String(lvBefore);
     setBar(ui, data.expPctFrom);
 
     // Intro: fade+slide in
     await sleep(0);
     ui.card.classList.add("is-in");
 
-    // Animate bar
-    await animateBar(ui, data.expPctFrom, data.expPctTo, BAR_ANIM_MS);
+    // ------------------------------------------------------------------------
+    // Bar animation rules
+    // - Normal: animate from -> to
+    // - Level-up (overflow): animate to 100%, reset to 0%, then animate to overflow %
+    //   If multiple levels gained: repeat 0% -> 100% for each extra level.
+    // ------------------------------------------------------------------------
 
-    // Level up flash
-    const lvBefore = Math.floor(Number(data.levelBefore || 1));
-    const lvAfter = Math.floor(Number(data.levelAfter || lvBefore));
-    if (lvAfter > lvBefore) {
-      ui.lvNum.textContent = String(lvAfter);
-      flashLevelUp(ui);
+    // Helper: duration scaled by distance (keeps “speed” consistent)
+    const durScaled = (from, to, base) => {
+      const dist = Math.abs(clamp(Number(to), 0, 100) - clamp(Number(from), 0, 100));
+      const ms = base * (dist / 100);
+      return Math.max(120, Math.floor(ms));
+    };
+
+    if (levelsGained <= 0) {
+      await animateBar(ui, data.expPctFrom, data.expPctTo, BAR_ANIM_MS);
+    } else {
+      // 1) Fill to 100% on the old level (from current %)
+      const d1 = durScaled(data.expPctFrom, 100, BAR_ANIM_MS);
+      await animateBar(ui, data.expPctFrom, 100, d1);
+      await sleep(90);
+
+      let shownLv = lvBefore;
+
+      // 2) For each level gained: flash, reset bar to 0
+      for (let i = 0; i < levelsGained; i++) {
+        shownLv += 1;
+        ui.lvNum.textContent = String(shownLv);
+        flashLevelUp(ui);
+
+        // reset bar to 0 for new level
+        setBar(ui, 0);
+        await sleep(80);
+
+        // If there are MORE levels still to gain after this one, fill 0->100 again
+        if (i < levelsGained - 1) {
+          await animateBar(ui, 0, 100, BAR_ANIM_MS);
+          await sleep(90);
+        }
+      }
+
+      // 3) Finally fill to the overflow value on the last gained level
+      const dLast = durScaled(0, data.expPctTo, BAR_ANIM_MS);
+      await animateBar(ui, 0, data.expPctTo, dLast);
     }
 
     await sleep(HOLD_MS);
     await teardown(ui);
   }
+
 
   Hooks.once("ready", () => {
     log("UI script ready. Listening for oni:expAwarded");
