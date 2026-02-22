@@ -1,18 +1,100 @@
 // ============================================================================
-// expAwarder-ui.js (Foundry V12 Module Script)  — UPDATED
-// Changes:
-// - Percent display now shows 1 decimal (e.g. 62.5%)
-// - Prefers API-provided expPctFrom/expPctTo (no “0% start” fallback if provided)
-// - Queue + top-left + fade/slide unchanged
+// expAwarder-ui.js (Foundry V12 Module Script) — UPDATED (Multi-client)
+// - Still plays UI locally via Hooks.on("oni:expAwarded")
+// - ALSO broadcasts the same payload to other clients via Foundry socket
+// - Prevents infinite loops with __fromSocket guard + runId dedupe
 // ============================================================================
 
 (() => {
   const TAG = "[ONI][EXPAwarder][UI]";
-  const DBG = true;
+  const DBG = true;          // UI debug
+  const NET_DBG = true;      // Socket debug (turn off later)
 
   function log(...args) { if (DBG) console.log(TAG, ...args); }
   function warn(...args) { console.warn(TAG, ...args); }
   function err(...args) { console.error(TAG, ...args); }
+
+  const nlog = (...a) => (NET_DBG ? console.log(`${TAG}[NET]`, ...a) : null);
+  const nwarn = (...a) => console.warn(`${TAG}[NET]`, ...a);
+  const nerr = (...a) => console.error(`${TAG}[NET]`, ...a);
+
+  // ----------------------------------------------------------------------------
+  // Socket broadcaster config
+  // ----------------------------------------------------------------------------
+  const SOCKET_CHANNEL = "module.fabula-ultima-companion";
+  const MSG_TYPE = "expAwarder:playUi";
+
+  const DEDUPE_TTL_MS = 30_000;
+  const seenBroadcast = new Map(); // runId -> timestamp
+
+  function now() { return Date.now(); }
+  function cleanupBroadcastSeen() {
+    const t = now();
+    for (const [k, ts] of seenBroadcast.entries()) {
+      if (t - ts > DEDUPE_TTL_MS) seenBroadcast.delete(k);
+    }
+  }
+  function markBroadcastSeen(runId) {
+    cleanupBroadcastSeen();
+    if (!runId) return;
+    seenBroadcast.set(runId, now());
+  }
+  function hasBroadcastSeen(runId) {
+    cleanupBroadcastSeen();
+    if (!runId) return false;
+    return seenBroadcast.has(runId);
+  }
+
+  function canUseSocket() {
+    return !!game?.socket && typeof game.socket.emit === "function";
+  }
+
+  function broadcastToOthers(payload) {
+    try {
+      if (!canUseSocket()) {
+        nwarn("Socket not available; cannot broadcast.");
+        return;
+      }
+
+      if (!payload?.runId) {
+        nwarn("No runId; skipping broadcast.");
+        return;
+      }
+
+      // If this payload came from socket already, NEVER rebroadcast (prevents loops)
+      if (payload.__fromSocket) {
+        nlog("Skip broadcast (__fromSocket=true)", payload.runId);
+        return;
+      }
+
+      // Dedupe broadcasts from the same client
+      if (hasBroadcastSeen(payload.runId)) {
+        nlog("Skip broadcast (already broadcast this runId)", payload.runId);
+        return;
+      }
+
+      markBroadcastSeen(payload.runId);
+
+      const msg = {
+        type: MSG_TYPE,
+        fromUser: game.user?.id ?? null,
+        fromUserName: game.user?.name ?? "Unknown",
+        sentAt: Date.now(),
+        payload, // Send the whole payload (entries already a decoupled snapshot)
+      };
+
+      // Foundry V12: does NOT echo back to local client (good; we still play locally)
+      game.socket.emit(SOCKET_CHANNEL, msg);
+
+      nlog("Broadcast sent", {
+        runId: payload.runId,
+        entries: payload?.entries?.length ?? 0,
+        channel: SOCKET_CHANNEL,
+      });
+    } catch (e) {
+      nerr("Broadcast crashed", e);
+    }
+  }
 
   // ----------------------------------------------------------------------------
   // Queue system (hard rule: only 1 UI at a time)
@@ -27,9 +109,15 @@
       const entries = Array.isArray(payload?.entries) ? payload.entries : [];
       if (!entries.length) return;
 
+      // NEW: Broadcast to other clients
+      broadcastToOthers(payload);
+
       for (const e of entries) UI_STATE.queue.push({ meta: payload, entry: e });
 
-      log("Event received; queued entries=", entries.length, "queueSize=", UI_STATE.queue.length);
+      log("Event received; queued entries=", entries.length, "queueSize=", UI_STATE.queue.length, {
+        runId: payload?.runId,
+        fromSocket: !!payload?.__fromSocket,
+      });
 
       if (!UI_STATE.lock) drainQueue();
     } catch (e) {
@@ -345,7 +433,7 @@
   function setBar(ui, pct) {
     const p = clamp(Number(pct), 0, 100);
     ui.fill.style.width = `${p.toFixed(2)}%`;
-    ui.pct.textContent = `${p.toFixed(1)}%`; // <<< 1 decimal
+    ui.pct.textContent = `${p.toFixed(1)}%`;
   }
 
   function flashLevelUp(ui) {
@@ -397,22 +485,12 @@
     const gainedRaw = Number(entry?.levelsGained);
     const levelsGained = Number.isFinite(gainedRaw) ? Math.max(0, Math.floor(gainedRaw)) : Math.max(0, lvAfter - lvBefore);
 
-    // Set initial
     ui.lvNum.textContent = String(lvBefore);
     setBar(ui, data.expPctFrom);
 
-    // Intro: fade+slide in
     await sleep(0);
     ui.card.classList.add("is-in");
 
-    // ------------------------------------------------------------------------
-    // Bar animation rules
-    // - Normal: animate from -> to
-    // - Level-up (overflow): animate to 100%, reset to 0%, then animate to overflow %
-    //   If multiple levels gained: repeat 0% -> 100% for each extra level.
-    // ------------------------------------------------------------------------
-
-    // Helper: duration scaled by distance (keeps “speed” consistent)
     const durScaled = (from, to, base) => {
       const dist = Math.abs(clamp(Number(to), 0, 100) - clamp(Number(from), 0, 100));
       const ms = base * (dist / 100);
@@ -422,31 +500,26 @@
     if (levelsGained <= 0) {
       await animateBar(ui, data.expPctFrom, data.expPctTo, BAR_ANIM_MS);
     } else {
-      // 1) Fill to 100% on the old level (from current %)
       const d1 = durScaled(data.expPctFrom, 100, BAR_ANIM_MS);
       await animateBar(ui, data.expPctFrom, 100, d1);
       await sleep(90);
 
       let shownLv = lvBefore;
 
-      // 2) For each level gained: flash, reset bar to 0
       for (let i = 0; i < levelsGained; i++) {
         shownLv += 1;
         ui.lvNum.textContent = String(shownLv);
         flashLevelUp(ui);
 
-        // reset bar to 0 for new level
         setBar(ui, 0);
         await sleep(80);
 
-        // If there are MORE levels still to gain after this one, fill 0->100 again
         if (i < levelsGained - 1) {
           await animateBar(ui, 0, 100, BAR_ANIM_MS);
           await sleep(90);
         }
       }
 
-      // 3) Finally fill to the overflow value on the last gained level
       const dLast = durScaled(0, data.expPctTo, BAR_ANIM_MS);
       await animateBar(ui, 0, data.expPctTo, dLast);
     }
@@ -455,8 +528,10 @@
     await teardown(ui);
   }
 
-
   Hooks.once("ready", () => {
-    log("UI script ready. Listening for oni:expAwarded");
+    log("UI script ready. Listening for oni:expAwarded + broadcasting to other clients.", {
+      socketChannel: SOCKET_CHANNEL,
+      user: { id: game.user?.id, name: game.user?.name, gm: !!game.user?.isGM },
+    });
   });
 })();
