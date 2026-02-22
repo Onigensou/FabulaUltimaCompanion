@@ -72,6 +72,11 @@
   const PAD_X = 18;
   const PAD_Y = 18;
 
+  // Floating LEVEL UP! text position tuning (relative to the EXP panel)
+  // +Y moves it DOWN (less likely to go off-screen)
+  const LEVELUP_OFFSET_X = 0;
+  const LEVELUP_OFFSET_Y = 22;
+
   // ----------------------------------------------------------------------------
   // Utilities
   // ----------------------------------------------------------------------------
@@ -196,8 +201,8 @@
 
       .oni-exp-levelup-float{
         position: absolute;
-        left: 12px;
-        top: -32px;
+        left: ${12 + LEVELUP_OFFSET_X}px;
+        top: ${-32 + LEVELUP_OFFSET_Y}px;
         font-weight: 1000;
         font-size: 18px;
         letter-spacing: 1px;
