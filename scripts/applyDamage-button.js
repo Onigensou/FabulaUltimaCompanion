@@ -133,267 +133,6 @@ Hooks.once("ready", async () => {
     }
   }
 
-  const CONFIRM_DEBUG_NS = "[fu-chatbtn][Confirm][DBG]";
-  const REACTION_EMIT_DEBUG_WAIT_MS = 50;
-
-  function dbg(step, data = undefined) {
-    try {
-      if (data === undefined) console.log(`${CONFIRM_DEBUG_NS} ${step}`);
-      else console.log(`${CONFIRM_DEBUG_NS} ${step}`, data);
-    } catch {}
-  }
-
-  async function describeUuid(uuid) {
-    if (!uuid || typeof uuid !== "string") {
-      return { uuid: uuid ?? null, ok: false, reason: "empty" };
-    }
-
-    try {
-      const doc = await fromUuid(uuid).catch(() => null);
-      if (!doc) {
-        return { uuid, ok: false, reason: "fromUuid-null" };
-      }
-
-      const actor =
-        doc?.actor ??
-        (doc?.documentName === "Actor" ? doc : null) ??
-        null;
-
-      return {
-        uuid,
-        ok: true,
-        documentName: doc?.documentName ?? null,
-        id: doc?.id ?? null,
-        name: doc?.name ?? doc?.actor?.name ?? null,
-        actorUuid: actor?.uuid ?? null,
-        actorName: actor?.name ?? null,
-        tokenId: doc?.id ?? doc?.document?.id ?? null,
-        sceneId: doc?.parent?.id ?? doc?.scene?.id ?? null
-      };
-    } catch (err) {
-      return {
-        uuid,
-        ok: false,
-        reason: "exception",
-        error: err?.message ?? String(err)
-      };
-    }
-  }
-
-  function emitReactionPhaseLocalOnGM(payload) {
-    const traceId = payload?.__debugTraceId ?? `MISS-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
-    if (payload && !payload.__debugTraceId) payload.__debugTraceId = traceId;
-
-    dbg("emitReactionPhaseLocalOnGM:begin", {
-      traceId,
-      isGM: !!game.user?.isGM,
-      userId: game.user?.id ?? null,
-      userName: game.user?.name ?? null,
-      oniPresent: !!window.ONI,
-      oniEmitType: typeof window.ONI?.emit,
-      trigger: payload?.trigger ?? null,
-      payload
-    });
-
-    try {
-      if (!game.user?.isGM) {
-        dbg("emitReactionPhaseLocalOnGM:abort:not-gm", { traceId });
-        return false;
-      }
-
-      const emit = window.ONI?.emit;
-      if (typeof emit !== "function") {
-        console.warn("[fu-chatbtn][Confirm] ONI.emit unavailable; reaction signal skipped", payload);
-        dbg("emitReactionPhaseLocalOnGM:abort:no-emit-function", {
-          traceId,
-          oniKeys: Object.keys(window.ONI ?? {})
-        });
-        return false;
-      }
-
-      let observedSync = false;
-      let observedAsync = false;
-      const hookId = Hooks.on("oni:reactionPhase", (observedPayload) => {
-        const matchesTrace =
-          observedPayload?.__debugTraceId &&
-          observedPayload.__debugTraceId === traceId;
-
-        if (!matchesTrace) return;
-
-        observedAsync = true;
-        dbg("emitReactionPhaseLocalOnGM:hook-observed", {
-          traceId,
-          observedPayload
-        });
-        try { Hooks.off("oni:reactionPhase", hookId); } catch {}
-      });
-
-      emit("oni:reactionPhase", payload, { local: true, world: false });
-      observedSync = observedAsync;
-
-      console.log("[fu-chatbtn][Confirm] oni:reactionPhase emitted", payload);
-      dbg("emitReactionPhaseLocalOnGM:after-emit", {
-        traceId,
-        observedSync,
-        observedAsync
-      });
-
-      setTimeout(() => {
-        dbg("emitReactionPhaseLocalOnGM:post-wait", {
-          traceId,
-          waitMs: REACTION_EMIT_DEBUG_WAIT_MS,
-          observedSync,
-          observedAsync
-        });
-        if (!observedAsync) {
-          console.warn(`${CONFIRM_DEBUG_NS} emit did not loop back through Hooks.on('oni:reactionPhase') within wait window`, {
-            traceId,
-            waitMs: REACTION_EMIT_DEBUG_WAIT_MS,
-            payload
-          });
-        }
-        try { Hooks.off("oni:reactionPhase", hookId); } catch {}
-      }, REACTION_EMIT_DEBUG_WAIT_MS);
-
-      return true;
-    } catch (err) {
-      console.error("[fu-chatbtn][Confirm] Failed to emit oni:reactionPhase", err, payload);
-      dbg("emitReactionPhaseLocalOnGM:error", {
-        traceId,
-        error: err?.message ?? String(err),
-        stack: err?.stack ?? null
-      });
-      return false;
-    }
-  }
-
-  async function emitMissReactionSignal({
-    flagged,
-    attackerUuid,
-    attackerName,
-    missUUIDs,
-    elementType,
-    isSpellish,
-    weaponType,
-    attackRange,
-    accuracyTotal
-  } = {}) {
-    const traceId = `MISS-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
-
-    dbg("emitMissReactionSignal:begin", {
-      traceId,
-      isGM: !!game.user?.isGM,
-      attackerUuid,
-      attackerName,
-      missUUIDs,
-      elementType,
-      isSpellish: !!isSpellish,
-      weaponType,
-      attackRange,
-      accuracyTotal,
-      hasFlagged: !!flagged
-    });
-
-    if (!game.user?.isGM) {
-      dbg("emitMissReactionSignal:abort:not-gm", { traceId });
-      return false;
-    }
-
-    const missTargets = Array.isArray(missUUIDs) ? missUUIDs.filter(Boolean) : [];
-    if (!missTargets.length) {
-      dbg("emitMissReactionSignal:abort:no-miss-targets", { traceId, missUUIDs });
-      return false;
-    }
-
-    const core = flagged?.core ?? {};
-    const meta = flagged?.meta ?? {};
-    const adv  = flagged?.advPayload ?? {};
-
-    const attackerActor = attackerUuid
-      ? await resolveAttackerActor(attackerUuid).catch((err) => {
-          dbg("emitMissReactionSignal:resolveAttackerActor:error", {
-            traceId,
-            attackerUuid,
-            error: err?.message ?? String(err)
-          });
-          return null;
-        })
-      : null;
-
-    const firstMissUuid = missTargets[0] ?? null;
-    const firstMissDoc = firstMissUuid
-      ? await fromUuid(firstMissUuid).catch((err) => {
-          dbg("emitMissReactionSignal:firstMissDoc:error", {
-            traceId,
-            firstMissUuid,
-            error: err?.message ?? String(err)
-          });
-          return null;
-        })
-      : null;
-
-    const firstMissActor =
-      firstMissDoc?.actor ??
-      (firstMissDoc?.documentName === "Actor" ? firstMissDoc : null) ??
-      null;
-
-    const missTargetDetails = await Promise.all(missTargets.map(describeUuid));
-    const attackerDetails = await describeUuid(attackerUuid ?? meta.attackerUuid ?? null);
-
-    const payload = {
-      kind: "action_resolution",
-      source: "applyDamage-button",
-      trigger: "creature_miss_action",
-      timestamp: Date.now(),
-      __debugTraceId: traceId,
-
-      attackerUuid: attackerUuid ?? meta.attackerUuid ?? null,
-      attackerActorUuid: attackerActor?.uuid ?? null,
-      attackerName: attackerName ?? meta.attackerName ?? null,
-
-      tokenUuid: attackerUuid ?? meta.attackerUuid ?? null,
-      actorUuid: attackerActor?.uuid ?? null,
-
-      targetUuid: firstMissUuid,
-      targetActorUuid: firstMissActor?.uuid ?? null,
-      targets: missTargets,
-
-      skillName: String(core.skillName ?? meta.skillName ?? "").trim() || null,
-      skillTypeRaw: String(core.skillTypeRaw ?? "").trim().toLowerCase() || null,
-      sourceType: String(adv.sourceType ?? "").trim().toLowerCase() || null,
-
-      elementType: String(elementType ?? "physical").toLowerCase(),
-      isSpellish: !!isSpellish,
-      weaponType: String(weaponType ?? ""),
-      attackRange: String(attackRange ?? ""),
-      accuracyTotal: Number.isFinite(Number(accuracyTotal)) ? Number(accuracyTotal) : null,
-    };
-
-    dbg("emitMissReactionSignal:resolved-context", {
-      traceId,
-      attackerDetails,
-      attackerActorUuid: attackerActor?.uuid ?? null,
-      attackerActorName: attackerActor?.name ?? null,
-      firstMissUuid,
-      firstMissDocName: firstMissDoc?.name ?? null,
-      firstMissDocType: firstMissDoc?.documentName ?? null,
-      firstMissActorUuid: firstMissActor?.uuid ?? null,
-      firstMissActorName: firstMissActor?.name ?? null,
-      missTargetDetails
-    });
-
-    dbg("emitMissReactionSignal:payload", { traceId, payload });
-
-    const emitted = emitReactionPhaseLocalOnGM(payload);
-
-    dbg("emitMissReactionSignal:result", {
-      traceId,
-      emitted
-    });
-
-    return emitted;
-  }
-
   function lockButton(btn, text="Confirming…") {
     if (!btn) return;
     btn.disabled = true;
@@ -694,32 +433,14 @@ if (hasCLRes) {
 
       const missUUIDs = [];
       const hitUUIDs  = [];
-      const perTargetTrace = [];
 
       if (!isHealing && !treatAutoHit) {
         for (const u of savedUUIDs) {
           const usedDefense = await defenseForUuid(u, !!isSpellish);
           const isHit = Number.isFinite(usedDefense) && Number.isFinite(accTotal) ? (accTotal >= usedDefense) : true;
-          perTargetTrace.push({
-            targetUuid: u,
-            usedDefense,
-            accuracyTotal: accTotal,
-            comparedWithMagicDefense: !!isSpellish,
-            isHit
-          });
           if (isHit) hitUUIDs.push(u); else missUUIDs.push(u);
         }
       } else {
-        for (const u of savedUUIDs) {
-          perTargetTrace.push({
-            targetUuid: u,
-            usedDefense: null,
-            accuracyTotal: accTotal,
-            comparedWithMagicDefense: !!isSpellish,
-            isHit: true,
-            autoReason: isHealing ? "healing" : (treatAutoHit ? "auto-hit" : "unknown")
-          });
-        }
         hitUUIDs.push(...savedUUIDs);
       }
 
@@ -730,30 +451,10 @@ if (hasCLRes) {
         missCount: missUUIDs.length,
         isHealing,
         treatAutoHit,
-        accTotal,
-        savedUUIDs,
-        hitUUIDs,
-        missUUIDs,
-        perTargetTrace
-      });
-
-      dbg("runConfirm:hit-miss-evaluation", {
-        runId,
-        attackerUuid,
-        attackerName,
-        elemKey,
-        isSpellish: !!isSpellish,
-        isHealing,
-        treatAutoHit,
-        accTotal,
-        savedUUIDs,
-        hitUUIDs,
-        missUUIDs,
-        perTargetTrace
+        accTotal
       });
 
       const prevTargets = Array.from(game.user?.targets ?? []).map(t => t.id);
-      dbg("runConfirm:previous-user-targets", { runId, prevTargets });
 
       // Active Effects: On Attack (all targets)
       if (ae && aeDirectives.length && savedUUIDs.length) {
@@ -773,136 +474,29 @@ if (hasCLRes) {
         console.log(`${RUN_TAG} AE on_attack done`, { runId });
       }
 
-      // Miss reaction signal + Miss cards
-      if (missUUIDs.length) {
-        dbg("runConfirm:miss-branch:enter", {
-          runId,
-          missUUIDs,
-          missMacroFound: !!miss,
-          missMacroName,
-          attackerUuid,
-          attackerName
-        });
+      // Miss cards
+      if (missUUIDs.length && miss) {
+        const missIds = (await Promise.all(missUUIDs.map(async u => {
+          const d = await fromUuid(u).catch(()=>null);
+          return d?.id ?? d?.document?.id ?? null;
+        }))).filter(Boolean);
 
-        const missResolvedBeforeEmit = await Promise.all(missUUIDs.map(describeUuid));
-        dbg("runConfirm:miss-branch:resolved-before-emit", {
-          runId,
-          missResolvedBeforeEmit
-        });
-
-        const missReactionEmitted = await emitMissReactionSignal({
-          flagged,
-          attackerUuid,
-          attackerName,
-          missUUIDs,
-          elementType: elemKey,
-          isSpellish: !!isSpellish,
-          weaponType,
-          attackRange,
-          accuracyTotal: accTotal
-        });
-
-        console.log(`${RUN_TAG} MISS reaction emit`, {
-          runId,
-          missReactionEmitted,
-          missCount: missUUIDs.length,
-          missUUIDs
-        });
-
-        dbg("runConfirm:miss-branch:after-emit", {
-          runId,
-          missReactionEmitted,
-          missUUIDs
-        });
-
-        if (miss) {
-          const missIds = (await Promise.all(missUUIDs.map(async u => {
-            const d = await fromUuid(u).catch((err) => {
-              dbg("runConfirm:miss-branch:resolve-miss-id:error", {
-                runId,
-                targetUuid: u,
-                error: err?.message ?? String(err)
-              });
-              return null;
-            });
-            return d?.id ?? d?.document?.id ?? null;
-          }))).filter(Boolean);
-
-          console.log(`${RUN_TAG} MISS targeting`, {
-            runId,
-            missIds,
-            missIdsCount: missIds.length
+        if (missIds.length) {
+          console.log(`${RUN_TAG} MISS targeting`, { runId, missIds });
+          await game.user.updateTokenTargets(missIds, { releaseOthers: true });
+          await miss.execute({
+            __AUTO: true,
+            __PAYLOAD: {
+              attackerName,
+              elementType: elemKey,
+              isSpellish: !!isSpellish,
+              weaponType,
+              attackRange,
+              accuracyTotal: accTotal
+            }
           });
-
-          dbg("runConfirm:miss-branch:resolved-miss-ids", {
-            runId,
-            missIds,
-            missIdsCount: missIds.length
-          });
-
-          if (missIds.length) {
-            dbg("runConfirm:miss-branch:update-targets:begin", {
-              runId,
-              missIds
-            });
-            await game.user.updateTokenTargets(missIds, { releaseOthers: true });
-            dbg("runConfirm:miss-branch:update-targets:done", {
-              runId,
-              currentTargets: Array.from(game.user?.targets ?? []).map(t => ({ id: t.id, name: t.name }))
-            });
-
-            dbg("runConfirm:miss-branch:miss-macro:begin", {
-              runId,
-              missMacroName,
-              payload: {
-                attackerName,
-                elementType: elemKey,
-                isSpellish: !!isSpellish,
-                weaponType,
-                attackRange,
-                accuracyTotal: accTotal
-              }
-            });
-
-            await miss.execute({
-              __AUTO: true,
-              __PAYLOAD: {
-                attackerName,
-                elementType: elemKey,
-                isSpellish: !!isSpellish,
-                weaponType,
-                attackRange,
-                accuracyTotal: accTotal
-              }
-            });
-
-            console.log(`${RUN_TAG} MISS macro done`, { runId });
-            dbg("runConfirm:miss-branch:miss-macro:done", { runId });
-          } else {
-            console.warn(`${RUN_TAG} MISS had UUIDs but no resolvable token ids`, {
-              runId,
-              missUUIDs
-            });
-            dbg("runConfirm:miss-branch:no-miss-ids", {
-              runId,
-              missUUIDs
-            });
-          }
-        } else {
-          console.warn(`${RUN_TAG} MISS macro not found; reaction signal still emitted`, {
-            runId,
-            missMacroName
-          });
-          dbg("runConfirm:miss-branch:no-miss-macro", {
-            runId,
-            missMacroName
-          });
+          console.log(`${RUN_TAG} MISS macro done`, { runId });
         }
-      } else {
-        dbg("runConfirm:miss-branch:skipped", {
-          runId,
-          reason: "no missUUIDs"
-        });
       }
 
       // Hit → AE on_hit + AdvanceDamage OR (NEW) VFX-only animation
