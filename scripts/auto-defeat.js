@@ -38,6 +38,7 @@
 
   const PATH_DB_OPTION = "system.props.option_autoDefeat";
   const PATH_HP = "system.props.current_hp";
+  const PATH_MAX_HP = "system.props.max_hp";
 
   const PATH_NPC_RANK = "system.props.npc_rank";
   const PATH_TOKEN_PERSIST = "system.props.token_option_persist";
@@ -52,6 +53,36 @@
     } catch {
       return fallback;
     }
+  }
+
+  function toNumber(value, fallback = null) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  function getHpSnapshot(actor) {
+    if (!actor) return { cur: null, max: null };
+
+    const sys = actor.system ?? {};
+    const props = sys.props ?? {};
+
+    const cur = toNumber(
+      props.current_hp ??
+      sys.current_hp ??
+      sys.attributes?.hp?.value ??
+      sys.hp?.value,
+      null
+    );
+
+    const max = toNumber(
+      props.max_hp ??
+      sys.max_hp ??
+      sys.attributes?.hp?.max ??
+      sys.hp?.max,
+      null
+    );
+
+    return { cur, max };
   }
 
   function parseDbOption(value) {
@@ -131,6 +162,44 @@
   }
 
   // -------------------------
+  // Reaction System Integration
+  // -------------------------
+  function emitReactionPhase(payload) {
+    try {
+      if (globalThis?.ONI?.emit) {
+        globalThis.ONI.emit("oni:reactionPhase", payload, { local: true, world: false });
+        return;
+      }
+    } catch (_e) {}
+
+    try {
+      Hooks.callAll?.("oni:reactionPhase", payload);
+    } catch (_e) {
+      warn("Could not emit oni:reactionPhase (no ONI.emit or Hooks.callAll).", payload);
+    }
+  }
+
+  function buildDefeatReactionPayload(tokenDoc, actor, extra = {}) {
+    return {
+      trigger: "creature_defeated",
+      tokenUuid: tokenDoc?.uuid ?? null,
+      targetUuid: tokenDoc?.uuid ?? null,
+      targets: tokenDoc?.uuid ? [tokenDoc.uuid] : [],
+      actorUuid: actor?.uuid ?? null,
+      targetActorUuid: actor?.uuid ?? null,
+      defeatedTokenUuid: tokenDoc?.uuid ?? null,
+      defeatedActorUuid: actor?.uuid ?? null,
+      hpCur: extra?.hpCur ?? null,
+      hpMax: extra?.hpMax ?? null,
+      source: "auto-defeat",
+      sceneId: tokenDoc?.parent?.id ?? null,
+      tokenId: tokenDoc?.id ?? null,
+      actorId: actor?.id ?? null,
+      timestamp: Date.now()
+    };
+  }
+
+  // -------------------------
   // DB Resolver
   // -------------------------
   async function resolveDatabaseActor() {
@@ -162,108 +231,124 @@
   // -------------------------
   // Defeat Operation
   // -------------------------
- async function performDefeat(tokenLike) {
-  // Normalize: tokenLike can be Token (placeable) or TokenDocument
-  const token = tokenLike?.object ?? tokenLike; // if TokenDocument, .object is the placeable
-  const tokenDoc = tokenLike?.document ?? tokenLike; // if Token, .document is TokenDocument
-  const scene = tokenDoc?.parent;
+  async function performDefeat(tokenLike) {
+    // Normalize: tokenLike can be Token (placeable) or TokenDocument
+    const token = tokenLike?.object ?? tokenLike; // if TokenDocument, .object is the placeable
+    const tokenDoc = tokenLike?.document ?? tokenLike; // if Token, .document is TokenDocument
+    const scene = tokenDoc?.parent;
+    const actor = tokenDoc?.actor ?? token?.actor ?? null;
 
-  if (!tokenDoc?.id || !scene?.id) {
-    warn("performDefeat aborted: invalid tokenDoc or scene.", { tokenDoc, scene });
-    return;
-  }
-
-  // Non-GM -> request GM (deleting/combat edits must be GM)
-  if (!game.user.isGM) {
-    log("Not GM -> sending AUTO_DEFEAT_REQUEST via socket:", {
-      sceneId: scene.id,
-      tokenId: tokenDoc.id,
-      tokenName: tokenDoc.name,
-    });
-
-    game.socket.emit(SOCKET_NS, {
-      type: "AUTO_DEFEAT_REQUEST",
-      sceneId: scene.id,
-      tokenId: tokenDoc.id,
-    });
-    return;
-  }
-
-  // Need the placeable token for Sequencer .on(token)
-  if (!token) {
-    warn("performDefeat aborted: TokenDocument has no placeable object (not rendered?).", {
-      tokenId: tokenDoc.id,
-      sceneId: scene.id,
-    });
-    return;
-  }
-
-  log("GM performing defeat:", {
-    scene: scene.name,
-    token: tokenDoc.name,
-    tokenId: tokenDoc.id,
-  });
-
-  // --- Combat detection + removeTokenFromCombatIfNeeded (copied behavior style from Defeated.js) ---
-  const getActiveCombatOnActiveScene = () => {
-    const activeScene = canvas?.scene ?? null;
-    const activeSceneId = activeScene?.id ?? null;
-
-    const combats = game.combats?.contents ?? [];
-    const matches = activeSceneId ? combats.filter(c => c.scene?.id === activeSceneId) : [];
-
-    const picked =
-      matches.find(c => (typeof c.started === "boolean" ? c.started : Number(c.round ?? 0) > 0)) ??
-      matches.find(c => (typeof c.active === "boolean" ? c.active : false)) ??
-      matches.find(c => (c.combatants?.size ?? 0) > 0) ??
-      null;
-
-    return picked;
-  };
-
-  const activeCombat = getActiveCombatOnActiveScene();
-  const isInCombatOnThisScene = !!activeCombat;
-
-  const removeTokenFromCombatIfNeeded = async (tokenDocToRemove) => {
-    if (!isInCombatOnThisScene || !activeCombat) return;
-
-    const combatant =
-      activeCombat.combatants?.find(c => c.tokenId === tokenDocToRemove.id) ??
-      null;
-
-    if (!combatant) return;
-
-    try {
-      await activeCombat.deleteEmbeddedDocuments("Combatant", [combatant.id]);
-    } catch (e) {
-      console.warn(`${TAG} Failed to remove combatant for token "${tokenDocToRemove.name}"`, e);
+    if (!tokenDoc?.id || !scene?.id) {
+      warn("performDefeat aborted: invalid tokenDoc or scene.", { tokenDoc, scene });
+      return;
     }
-  };
 
-  // --- EXACT animation chain from your Defeated.js (no dialog, auto-run) ---
-  try {
-    await new Sequence()
-      .sound("https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/Enemy_Death.ogg")
-      .animation().on(token).tint("#ff0000").waitUntilFinished()
-      .animation().on(token).fadeOut(1000).waitUntilFinished()
-      .thenDo(async () => {
-        // 1) remove from combat first
-        await removeTokenFromCombatIfNeeded(tokenDoc);
+    // Non-GM -> request GM (deleting/combat edits must be GM)
+    if (!game.user.isGM) {
+      log("Not GM -> sending AUTO_DEFEAT_REQUEST via socket:", {
+        sceneId: scene.id,
+        tokenId: tokenDoc.id,
+        tokenName: tokenDoc.name,
+      });
 
-        // 2) delete token AFTER animation
-        await tokenDoc.delete();
+      game.socket.emit(SOCKET_NS, {
+        type: "AUTO_DEFEAT_REQUEST",
+        sceneId: scene.id,
+        tokenId: tokenDoc.id,
+      });
+      return;
+    }
 
-        // 3) chat message
-        ChatMessage.create({ content: `<b>${token.name}</b> was defeated!` });
+    // Need the placeable token for Sequencer .on(token)
+    if (!token) {
+      warn("performDefeat aborted: TokenDocument has no placeable object (not rendered?).", {
+        tokenId: tokenDoc.id,
+        sceneId: scene.id,
+      });
+      return;
+    }
 
-        log("Defeat completed -> token deleted (after animation).");
-      })
-      .play();
-  } catch (e) {
-    err("performDefeat failed:", e);
-    ui.notifications?.error(`Auto Defeat failed for ${tokenDoc.name}.`);
+    log("GM performing defeat:", {
+      scene: scene.name,
+      token: tokenDoc.name,
+      tokenId: tokenDoc.id,
+    });
+
+    // Emit Reaction trigger BEFORE the token is removed from combat / scene.
+    // This lets creature_defeated share the same resolution window as damage/crisis.
+    try {
+      const hp = getHpSnapshot(actor);
+      const reactionPayload = buildDefeatReactionPayload(tokenDoc, actor, {
+        hpCur: hp.cur,
+        hpMax: hp.max
+      });
+
+      emitReactionPhase(reactionPayload);
+      log("Emitted Reaction trigger: creature_defeated", reactionPayload);
+    } catch (e) {
+      warn("Failed to emit creature_defeated Reaction trigger (continuing auto-defeat):", e);
+    }
+
+    // --- Combat detection + removeTokenFromCombatIfNeeded (copied behavior style from Defeated.js) ---
+    const getActiveCombatOnActiveScene = () => {
+      const activeScene = canvas?.scene ?? null;
+      const activeSceneId = activeScene?.id ?? null;
+
+      const combats = game.combats?.contents ?? [];
+      const matches = activeSceneId ? combats.filter(c => c.scene?.id === activeSceneId) : [];
+
+      const picked =
+        matches.find(c => (typeof c.started === "boolean" ? c.started : Number(c.round ?? 0) > 0)) ??
+        matches.find(c => (typeof c.active === "boolean" ? c.active : false)) ??
+        matches.find(c => (c.combatants?.size ?? 0) > 0) ??
+        null;
+
+      return picked;
+    };
+
+    const activeCombat = getActiveCombatOnActiveScene();
+    const isInCombatOnThisScene = !!activeCombat;
+
+    const removeTokenFromCombatIfNeeded = async (tokenDocToRemove) => {
+      if (!isInCombatOnThisScene || !activeCombat) return;
+
+      const combatant =
+        activeCombat.combatants?.find(c => c.tokenId === tokenDocToRemove.id) ??
+        null;
+
+      if (!combatant) return;
+
+      try {
+        await activeCombat.deleteEmbeddedDocuments("Combatant", [combatant.id]);
+      } catch (e) {
+        console.warn(`${TAG} Failed to remove combatant for token "${tokenDocToRemove.name}"`, e);
+      }
+    };
+
+    // --- EXACT animation chain from your Defeated.js (no dialog, auto-run) ---
+    try {
+      await new Sequence()
+        .sound("https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/Enemy_Death.ogg")
+        .animation().on(token).tint("#ff0000").waitUntilFinished()
+        .animation().on(token).fadeOut(1000).waitUntilFinished()
+        .thenDo(async () => {
+          // 1) remove from combat first
+          await removeTokenFromCombatIfNeeded(tokenDoc);
+
+          // 2) delete token AFTER animation
+          await tokenDoc.delete();
+
+          // 3) chat message
+          ChatMessage.create({ content: `<b>${token.name}</b> was defeated!` });
+
+          log("Defeat completed -> token deleted (after animation).");
+        })
+        .play();
+    } catch (e) {
+      err("performDefeat failed:", e);
+      ui.notifications?.error(`Auto Defeat failed for ${tokenDoc.name}.`);
+    }
   }
-}
 
   // -------------------------
   // Main Gate Pipeline
