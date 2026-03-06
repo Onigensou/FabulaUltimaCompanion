@@ -133,6 +133,89 @@ Hooks.once("ready", async () => {
     }
   }
 
+  function emitReactionPhaseLocalOnGM(payload) {
+    try {
+      if (!game.user?.isGM) return false;
+
+      const emit = window.ONI?.emit;
+      if (typeof emit !== "function") {
+        console.warn("[fu-chatbtn][Confirm] ONI.emit unavailable; reaction signal skipped", payload);
+        return false;
+      }
+
+      emit("oni:reactionPhase", payload, { local: true, world: false });
+      return true;
+    } catch (err) {
+      console.error("[fu-chatbtn][Confirm] Failed to emit oni:reactionPhase", err, payload);
+      return false;
+    }
+  }
+
+  async function emitMissReactionSignal({
+    flagged,
+    attackerUuid,
+    attackerName,
+    missUUIDs,
+    elementType,
+    isSpellish,
+    weaponType,
+    attackRange,
+    accuracyTotal
+  } = {}) {
+    if (!game.user?.isGM) return false;
+
+    const missTargets = Array.isArray(missUUIDs) ? missUUIDs.filter(Boolean) : [];
+    if (!missTargets.length) return false;
+
+    const core = flagged?.core ?? {};
+    const meta = flagged?.meta ?? {};
+    const adv  = flagged?.advPayload ?? {};
+
+    const attackerActor = attackerUuid
+      ? await resolveAttackerActor(attackerUuid).catch(() => null)
+      : null;
+
+    const firstMissUuid = missTargets[0] ?? null;
+    const firstMissDoc = firstMissUuid
+      ? await fromUuid(firstMissUuid).catch(() => null)
+      : null;
+
+    const firstMissActor =
+      firstMissDoc?.actor ??
+      (firstMissDoc?.documentName === "Actor" ? firstMissDoc : null) ??
+      null;
+
+    const payload = {
+      kind: "action_resolution",
+      source: "applyDamage-button",
+      trigger: "creature_miss_action",
+      timestamp: Date.now(),
+
+      attackerUuid: attackerUuid ?? meta.attackerUuid ?? null,
+      attackerActorUuid: attackerActor?.uuid ?? null,
+      attackerName: attackerName ?? meta.attackerName ?? null,
+
+      tokenUuid: attackerUuid ?? meta.attackerUuid ?? null,
+      actorUuid: attackerActor?.uuid ?? null,
+
+      targetUuid: firstMissUuid,
+      targetActorUuid: firstMissActor?.uuid ?? null,
+      targets: missTargets,
+
+      skillName: String(core.skillName ?? meta.skillName ?? "").trim() || null,
+      skillTypeRaw: String(core.skillTypeRaw ?? "").trim().toLowerCase() || null,
+      sourceType: String(adv.sourceType ?? "").trim().toLowerCase() || null,
+
+      elementType: String(elementType ?? "physical").toLowerCase(),
+      isSpellish: !!isSpellish,
+      weaponType: String(weaponType ?? ""),
+      attackRange: String(attackRange ?? ""),
+      accuracyTotal: Number.isFinite(Number(accuracyTotal)) ? Number(accuracyTotal) : null,
+    };
+
+    return emitReactionPhaseLocalOnGM(payload);
+  }
+
   function lockButton(btn, text="Confirming…") {
     if (!btn) return;
     btn.disabled = true;
@@ -483,7 +566,27 @@ if (hasCLRes) {
 
         if (missIds.length) {
           console.log(`${RUN_TAG} MISS targeting`, { runId, missIds });
+
+          const missReactionEmitted = await emitMissReactionSignal({
+            flagged,
+            attackerUuid,
+            attackerName,
+            missUUIDs,
+            elementType: elemKey,
+            isSpellish: !!isSpellish,
+            weaponType,
+            attackRange,
+            accuracyTotal: accTotal
+          });
+
+          console.log(`${RUN_TAG} MISS reaction emit`, {
+            runId,
+            missReactionEmitted,
+            missCount: missUUIDs.length
+          });
+
           await game.user.updateTokenTargets(missIds, { releaseOthers: true });
+
           await miss.execute({
             __AUTO: true,
             __PAYLOAD: {
@@ -495,6 +598,7 @@ if (hasCLRes) {
               accuracyTotal: accTotal
             }
           });
+
           console.log(`${RUN_TAG} MISS macro done`, { runId });
         }
       }
