@@ -1,21 +1,10 @@
 /**
  * [ONI] Reaction System — Module Version (Foundry VTT v12)
  * ---------------------------------------------------------------------------
- * This file is safe to load automatically from a module (runs once per client).
- * Generated: 2026-01-09T07:27:00
+ * Updated for merged same-window reaction contexts.
  * ---------------------------------------------------------------------------
  */
-
-Hooks.once("ready", () => {
-  /**
-   * Macro: ReactionChooseSkill
-   * Id: 8KUWT6QwAv2wU9S5
-   * Folder: Reaction System
-   * Type: script
-   * Author: GM
-   * Exported: 2026-01-09T07:11:54.590Z
-   */
-  // ============================================================================
+ // ============================================================================
   // ONI ReactionChooseSkill – Dialog + ActionDataFetch handoff (Foundry VTT v12)
   // ---------------------------------------------------------------------------
   // PURPOSE
@@ -47,16 +36,13 @@ Hooks.once("ready", () => {
   //   - Calling the ActionDataFetch macro with the chosen skill UUID
   // ============================================================================
 
+Hooks.once("ready", () => {
   (() => {
     const KEY = "oni.ReactionChooseSkill";
     if (window[KEY]) {
       console.log("[ReactionChooseSkill] Already installed.");
       return;
     }
-
-    // -------------------------------------------------------------------------
-    // 1) Dialog CSS
-    // -------------------------------------------------------------------------
 
     const REACT_SKILL_STYLE_ID = "oni-reaction-choose-skill-style";
 
@@ -67,6 +53,22 @@ Hooks.once("ready", () => {
       style.textContent = `
         .oni-react-skill-wrap {
           padding: 6px 8px 10px 8px;
+        }
+        .oni-react-trigger-list {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+          margin: 4px 0 8px 0;
+        }
+        .oni-react-trigger-chip {
+          padding: 3px 8px;
+          border-radius: 999px;
+          border: 1px solid rgba(122,106,85,0.85);
+          background: linear-gradient(180deg, #f4ecd8, #e6d5b4);
+          box-shadow: 0 1px 0 rgba(255,255,255,0.55) inset;
+          font-size: 11px;
+          line-height: 1.2;
+          font-weight: 700;
         }
         .oni-react-skill-list {
           display: flex;
@@ -117,6 +119,7 @@ Hooks.once("ready", () => {
           display: flex;
           flex-direction: column;
           justify-content: center;
+          min-width: 0;
         }
         .oni-react-skill-name {
           font-weight: 700;
@@ -127,6 +130,21 @@ Hooks.once("ready", () => {
         .oni-react-skill-sub {
           font-size: 11px;
           opacity: 0.8;
+        }
+        .oni-react-skill-tags {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 4px;
+          margin-top: 4px;
+        }
+        .oni-react-skill-tag {
+          padding: 2px 6px;
+          border-radius: 999px;
+          background: rgba(72, 56, 39, 0.12);
+          border: 1px solid rgba(72, 56, 39, 0.18);
+          font-size: 10px;
+          line-height: 1.2;
+          white-space: nowrap;
         }
         .oni-react-skill-tip {
           margin-top: 6px;
@@ -143,18 +161,175 @@ Hooks.once("ready", () => {
       document.head.appendChild(style);
     }
 
-    // -------------------------------------------------------------------------
-    // 2) Main API: openReactionDialog(ctx)
-    // -------------------------------------------------------------------------
+    function esc(s) {
+      if (s == null) return "";
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function stripHtml(s) {
+      return String(s ?? "").replace(/<[^>]*>/g, "");
+    }
+
+    function labelForTrigger(triggerKey) {
+      return String(triggerKey ?? "")
+        .replace(/_/g, " ")
+        .replace(/\b\w/g, c => c.toUpperCase());
+    }
+
+    function toArrayUnique(values) {
+      return [...new Set((Array.isArray(values) ? values : []).filter(Boolean))];
+    }
+
+    function normalizeTriggerKeys(ctx) {
+      const keys = [];
+      if (Array.isArray(ctx?.triggerKeys)) keys.push(...ctx.triggerKeys);
+      if (ctx?.triggerKey) keys.push(ctx.triggerKey);
+      return toArrayUnique(keys.map(k => String(k)));
+    }
+
+    function normalizePhasePayloadMap(ctx, triggerKeys) {
+      const map = {};
+      const srcMap = ctx?.phasePayloadByTrigger;
+      if (srcMap && typeof srcMap === "object") {
+        for (const [k, v] of Object.entries(srcMap)) {
+          if (!k) continue;
+          map[String(k)] = (v && typeof v === "object") ? v : {};
+        }
+      }
+
+      if (ctx?.triggerKey && !(ctx.triggerKey in map)) {
+        map[String(ctx.triggerKey)] = (ctx.phasePayload && typeof ctx.phasePayload === "object") ? ctx.phasePayload : {};
+      }
+
+      if ((!Object.keys(map).length || !triggerKeys.length) && ctx?.phasePayload && typeof ctx.phasePayload === "object") {
+        const fallbackKey = String(ctx?.triggerKey ?? "(unknown_trigger)");
+        map[fallbackKey] = ctx.phasePayload;
+      }
+
+      for (const key of triggerKeys) {
+        if (!(key in map)) map[key] = {};
+      }
+
+      return map;
+    }
+
+    function buildUniqueReactionItems(reactionsArr, fallbackTriggerKeys) {
+      const byUuid = new Map();
+
+      for (const entry of reactionsArr) {
+        const item = entry?.item;
+        if (!item?.uuid) continue;
+
+        const existing = byUuid.get(item.uuid) ?? {
+          item,
+          entries: [],
+          triggerKeys: new Set()
+        };
+
+        existing.entries.push(entry);
+
+        const entryTrigger =
+          entry?.triggerKey ??
+          entry?.matchedTrigger ??
+          entry?.trigger ??
+          entry?.row?.reaction_trigger ??
+          null;
+
+        if (entryTrigger) existing.triggerKeys.add(String(entryTrigger));
+        byUuid.set(item.uuid, existing);
+      }
+
+      const out = [];
+      for (const rec of byUuid.values()) {
+        const triggerKeys = rec.triggerKeys.size
+          ? [...rec.triggerKeys]
+          : [...fallbackTriggerKeys];
+
+        out.push({
+          item: rec.item,
+          entries: rec.entries,
+          triggerKeys
+        });
+      }
+
+      out.sort((a, b) => String(a.item?.name ?? "").localeCompare(String(b.item?.name ?? "")));
+      return out;
+    }
+
+    function collectTargetsFromPayload(payload) {
+      const out = [];
+      if (!payload || typeof payload !== "object") return out;
+
+      if (Array.isArray(payload.targets)) {
+        out.push(...payload.targets.filter(Boolean));
+      }
+      if (payload.targetUuid) out.push(payload.targetUuid);
+      if (payload.targetTokenUuid) out.push(payload.targetTokenUuid);
+      if (payload.tokenUuid) out.push(payload.tokenUuid);
+      if (payload.subjectTokenUuid) out.push(payload.subjectTokenUuid);
+      if (payload.defeatedTokenUuid) out.push(payload.defeatedTokenUuid);
+
+      return out.filter(Boolean);
+    }
+
+    function pickPreferredPayload(group, triggerKey, phasePayload, phasePayloadByTrigger) {
+      const order = [];
+      if (triggerKey) order.push(String(triggerKey));
+      if (Array.isArray(group?.triggerKeys)) order.push(...group.triggerKeys.map(String));
+
+      const seen = new Set();
+      for (const key of order) {
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        const payload = phasePayloadByTrigger?.[key];
+        if (payload && typeof payload === "object" && Object.keys(payload).length) return { key, payload };
+      }
+
+      if (phasePayload && typeof phasePayload === "object") {
+        return { key: String(triggerKey ?? "(unknown_trigger)"), payload: phasePayload };
+      }
+
+      return { key: String(triggerKey ?? "(unknown_trigger)"), payload: {} };
+    }
+
+    function resolveTargets({ preferredPayload, phasePayload, phasePayloadByTrigger }) {
+      const collected = [];
+      const pushAll = (arr) => collected.push(...(Array.isArray(arr) ? arr : []));
+
+      pushAll(collectTargetsFromPayload(preferredPayload));
+      pushAll(collectTargetsFromPayload(phasePayload));
+
+      if (phasePayloadByTrigger && typeof phasePayloadByTrigger === "object") {
+        for (const payload of Object.values(phasePayloadByTrigger)) {
+          pushAll(collectTargetsFromPayload(payload));
+        }
+      }
+
+      let targets = toArrayUnique(collected);
+
+      if (!targets.length && game.user?.targets?.size) {
+        targets = Array.from(game.user.targets)
+          .map(t => t.document?.uuid)
+          .filter(Boolean);
+      }
+
+      return targets;
+    }
 
     async function openReactionDialog(ctx) {
       ensureReactionDialogStyles();
 
-      const actor        = ctx?.actor ?? null;
-      const token        = ctx?.token ?? null;
+      const actor = ctx?.actor ?? null;
+      const token = ctx?.token ?? null;
       const reactionsArr = Array.isArray(ctx?.reactions) ? ctx.reactions : [];
-      const triggerKey   = ctx?.triggerKey ?? "(unknown_trigger)";
-      const phasePayload = ctx?.phasePayload ?? {};
+      const triggerKey = ctx?.triggerKey ?? "(unknown_trigger)";
+      const triggerKeys = normalizeTriggerKeys(ctx);
+      const phasePayload = (ctx?.phasePayload && typeof ctx.phasePayload === "object") ? ctx.phasePayload : {};
+      const phasePayloadByTrigger = normalizePhasePayloadMap(ctx, triggerKeys);
 
       if (!actor) {
         ui.notifications.warn("[Reaction] No actor found in context.");
@@ -168,47 +343,27 @@ Hooks.once("ready", () => {
         return;
       }
 
-      // Build unique list of Items from ctx.reactions
-      const seenIds = new Set();
-      const items   = [];
-      for (const entry of reactionsArr) {
-        const it = entry?.item;
-        if (!it) continue;
-        if (seenIds.has(it.id)) continue;
-        seenIds.add(it.id);
-        items.push(it);
-      }
-
-      if (!items.length) {
+      const groups = buildUniqueReactionItems(reactionsArr, triggerKeys.length ? triggerKeys : [triggerKey]);
+      if (!groups.length) {
         ui.notifications.warn("[Reaction] No valid Item documents found in reaction list.");
         console.warn("[ReactionChooseSkill] openReactionDialog: items list empty. ctx.reactions =", reactionsArr);
         return;
       }
 
-      // Sort by name
-      items.sort((a, b) => String(a.name ?? "").localeCompare(String(b.name ?? "")));
+      const triggerChipHtml = (triggerKeys.length ? triggerKeys : [triggerKey])
+        .map(k => `<div class="oni-react-trigger-chip">${esc(labelForTrigger(k))}</div>`)
+        .join("");
 
-      // Small helpers
-      const esc = (s) => {
-        if (s == null) return "";
-        return String(s)
-          .replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;")
-          .replace(/"/g, "&quot;");
-      };
-
-      const stripHtml = (s) => String(s ?? "").replace(/<[^>]*>/g, "");
-
-      const triggerLabel = String(triggerKey).replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
-
-      const rowsHtml = items.map(it => {
+      const rowsHtml = groups.map(group => {
+        const it = group.item;
         const name = esc(it.name ?? "(Unnamed)");
         const uuid = esc(it.uuid ?? "");
-        const img  = esc(it.img || "icons/svg/explosion.svg");
-
+        const img = esc(it.img || "icons/svg/explosion.svg");
         const descRaw = it.system?.description ?? it.system?.system?.description ?? "";
         const desc = esc(stripHtml(descRaw)).substring(0, 240);
+        const triggerTags = (group.triggerKeys?.length ? group.triggerKeys : [triggerKey])
+          .map(k => `<span class="oni-react-skill-tag">${esc(labelForTrigger(k))}</span>`)
+          .join("");
 
         return `
           <div class="oni-react-skill-row" data-uuid="${uuid}" data-desc="${desc}">
@@ -218,15 +373,21 @@ Hooks.once("ready", () => {
             <div class="oni-react-skill-main">
               <div class="oni-react-skill-name">${name}</div>
               <div class="oni-react-skill-sub">Reaction Skill</div>
+              <div class="oni-react-skill-tags">${triggerTags}</div>
             </div>
           </div>
         `;
       }).join("");
 
+      const triggerHeading = (triggerKeys.length > 1)
+        ? "Active Triggers"
+        : "Trigger";
+
       const content = `
         <div class="oni-react-skill-wrap">
           <div style="margin-bottom:6px;font-size:11px;opacity:0.9;">
-            Trigger: <b>${esc(triggerLabel)}</b><br>
+            ${esc(triggerHeading)}:
+            <div class="oni-react-trigger-list">${triggerChipHtml}</div>
             <span style="opacity:0.85;">Choose a Reaction to perform.</span>
           </div>
           <div class="oni-react-skill-list">
@@ -238,8 +399,7 @@ Hooks.once("ready", () => {
         </div>
       `;
 
-      // --- Show dialog and wait for choice ---
-      const chosenItem = await new Promise((resolve) => {
+      const chosenGroup = await new Promise((resolve) => {
         let dlg = null;
 
         dlg = new Dialog({
@@ -252,7 +412,6 @@ Hooks.once("ready", () => {
             const tipEl = html[0].querySelector(".oni-react-skill-tip[data-tip]");
             const $rows = $html.find(".oni-react-skill-row");
 
-            // Hover = update description
             $rows.on("mouseenter", function () {
               if (!tipEl) return;
               const desc = this.dataset.desc || "";
@@ -261,69 +420,57 @@ Hooks.once("ready", () => {
                 : `<b>Description:</b> (No description)`;
             });
 
-            // Click = choose this reaction
             $rows.on("click", function () {
               const uuid = this.dataset.uuid;
-              const item = items.find(i => i.uuid === uuid);
-              resolve(item ?? null);
+              const group = groups.find(g => g.item?.uuid === uuid);
+              resolve(group ?? null);
               dlg.close();
             });
           }
-        }, { width: 420 });
+        }, { width: 460 });
 
         dlg.render(true);
       });
 
-      if (!chosenItem) {
+      if (!chosenGroup?.item) {
         console.log("[ReactionChooseSkill] Reaction dialog closed without choice.");
         return;
       }
 
-      // --- Build ActionDataFetch payload ---
-      const attacker_uuid =
-        actor?.uuid ??
-        token?.actor?.uuid ??
-        null;
-
+      const attacker_uuid = actor?.uuid ?? token?.actor?.uuid ?? null;
       if (!attacker_uuid) {
         ui.notifications.error("[Reaction] Could not determine attacker_uuid for Reaction.");
         console.error("[ReactionChooseSkill] openReactionDialog: no attacker_uuid. ctx =", ctx);
         return;
       }
 
-      // Resolve targets:
-      let targets = [];
-
-      // 1) Prefer targets from the phase payload
-      if (Array.isArray(phasePayload.targets) && phasePayload.targets.length > 0) {
-        targets = [...phasePayload.targets];
-      } else if (phasePayload.targetUuid) {
-        targets = [phasePayload.targetUuid];
-      }
-
-      // 2) Fallback: current user targets
-      if (!targets.length && game.user?.targets?.size) {
-        targets = Array.from(game.user.targets)
-          .map(t => t.document?.uuid)
-          .filter(Boolean);
-      }
+      const preferred = pickPreferredPayload(chosenGroup, triggerKey, phasePayload, phasePayloadByTrigger);
+      const targets = resolveTargets({
+        preferredPayload: preferred?.payload,
+        phasePayload,
+        phasePayloadByTrigger
+      });
 
       if (!targets.length) {
         ui.notifications.warn("[Reaction] No targets found for this Reaction. Please target something first.");
-        console.warn("[ReactionChooseSkill] openReactionDialog: no targets resolved. phasePayload =", phasePayload);
+        console.warn("[ReactionChooseSkill] openReactionDialog: no targets resolved.", {
+          chosenItem: chosenGroup.item,
+          preferred,
+          phasePayload,
+          phasePayloadByTrigger
+        });
         return;
       }
 
-        // Build payload EXACTLY like the Skill.js macro does, so
-      // ActionDataFetch treats this as "skill already chosen"
-      // and does NOT open a second "Choose Skill" dialog.
       const payload = {
         attacker_uuid,
         targets,
-        // Main key ActionDataFetch expects:
-        skill_uuid: chosenItem.uuid,
-        // Extra key for safety/backwards-compat (harmless if unused):
-        skillUuid: chosenItem.uuid
+        skill_uuid: chosenGroup.item.uuid,
+        skillUuid: chosenGroup.item.uuid,
+        reaction_trigger_key: preferred?.key ?? String(triggerKey ?? "(unknown_trigger)"),
+        reaction_trigger_keys: toArrayUnique((chosenGroup.triggerKeys?.length ? chosenGroup.triggerKeys : triggerKeys).map(String)),
+        reaction_phase_payload: preferred?.payload ?? {},
+        reaction_phase_payload_by_trigger: phasePayloadByTrigger
       };
 
       const ADF = game.macros.getName("ActionDataFetch");
@@ -336,21 +483,15 @@ Hooks.once("ready", () => {
       console.log("[ReactionChooseSkill] Calling ActionDataFetch for Reaction:", {
         attacker_uuid,
         targets,
-        skill_uuid: chosenItem.uuid,
-        triggerKey
+        skill_uuid: chosenGroup.item.uuid,
+        triggerKey,
+        triggerKeys,
+        preferredTrigger: preferred?.key
       });
 
-      // NEW: also put payload on the global, for macros that
-      // read from window.__PAYLOAD instead of args[0].__PAYLOAD
       window.__PAYLOAD = payload;
-
-      // Same call pattern as in Skill.js:
       await ADF.execute({ __AUTO: true, __PAYLOAD: payload });
     }
-
-    // -------------------------------------------------------------------------
-    // 3) Expose API on window
-    // -------------------------------------------------------------------------
 
     window[KEY] = {
       openReactionDialog
