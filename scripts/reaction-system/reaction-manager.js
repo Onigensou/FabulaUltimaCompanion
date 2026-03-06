@@ -7,16 +7,8 @@
  */
 
 Hooks.once("ready", () => {
-  /**
-   * Macro: DEMO_ReactionManager
-   * Id: V4eNNGBtDXB5TxwX
-   * Folder: Reaction System
-   * Type: script
-   * Author: GM
-   * Exported: 2026-01-09T07:11:42.952Z
-   */
   // ============================================================================
-  // ONI ReactionManager – Demo v0.1 (Foundry VTT v12)
+  // ONI ReactionManager – Demo v0.2 (Foundry VTT v12)
   // ---------------------------------------------------------------------------
   // PURPOSE
   // -------
@@ -24,38 +16,18 @@ Hooks.once("ready", () => {
   // matching Reaction is available for an Actor in the current combat, shows a
   // floating "Reaction" button next to that Actor's token.
   //
-  // • This is a *demo* manager:
-  //   - It only detects WHEN a Reaction could be used.
-  //   - Clicking the button just prints a debug message to chat.
-  //   - We will wire it into the real Action system later.
+  // UPDATED BEHAVIOUR
+  // -----------------
+  // • Reactions still clear when the larger PHASE BUCKET changes.
+  // • Within the SAME phase bucket, multiple low-level triggers can now coexist
+  //   for the SAME token.
+  // • The manager merges those same-bucket triggers into one live "reaction
+  //   window" per token, then refreshes that token's button with the merged
+  //   context instead of treating every trigger as a totally separate window.
   //
-  // • Visibility rules (per local user):
-  //   - Friendly PCs  -> Only the linked player user sees their own Reaction
-  //                      button (same rules as Turn UI Manager).
-  //   - Monsters/NPCs -> Only the GM sees their Reaction button.
-  //   - Other players -> Do not see buttons for Actors they don't control.
-  //
-  // • Trigger mapping
-  //   - PhaseHandler emits triggers like "start_of_round", "end_of_turn", etc.
-  //   - The Skill sheet uses keys like "round_start", "turn_end", etc.
-  //   - This script maps between those two forms before matching.
-  //
-  // • Reaction definition
-  //   - A Skill/Spell Item is considered a Reaction if:
-  //        item.system.props?.isReaction === true
-  //   - Each Reaction skill can have one or more rows in
-  //        item.system.props?.reaction_config_table
-  //     and each row may contain:
-  //        row.reaction_trigger  (e.g. "round_start", "creature_deals_damage")
-  //
-  //   - When a trigger arrives, we:
-  //        1) Scan combatants' Actors for Reaction skills.
-  //        2) Check whether any Reaction row has a matching reaction_trigger.
-  //        3) For each eligible Actor that the *local* user should control,
-  //           spawn a "Reaction" button over their token.
-  //
-  //   - Buttons are destroyed automatically whenever a new trigger is received,
-  //     so the UI only represents the *current* reaction window.
+  // This is what allows combinations like:
+  //   creature_deals_damage + creature_enter_crisis + creature_defeated
+  // to all remain available in the same resolution timing window.
   // ============================================================================
 
   (() => {
@@ -67,9 +39,18 @@ Hooks.once("ready", () => {
 
     // Module socket channel we’ll use for GM→Player messages
     const MODULE_ID = "fabula-ultima-companion";
-    const CHANNEL   = `module.${MODULE_ID}`;
+    const CHANNEL = `module.${MODULE_ID}`;
 
-      // -------------------------------------------------------------------------
+    // Track the currently active broad timing bucket.
+    let _currentPhaseBucket = null;
+
+    // GM-authoritative same-bucket windows, keyed by `${phaseBucket}::${tokenId}`.
+    const _gmReactionWindows = new Map();
+
+    // Optional local mirror for socket-built contexts on non-GM clients.
+    const _localReactionWindows = new Map();
+
+    // -------------------------------------------------------------------------
     // HARD NUKE – clear all Reaction buttons on THIS client
     // -------------------------------------------------------------------------
     /**
@@ -83,88 +64,93 @@ Hooks.once("ready", () => {
      * @param {string} source  Just for logging (e.g. "socket", "GM-phase-change", "combatEnd").
      */
     function hardNukeReactionButtons(source) {
-    const localUserId   = game.user.id;
-    const localUserName = game.user.name;
+      const localUserId = game.user.id;
+      const localUserName = game.user.name;
 
-    console.log("[ReactionManager] hardNukeReactionButtons invoked.", {
-      source,
-      localUserId,
-      localUserName,
-      isGM: game.user.isGM
-    });
+      console.log("[ReactionManager] hardNukeReactionButtons invoked.", {
+        source,
+        localUserId,
+        localUserName,
+        isGM: game.user.isGM
+      });
 
-    // 1) Try via official ReactionButtonUI API
-    const uiApi = window["oni.ReactionButtonUI"];
-    if (uiApi && typeof uiApi.clearAll === "function") {
-      try {
-        uiApi.clearAll();
-        console.log("[ReactionManager] Called ReactionButtonUI.clearAll() from hardNukeReactionButtons.");
-      } catch (err) {
-        console.error("[ReactionManager] Error calling ReactionButtonUI.clearAll().", err);
+      // 1) Try via official ReactionButtonUI API
+      const uiApi = window["oni.ReactionButtonUI"];
+      if (uiApi && typeof uiApi.clearAll === "function") {
+        try {
+          uiApi.clearAll();
+          console.log("[ReactionManager] Called ReactionButtonUI.clearAll() from hardNukeReactionButtons.");
+        } catch (err) {
+          console.error("[ReactionManager] Error calling ReactionButtonUI.clearAll().", err);
+        }
+      } else {
+        console.warn("[ReactionManager] ReactionButtonUI API not available on this client (hardNukeReactionButtons).");
       }
-    } else {
-      console.warn("[ReactionManager] ReactionButtonUI API not available on this client (hardNukeReactionButtons).");
-    }
 
-    // 2) Direct DOM cleanup as safety net, but with a small ease-out animation.
-    try {
-      const elementsToAnimate = new Set();
+      // 2) Direct DOM cleanup as safety net, but with a small ease-out animation.
+      try {
+        const elementsToAnimate = new Set();
 
-      // 2A) Any .oni-reaction-item under the root container
-      const root = document.getElementById("oni-reaction-root");
-      if (root) {
-        for (const el of root.querySelectorAll(".oni-reaction-item")) {
+        // 2A) Any .oni-reaction-item under the root container
+        const root = document.getElementById("oni-reaction-root");
+        if (root) {
+          for (const el of root.querySelectorAll(".oni-reaction-item")) {
+            elementsToAnimate.add(el);
+          }
+        }
+
+        // 2B) Any stray .oni-reaction-item in the document
+        for (const el of document.querySelectorAll(".oni-reaction-item")) {
           elementsToAnimate.add(el);
         }
+
+        let totalScheduled = 0;
+
+        for (const el of elementsToAnimate) {
+          try {
+            const element = el; // capture
+
+            // Add / extend transition so we don't override existing ones completely
+            const existingTransition = element.style.transition || "";
+            const extraTransition = "opacity 0.25s ease-out, transform 0.25s ease-out";
+
+            element.style.transition = existingTransition
+              ? `${existingTransition}, ${extraTransition}`
+              : extraTransition;
+
+            // Ensure starting values
+            if (!element.style.opacity) element.style.opacity = "1";
+            if (!element.style.transform) element.style.transform = "translateY(0px)";
+
+            // Force reflow so the browser applies the starting values
+            // eslint-disable-next-line no-unused-expressions
+            element.offsetWidth;
+
+            // End values for the ease-out
+            element.style.opacity = "0";
+            element.style.transform = "translateY(-8px)";
+
+            // Remove the node after the animation window
+            setTimeout(() => {
+              if (element.isConnected) element.remove();
+            }, 260);
+
+            totalScheduled++;
+          } catch (_err) {}
+        }
+
+        console.log("[ReactionManager] DOM animated cleanup scheduled from hardNukeReactionButtons.", {
+          totalScheduled
+        });
+      } catch (err) {
+        console.error("[ReactionManager] Error during DOM cleanup in hardNukeReactionButtons.", err);
       }
-
-      // 2B) Any stray .oni-reaction-item in the document
-      for (const el of document.querySelectorAll(".oni-reaction-item")) {
-        elementsToAnimate.add(el);
-      }
-
-      let totalScheduled = 0;
-
-      for (const el of elementsToAnimate) {
-        try {
-          const element = el; // capture
-
-          // Add / extend transition so we don't override existing ones completely
-          const existingTransition = element.style.transition || "";
-          const extraTransition    = "opacity 0.25s ease-out, transform 0.25s ease-out";
-
-          element.style.transition = existingTransition
-            ? `${existingTransition}, ${extraTransition}`
-            : extraTransition;
-
-          // Ensure starting values
-          if (!element.style.opacity)   element.style.opacity   = "1";
-          if (!element.style.transform) element.style.transform = "translateY(0px)";
-
-          // Force reflow so the browser applies the starting values
-          // eslint-disable-next-line no-unused-expressions
-          element.offsetWidth;
-
-          // End values for the ease-out
-          element.style.opacity   = "0";
-          element.style.transform = "translateY(-8px)";
-
-          // Remove the node after the animation window
-          setTimeout(() => {
-            if (element.isConnected) element.remove();
-          }, 260);
-
-          totalScheduled++;
-        } catch (_err) {}
-      }
-
-      console.log("[ReactionManager] DOM animated cleanup scheduled from hardNukeReactionButtons.", {
-        totalScheduled
-      });
-    } catch (err) {
-      console.error("[ReactionManager] Error during DOM cleanup in hardNukeReactionButtons.", err);
     }
-  }
+
+    function clearAllReactionWindows() {
+      _gmReactionWindows.clear();
+      _localReactionWindows.clear();
+    }
 
     // -------------------------------------------------------------------------
     // 0) Small helpers copied from Turn UI Manager (ownership logic)
@@ -178,21 +164,24 @@ Hooks.once("ready", () => {
     function isLinkedToLocalUser(actor) {
       const myCharId = game.user?.character?.id ?? null;
       if (myCharId && actor?.id === myCharId) return true;
-      try { return actor?.testUserPermission?.(game.user, "OWNER") || false; }
-      catch { return false; }
+      try {
+        return actor?.testUserPermission?.(game.user, "OWNER") || false;
+      } catch {
+        return false;
+      }
     }
 
     // NOTE: We no longer use this inside the GM logic, but we keep it around
     // in case you want to reuse the "local visibility" pattern elsewhere.
     function shouldLocalSeeForToken(token) {
       const tokenDoc = token?.document;
-      const actor    = token?.actor;
+      const actor = token?.actor;
       if (!tokenDoc || !actor) return false;
 
       const friendly = isFriendly(tokenDoc);
       const ownerIsLocal = friendly
-        ? isLinkedToLocalUser(actor)   // PCs -> only that player
-        : game.user?.isGM;             // Monsters/Neutral -> GM only
+        ? isLinkedToLocalUser(actor) // PCs -> only that player
+        : game.user?.isGM; // Monsters/Neutral -> GM only
 
       return !!ownerIsLocal;
     }
@@ -202,7 +191,7 @@ Hooks.once("ready", () => {
       return canvas?.tokens?.get(tokenId) ?? null;
     }
 
-     /**
+    /**
      * Decide which user(s) should see Reaction buttons for a given token.
      *
      * Rules:
@@ -282,8 +271,8 @@ Hooks.once("ready", () => {
     //       ReactionTriggerCore.js
     //       -> window["oni.ReactionTriggerCore"]
     //
-    //   This manager now only keeps the "phase bucket" concept locally, so it
-    //   can decide when to clear Reaction UI across all clients.
+    //   This manager keeps the "phase bucket" concept locally and now also
+    //   maintains one merged same-bucket reaction window per token.
 
     // -------------------------------------------------------------------------
     // Phase buckets – group low-level triggers into bigger "windows"
@@ -291,39 +280,40 @@ Hooks.once("ready", () => {
     //
     // The idea:
     // - Many events can fire close together (e.g. creature_deals_damage +
-    //   creature_takes_damage).
+    //   creature_enter_crisis + creature_defeated).
     // - We only want to CLEAR the Reaction UI when the *phase window* changes,
     //   not when every little event fires.
     // - So we map each trigger to a "phase bucket":
     //
     //   • "turn_start", "conflict_start", "round_start"  → each their own bucket
     //   • "creature_performs_check", "creature_targeted_by_action",
-    //     "creature_hit_by_action"                       → "action_phase"
-    //   • "creature_deals_damage", "creature_takes_damage"
-    //                                                   → "resolution_phase"
-    //   • "turn_end", "round_end"                       → each their own bucket
+    //     "creature_hit_by_action", "creature_miss_action"  → "action_phase"
+    //   • "creature_deals_damage", "creature_takes_damage",
+    //     "creature_enter_crisis", "creature_exit_crisis",
+    //     "creature_defeated"                                → "resolution_phase"
+    //   • "turn_end", "round_end"                          → each their own bucket
     //
     // This way:
-    //   - "creature_deals_damage" then "creature_takes_damage" stay in the same
-    //     "resolution_phase" bucket → Reaction button does NOT get wiped.
-    //   - "creature_performs_check" + "creature_targeted_by_action" both live in
-    //     "action_phase" → no accidental clearing between them.
+    //   - Damage + crisis + defeat stay in the same resolution window.
+    //   - Action declaration + miss stay in the same action window.
     //   - Moving from Start-of-turn → Action → Resolution → End-of-turn WILL
     //     clear old reactions when the phase actually changes.
 
-    let _currentPhaseBucket = null;
-
     function phaseBucketForTrigger(triggerKey) {
       switch (triggerKey) {
-        // All the "declare action" style triggers live in the Action Phase
+        // All the action declaration / hit result triggers live in the Action Phase
         case "creature_performs_check":
         case "creature_targeted_by_action":
         case "creature_hit_by_action":
+        case "creature_miss_action":
           return "action_phase";
 
-        // All the damage resolution triggers live in the Resolution Phase
+        // All the HP/damage result triggers live in the Resolution Phase
         case "creature_deals_damage":
         case "creature_takes_damage":
+        case "creature_enter_crisis":
+        case "creature_exit_crisis":
+        case "creature_defeated":
           return "resolution_phase";
 
         // Everything else (start_of_turn, end_of_turn, conflict/round start/end)
@@ -331,6 +321,200 @@ Hooks.once("ready", () => {
         default:
           return triggerKey;
       }
+    }
+
+    function makeWindowKey(phaseBucket, tokenId) {
+      return `${phaseBucket}::${tokenId ?? "(no-token)"}`;
+    }
+
+    function uniqueStrings(values) {
+      const out = [];
+      const seen = new Set();
+      for (const v of values ?? []) {
+        const s = String(v ?? "").trim();
+        if (!s || seen.has(s)) continue;
+        seen.add(s);
+        out.push(s);
+      }
+      return out;
+    }
+
+    function cloneReactionGroup(group) {
+      return {
+        item: group?.item ?? null,
+        triggers: uniqueStrings(group?.triggers ?? []),
+        rows: Array.isArray(group?.rows) ? [...group.rows] : []
+      };
+    }
+
+    function emptyWindowState(phaseBucket, tokenId) {
+      return {
+        windowKey: makeWindowKey(phaseBucket, tokenId),
+        phaseBucket,
+        tokenId,
+        combatant: null,
+        actor: null,
+        token: null,
+        actorUuid: null,
+        ownerUserIds: [],
+        latestTriggerKey: null,
+        latestPhasePayload: {},
+        triggerKeys: [],
+        phasePayloadByTrigger: {},
+        triggerHistory: [],
+        reactionGroupsByItemUuid: new Map()
+      };
+    }
+
+    function mergeReactionGroupIntoWindow(windowState, group) {
+      const item = group?.item ?? null;
+      if (!item) return;
+
+      const mapKey = item.uuid ?? item.id ?? item.name ?? randomID?.() ?? `${Date.now()}`;
+      const existing = windowState.reactionGroupsByItemUuid.get(mapKey);
+
+      if (!existing) {
+        windowState.reactionGroupsByItemUuid.set(mapKey, cloneReactionGroup(group));
+        return;
+      }
+
+      existing.triggers = uniqueStrings([
+        ...(existing.triggers ?? []),
+        ...(group?.triggers ?? [])
+      ]);
+
+      const existingRows = Array.isArray(existing.rows) ? existing.rows : [];
+      const incomingRows = Array.isArray(group?.rows) ? group.rows : [];
+      existing.rows = [...existingRows, ...incomingRows];
+    }
+
+    function mergeMatchIntoWindow(windowState, ctx, triggerKey, phasePayload) {
+      windowState.combatant = ctx?.combatant ?? windowState.combatant;
+      windowState.actor = ctx?.actor ?? windowState.actor;
+      windowState.token = ctx?.token ?? windowState.token;
+      windowState.actorUuid = ctx?.actor?.uuid ?? windowState.actorUuid;
+
+      windowState.ownerUserIds = uniqueStrings([
+        ...(windowState.ownerUserIds ?? []),
+        ...(ctx?.ownerUserIds ?? [])
+      ]);
+
+      windowState.latestTriggerKey = triggerKey;
+      windowState.latestPhasePayload = phasePayload && typeof phasePayload === "object"
+        ? foundry.utils.deepClone(phasePayload)
+        : {};
+
+      windowState.triggerKeys = uniqueStrings([
+        ...(windowState.triggerKeys ?? []),
+        triggerKey
+      ]);
+
+      windowState.phasePayloadByTrigger[triggerKey] = phasePayload && typeof phasePayload === "object"
+        ? foundry.utils.deepClone(phasePayload)
+        : {};
+
+      windowState.triggerHistory.push({
+        triggerKey,
+        at: Date.now()
+      });
+
+      for (const group of ctx?.reactions ?? []) {
+        mergeReactionGroupIntoWindow(windowState, group);
+      }
+    }
+
+    function buildTriggerEntriesForWindow(windowState) {
+      const triggerKeys = Array.isArray(windowState?.triggerKeys) ? windowState.triggerKeys : [];
+      const allGroups = Array.from(windowState?.reactionGroupsByItemUuid?.values?.() ?? []);
+
+      return triggerKeys.map(triggerKey => ({
+        triggerKey,
+        phasePayload: foundry.utils.deepClone(windowState?.phasePayloadByTrigger?.[triggerKey] ?? {}),
+        reactions: allGroups
+          .filter(group => Array.isArray(group?.triggers) && group.triggers.includes(triggerKey))
+          .map(group => ({
+            item: group?.item ?? null,
+            triggers: uniqueStrings(group?.triggers ?? []),
+            rows: Array.isArray(group?.rows) ? [...group.rows] : []
+          }))
+      }));
+    }
+
+    function buildCtxFromWindow(windowState) {
+      const reactionGroups = Array.from(windowState?.reactionGroupsByItemUuid?.values?.() ?? []).map(group => ({
+        item: group?.item ?? null,
+        triggers: uniqueStrings(group?.triggers ?? []),
+        rows: Array.isArray(group?.rows) ? [...group.rows] : []
+      }));
+
+      return {
+        combatant: windowState?.combatant ?? null,
+        actor: windowState?.actor ?? null,
+        token: windowState?.token ?? null,
+        reactions: reactionGroups,
+        triggerKey: windowState?.latestTriggerKey ?? "(unknown_trigger)",
+        latestTriggerKey: windowState?.latestTriggerKey ?? "(unknown_trigger)",
+        triggerKeys: uniqueStrings(windowState?.triggerKeys ?? []),
+        phasePayload: foundry.utils.deepClone(windowState?.latestPhasePayload ?? {}),
+        latestPhasePayload: foundry.utils.deepClone(windowState?.latestPhasePayload ?? {}),
+        phasePayloadByTrigger: foundry.utils.deepClone(windowState?.phasePayloadByTrigger ?? {}),
+        triggerEntries: buildTriggerEntriesForWindow(windowState),
+        phaseBucket: windowState?.phaseBucket ?? null,
+        ownerUserIds: uniqueStrings(windowState?.ownerUserIds ?? [])
+      };
+    }
+
+    function buildSocketOfferFromWindow(windowState, targetUserId) {
+      const reactionGroups = Array.from(windowState?.reactionGroupsByItemUuid?.values?.() ?? []);
+      const itemGroups = reactionGroups
+        .map(group => ({
+          itemUuid: group?.item?.uuid ?? null,
+          triggers: uniqueStrings(group?.triggers ?? [])
+        }))
+        .filter(g => !!g.itemUuid);
+
+      return {
+        targetUserId,
+        triggerKey: windowState?.latestTriggerKey ?? null,
+        latestTriggerKey: windowState?.latestTriggerKey ?? null,
+        triggerKeys: uniqueStrings(windowState?.triggerKeys ?? []),
+        phaseBucket: windowState?.phaseBucket ?? null,
+        actorUuid: windowState?.actorUuid ?? null,
+        tokenId: windowState?.tokenId ?? null,
+        itemUuids: itemGroups.map(g => g.itemUuid),
+        itemGroups,
+        phasePayload: foundry.utils.deepClone(windowState?.latestPhasePayload ?? {}),
+        latestPhasePayload: foundry.utils.deepClone(windowState?.latestPhasePayload ?? {}),
+        phasePayloadByTrigger: foundry.utils.deepClone(windowState?.phasePayloadByTrigger ?? {}),
+        triggerHistory: Array.isArray(windowState?.triggerHistory) ? [...windowState.triggerHistory] : []
+      };
+    }
+
+    function clearForNewPhaseBucket(phaseBucket, triggerKey) {
+      console.log("[ReactionManager] (GM) Phase bucket changed; clearing all Reaction buttons on all clients.", {
+        from: _currentPhaseBucket,
+        to: phaseBucket,
+        triggerKey
+      });
+
+      _currentPhaseBucket = phaseBucket;
+      clearAllReactionWindows();
+
+      if (game.socket) {
+        game.socket.emit(CHANNEL, {
+          type: "OniReactionClear",
+          payload: {
+            phaseBucket,
+            triggerKey,
+            fromUserId: game.user.id
+          }
+        });
+      } else {
+        console.warn("[ReactionManager] (GM) game.socket is not available when trying to emit OniReactionClear.");
+      }
+
+      // Also clear locally for GM using the same nuke helper.
+      hardNukeReactionButtons("GM-phase-change");
     }
 
     // -------------------------------------------------------------------------
@@ -397,29 +581,7 @@ Hooks.once("ready", () => {
       // 1) Phase bucket change -> tell everyone to clear.
       // -----------------------------------------------------------------------
       if (phaseBucket !== _currentPhaseBucket) {
-        console.log("[ReactionManager] (GM) Phase bucket changed; clearing all Reaction buttons on all clients.", {
-          from: _currentPhaseBucket,
-          to: phaseBucket,
-          triggerKey
-        });
-
-        _currentPhaseBucket = phaseBucket;
-
-        if (game.socket) {
-          game.socket.emit(CHANNEL, {
-            type: "OniReactionClear",
-            payload: {
-              phaseBucket,
-              triggerKey,
-              fromUserId: game.user.id
-            }
-          });
-        } else {
-          console.warn("[ReactionManager] (GM) game.socket is not available when trying to emit OniReactionClear.");
-        }
-
-        // Also clear locally for GM using the same nuke helper.
-        hardNukeReactionButtons("GM-phase-change");
+        clearForNewPhaseBucket(phaseBucket, triggerKey);
       }
 
       // -----------------------------------------------------------------------
@@ -434,8 +596,8 @@ Hooks.once("ready", () => {
 
       // Now enrich each context with ownership info (who should see the button)
       for (const ctx of matches) {
-        const token   = ctx.token;
-        const actor   = ctx.actor;
+        const token = ctx.token;
+        const actor = ctx.actor;
         const tokenDoc = token?.document;
 
         if (!tokenDoc || !actor) {
@@ -470,61 +632,61 @@ Hooks.once("ready", () => {
       });
 
       // -----------------------------------------------------------------------
-      // 3) For each match:
-      //    - If GM is an owner -> spawn local button immediately.
-      //    - For every *other* owner -> send OniReactionOffer via socket.
+      // 3) Merge each match into that token's active same-bucket reaction window,
+      //    then refresh the owners' UI using the MERGED context.
       // -----------------------------------------------------------------------
       for (const ctx of filteredMatches) {
-        const token     = ctx.token;
-        const tokenId   = token?.id ?? ctx.combatant?.tokenId ?? null;
+        const token = ctx.token;
+        const tokenId = token?.id ?? ctx.combatant?.tokenId ?? null;
         const actorUuid = ctx.actor?.uuid ?? null;
-
         const ownerUserIds = Array.isArray(ctx.ownerUserIds) ? ctx.ownerUserIds : [];
-        if (!ownerUserIds.length) continue;
 
-        // Build a deduplicated list of item UUIDs for this actor
-        const itemUuids = [];
-        const seen = new Set();
+        if (!tokenId || !ownerUserIds.length) continue;
 
-        for (const group of ctx.reactions ?? []) {
-          const it = group?.item;
-          if (!it?.uuid) continue;
-          if (seen.has(it.uuid)) continue;
-          seen.add(it.uuid);
-          itemUuids.push(it.uuid);
-        }
+        const windowKey = makeWindowKey(phaseBucket, tokenId);
+        const windowState = _gmReactionWindows.get(windowKey)
+          ?? emptyWindowState(phaseBucket, tokenId);
+
+        mergeMatchIntoWindow(windowState, ctx, triggerKey, payload);
+        windowState.actorUuid = actorUuid ?? windowState.actorUuid;
+        _gmReactionWindows.set(windowKey, windowState);
+
+        const mergedCtx = buildCtxFromWindow(windowState);
+
+        console.log("[ReactionManager] (GM) Updated merged reaction window.", {
+          windowKey,
+          tokenName: mergedCtx.token?.name,
+          actorName: mergedCtx.actor?.name,
+          triggerKey,
+          triggerKeys: mergedCtx.triggerKeys,
+          reactionCount: mergedCtx.reactions?.length ?? 0,
+          ownerUserIds: mergedCtx.ownerUserIds
+        });
 
         // 3A) GM local UI: if GM is among ownerUserIds, spawn the button directly.
         const gmId = game.user.id;
         if (ownerUserIds.includes(gmId) && uiApi && dialogApi) {
           console.log("[ReactionManager] (GM) Spawning local Reaction button for GM.", {
-            actorName: ctx.actor?.name,
-            tokenName: ctx.token?.name,
+            actorName: mergedCtx.actor?.name,
+            tokenName: mergedCtx.token?.name,
             gmId,
-            triggerKey
+            triggerKey,
+            triggerKeys: mergedCtx.triggerKeys
           });
 
-          uiApi.spawnButton(token, ctx, (clickedCtx) => {
+          uiApi.spawnButton(token, mergedCtx, (clickedCtx) => {
             dialogApi.openReactionDialog(clickedCtx);
           });
         }
 
-        // 3B) Player offers: send OniReactionOffer to every *non-GM* owner.
+        // 3B) Player offers: send merged OniReactionOffer to every non-GM owner.
         for (const targetUserId of ownerUserIds) {
           // Skip GM here; GM already got a local button.
           if (targetUserId === gmId) continue;
 
-          const payloadOut = {
-            targetUserId,
-            triggerKey,
-            phaseBucket,
-            actorUuid,
-            tokenId,
-            itemUuids,
-            phasePayload: payload
-          };
+          const payloadOut = buildSocketOfferFromWindow(windowState, targetUserId);
 
-          console.log("[ReactionManager] (GM) Sending OniReactionOffer to user", targetUserId, payloadOut);
+          console.log("[ReactionManager] (GM) Sending merged OniReactionOffer to user", targetUserId, payloadOut);
 
           if (game.socket) {
             game.socket.emit(CHANNEL, {
@@ -538,7 +700,7 @@ Hooks.once("ready", () => {
       }
     });
 
-      // -------------------------------------------------------------------------
+    // -------------------------------------------------------------------------
     // 3) Module socket listener – GM→Player clear + offers
     // -------------------------------------------------------------------------
 
@@ -546,7 +708,7 @@ Hooks.once("ready", () => {
       if (!data || typeof data !== "object") return;
 
       // 1) CLEAR: GM changed phase bucket; everyone clears buttons.
-          if (data.type === "OniReactionClear") {
+      if (data.type === "OniReactionClear") {
         const payload = data.payload || {};
         const { phaseBucket, triggerKey, fromUserId } = payload;
 
@@ -555,6 +717,8 @@ Hooks.once("ready", () => {
           triggerKey,
           fromUserId
         });
+
+        clearAllReactionWindows();
 
         // Use the same hard nuke we proved with the manual V3 macro.
         hardNukeReactionButtons("socket");
@@ -570,14 +734,19 @@ Hooks.once("ready", () => {
         const {
           targetUserId,
           triggerKey,
+          latestTriggerKey,
+          triggerKeys,
           phaseBucket,
           actorUuid,
           tokenId,
           itemUuids,
-          phasePayload
+          itemGroups,
+          phasePayload,
+          latestPhasePayload,
+          phasePayloadByTrigger
         } = payload;
 
-             console.log("[ReactionManager] Socket OniReactionOffer on user", game.user.id, payload);
+        console.log("[ReactionManager] Socket OniReactionOffer on user", game.user.id, payload);
 
         // Only the targeted user should respond.
         if (!targetUserId || targetUserId !== game.user.id) {
@@ -597,7 +766,8 @@ Hooks.once("ready", () => {
 
         // If GM says phase bucket is now X, keep our local view in sync
         if (phaseBucket && phaseBucket !== _currentPhaseBucket) {
-          uiApi.clearAll?.();
+          clearAllReactionWindows();
+          hardNukeReactionButtons("socket-phase-change");
           _currentPhaseBucket = phaseBucket;
         }
 
@@ -625,34 +795,53 @@ Hooks.once("ready", () => {
           return;
         }
 
-        // Rebuild a simple "reactions" array: [{ item }, ...]
+        // Rebuild a simple "reactions" array: [{ item, triggers }, ...]
         const reactions = [];
         const uniqueIds = new Set();
+        const itemGroupMap = new Map();
 
-        if (Array.isArray(itemUuids)) {
-          for (const u of itemUuids) {
-            if (!u) continue;
-
-            let item = null;
-
-            // Try resolving via fromUuidSync first
-            try {
-              item = fromUuidSync(u);
-            } catch (_err) {}
-
-            // Fallback: try to pull from the actor's own items
-            if (!item && actor.items) {
-              const match = u.match(/Item\.([A-Za-z0-9]+)$/);
-              const idGuess = match ? match[1] : null;
-              if (idGuess) {
-                item = actor.items.get(idGuess);
-              }
-            }
-
-            if (!item || uniqueIds.has(item.id)) continue;
-            uniqueIds.add(item.id);
-            reactions.push({ item });
+        if (Array.isArray(itemGroups)) {
+          for (const g of itemGroups) {
+            if (!g?.itemUuid) continue;
+            itemGroupMap.set(g.itemUuid, {
+              itemUuid: g.itemUuid,
+              triggers: uniqueStrings(g.triggers ?? [])
+            });
           }
+        }
+
+        const uuidsToResolve = Array.isArray(itemUuids)
+          ? itemUuids
+          : Array.from(itemGroupMap.keys());
+
+        for (const u of uuidsToResolve) {
+          if (!u) continue;
+
+          let item = null;
+
+          // Try resolving via fromUuidSync first
+          try {
+            item = fromUuidSync(u);
+          } catch (_err) {}
+
+          // Fallback: try to pull from the actor's own items
+          if (!item && actor.items) {
+            const match = u.match(/Item\.([A-Za-z0-9]+)$/);
+            const idGuess = match ? match[1] : null;
+            if (idGuess) {
+              item = actor.items.get(idGuess);
+            }
+          }
+
+          if (!item || uniqueIds.has(item.id)) continue;
+          uniqueIds.add(item.id);
+
+          const triggerInfo = itemGroupMap.get(u);
+          reactions.push({
+            item,
+            triggers: uniqueStrings(triggerInfo?.triggers ?? []),
+            rows: []
+          });
         }
 
         if (!reactions.length) {
@@ -660,15 +849,35 @@ Hooks.once("ready", () => {
           return;
         }
 
-        // Build the ctx object expected by ReactionChooseSkill
+        const resolvedTriggerKey = latestTriggerKey ?? triggerKey ?? "(unknown_trigger)";
+        const resolvedTriggerKeys = uniqueStrings(triggerKeys ?? reactions.flatMap(r => r?.triggers ?? []));
+
         const ctx = {
-          combatant: null,           // not used by ReactionChooseSkill
+          combatant: null, // not used by ReactionChooseSkill
           actor,
           token,
           reactions,
-          triggerKey,
-          phasePayload: phasePayload || {}
+          triggerKey: resolvedTriggerKey,
+          latestTriggerKey: resolvedTriggerKey,
+          triggerKeys: resolvedTriggerKeys,
+          phasePayload: foundry.utils.deepClone(latestPhasePayload ?? phasePayload ?? {}),
+          latestPhasePayload: foundry.utils.deepClone(latestPhasePayload ?? phasePayload ?? {}),
+          phasePayloadByTrigger: foundry.utils.deepClone(phasePayloadByTrigger ?? {}),
+          triggerEntries: resolvedTriggerKeys.map(k => ({
+            triggerKey: k,
+            phasePayload: foundry.utils.deepClone((phasePayloadByTrigger ?? {})[k] ?? {}),
+            reactions: reactions.filter(r => Array.isArray(r?.triggers) && r.triggers.includes(k))
+          })),
+          phaseBucket: phaseBucket ?? null,
+          ownerUserIds: [targetUserId]
         };
+
+        _localReactionWindows.set(makeWindowKey(phaseBucket, tokenId), foundry.utils.deepClone({
+          phaseBucket,
+          tokenId,
+          triggerKey: resolvedTriggerKey,
+          triggerKeys: resolvedTriggerKeys
+        }));
 
         // Spawn the floating button and wire it to open the dialog on click
         uiApi.spawnButton(token, ctx, (clickedCtx) => {
@@ -704,26 +913,28 @@ Hooks.once("ready", () => {
     // any leftover Reaction buttons should disappear.
 
     Hooks.on("combatEnd", (combat, data) => {
-    console.log("[ReactionManager] combatEnd detected – hard nuking all Reaction buttons on this client.", {
-      combatId: combat?.id,
-      localUserId: game.user.id,
-      isGM: game.user.isGM
+      console.log("[ReactionManager] combatEnd detected – hard nuking all Reaction buttons on this client.", {
+        combatId: combat?.id,
+        localUserId: game.user.id,
+        isGM: game.user.isGM
+      });
+
+      clearAllReactionWindows();
+      hardNukeReactionButtons("combatEnd");
+      _currentPhaseBucket = null;
     });
 
-    hardNukeReactionButtons("combatEnd");
-    _currentPhaseBucket = null;
-  });
+    Hooks.on("deleteCombat", (combat, options, userId) => {
+      console.log("[ReactionManager] deleteCombat detected – hard nuking all Reaction buttons on this client.", {
+        combatId: combat?.id,
+        localUserId: game.user.id,
+        isGM: game.user.isGM
+      });
 
-  Hooks.on("deleteCombat", (combat, options, userId) => {
-    console.log("[ReactionManager] deleteCombat detected – hard nuking all Reaction buttons on this client.", {
-      combatId: combat?.id,
-      localUserId: game.user.id,
-      isGM: game.user.isGM
+      clearAllReactionWindows();
+      hardNukeReactionButtons("deleteCombat");
+      _currentPhaseBucket = null;
     });
-
-    hardNukeReactionButtons("deleteCombat");
-    _currentPhaseBucket = null;
-  });
 
     console.log("[ReactionManager] Demo installed. Listening for oni:reactionPhase and combat end.");
 
@@ -732,7 +943,7 @@ Hooks.once("ready", () => {
       /**
        * Debug helper: call the underlying ReactionTriggerCore.collectReactionsForTrigger
        * from the console, e.g.:
-       *   window["oni.ReactionManagerDemo"]
+       *   window["oni.ReactionManager"]
        *     .collectReactionsForTrigger("turn_start", { ...payload... });
        */
       collectReactionsForTrigger(triggerKey, phasePayload) {
@@ -742,6 +953,24 @@ Hooks.once("ready", () => {
           return [];
         }
         return triggerApi.collectReactionsForTrigger(triggerKey, phasePayload);
+      },
+
+      getCurrentPhaseBucket() {
+        return _currentPhaseBucket;
+      },
+
+      debugListGMReactionWindows() {
+        return Array.from(_gmReactionWindows.entries()).map(([key, ws]) => ({
+          key,
+          phaseBucket: ws.phaseBucket,
+          tokenId: ws.tokenId,
+          actorName: ws.actor?.name,
+          tokenName: ws.token?.name,
+          latestTriggerKey: ws.latestTriggerKey,
+          triggerKeys: [...(ws.triggerKeys ?? [])],
+          ownerUserIds: [...(ws.ownerUserIds ?? [])],
+          numReactionItems: ws.reactionGroupsByItemUuid?.size ?? 0
+        }));
       }
     };
   })();
