@@ -144,6 +144,7 @@ Hooks.once("ready", async () => {
       }
 
       emit("oni:reactionPhase", payload, { local: true, world: false });
+      console.log("[fu-chatbtn][Confirm] oni:reactionPhase emitted", payload);
       return true;
     } catch (err) {
       console.error("[fu-chatbtn][Confirm] Failed to emit oni:reactionPhase", err, payload);
@@ -557,49 +558,66 @@ if (hasCLRes) {
         console.log(`${RUN_TAG} AE on_attack done`, { runId });
       }
 
-      // Miss cards
-      if (missUUIDs.length && miss) {
-        const missIds = (await Promise.all(missUUIDs.map(async u => {
-          const d = await fromUuid(u).catch(()=>null);
-          return d?.id ?? d?.document?.id ?? null;
-        }))).filter(Boolean);
+      // Miss reaction signal + Miss cards
+      if (missUUIDs.length) {
+        const missReactionEmitted = await emitMissReactionSignal({
+          flagged,
+          attackerUuid,
+          attackerName,
+          missUUIDs,
+          elementType: elemKey,
+          isSpellish: !!isSpellish,
+          weaponType,
+          attackRange,
+          accuracyTotal: accTotal
+        });
 
-        if (missIds.length) {
-          console.log(`${RUN_TAG} MISS targeting`, { runId, missIds });
+        console.log(`${RUN_TAG} MISS reaction emit`, {
+          runId,
+          missReactionEmitted,
+          missCount: missUUIDs.length,
+          missUUIDs
+        });
 
-          const missReactionEmitted = await emitMissReactionSignal({
-            flagged,
-            attackerUuid,
-            attackerName,
-            missUUIDs,
-            elementType: elemKey,
-            isSpellish: !!isSpellish,
-            weaponType,
-            attackRange,
-            accuracyTotal: accTotal
-          });
+        if (miss) {
+          const missIds = (await Promise.all(missUUIDs.map(async u => {
+            const d = await fromUuid(u).catch(()=>null);
+            return d?.id ?? d?.document?.id ?? null;
+          }))).filter(Boolean);
 
-          console.log(`${RUN_TAG} MISS reaction emit`, {
+          console.log(`${RUN_TAG} MISS targeting`, {
             runId,
-            missReactionEmitted,
-            missCount: missUUIDs.length
+            missIds,
+            missIdsCount: missIds.length
           });
 
-          await game.user.updateTokenTargets(missIds, { releaseOthers: true });
+          if (missIds.length) {
+            await game.user.updateTokenTargets(missIds, { releaseOthers: true });
 
-          await miss.execute({
-            __AUTO: true,
-            __PAYLOAD: {
-              attackerName,
-              elementType: elemKey,
-              isSpellish: !!isSpellish,
-              weaponType,
-              attackRange,
-              accuracyTotal: accTotal
-            }
+            await miss.execute({
+              __AUTO: true,
+              __PAYLOAD: {
+                attackerName,
+                elementType: elemKey,
+                isSpellish: !!isSpellish,
+                weaponType,
+                attackRange,
+                accuracyTotal: accTotal
+              }
+            });
+
+            console.log(`${RUN_TAG} MISS macro done`, { runId });
+          } else {
+            console.warn(`${RUN_TAG} MISS had UUIDs but no resolvable token ids`, {
+              runId,
+              missUUIDs
+            });
+          }
+        } else {
+          console.warn(`${RUN_TAG} MISS macro not found; reaction signal still emitted`, {
+            runId,
+            missMacroName
           });
-
-          console.log(`${RUN_TAG} MISS macro done`, { runId });
         }
       }
 
