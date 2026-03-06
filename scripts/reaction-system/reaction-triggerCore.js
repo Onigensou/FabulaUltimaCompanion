@@ -3,6 +3,7 @@
  * ---------------------------------------------------------------------------
  * This file is safe to load automatically from a module (runs once per client).
  * Generated: 2026-01-09T07:27:00
+ * Updated: 2026-03-07
  * ---------------------------------------------------------------------------
  */
 
@@ -78,10 +79,12 @@ Hooks.once("ready", () => {
       "creature_performs_check",
       "creature_targeted_by_action",
       "creature_hit_by_action",
+      "creature_miss_action",
       "creature_deals_damage",
       "creature_takes_damage",
       "creature_enter_crisis",
-      "creature_exit_crisis"
+      "creature_exit_crisis",
+      "creature_defeated"
     ]);
 
     const PHASE_TRIGGER_MAP = {
@@ -150,7 +153,7 @@ Hooks.once("ready", () => {
       return out;
     }
 
-     // ---------------------------------------------------------------------------
+    // ---------------------------------------------------------------------------
     // reaction_source helpers
     // ---------------------------------------------------------------------------
     //
@@ -282,13 +285,18 @@ Hooks.once("ready", () => {
           addUuidish(phasePayload.tokenUuid);
           addUuidish(phasePayload.attackerUuid);
           addUuidish(phasePayload.checkTokenUuid);
+          addUuidish(phasePayload.sourceUuid);
 
           if (!subjects.length) {
             // Fallback: actor-based
             const t1 = findTokenByActorUuidInCombat(combat, phasePayload.actorUuid);
             const t2 = findTokenByActorUuidInCombat(combat, phasePayload.checkActorUuid);
+            const t3 = findTokenByActorUuidInCombat(combat, phasePayload.attackerActorUuid);
+            const t4 = findTokenByActorUuidInCombat(combat, phasePayload.sourceActorUuid);
             addToken(t1);
             addToken(t2);
+            addToken(t3);
+            addToken(t4);
           }
           break;
         }
@@ -300,12 +308,18 @@ Hooks.once("ready", () => {
           //   - payload.targetUuid      (single token UUID)
           //   - payload.targets[]       (array of token UUIDs)
           addUuidish(phasePayload.targetUuid);
+          addUuidish(phasePayload.tokenUuid);
+          addUuidish(phasePayload.subjectTokenUuid);
           addManyUuidish(phasePayload.targets);
 
           // Fallbacks if you ever use actor-level fields too
           if (!subjects.length) {
             const t1 = findTokenByActorUuidInCombat(combat, phasePayload.targetActorUuid);
+            const t2 = findTokenByActorUuidInCombat(combat, phasePayload.actorUuid);
+            const t3 = findTokenByActorUuidInCombat(combat, phasePayload.subjectActorUuid);
             if (t1) addToken(t1);
+            if (t2) addToken(t2);
+            if (t3) addToken(t3);
             if (Array.isArray(phasePayload.targetActorUuids)) {
               for (const aUuid of phasePayload.targetActorUuids) {
                 const t = findTokenByActorUuidInCombat(combat, aUuid);
@@ -316,41 +330,52 @@ Hooks.once("ready", () => {
           break;
         }
 
+        case "creature_miss_action":
         case "creature_deals_damage": {
-          // For the "dealer", we expect token uuids like:
-          //   - payload.attackerUuid
-          //   - payload.sourceUuid
+          // These triggers point at the acting creature / source creature.
+          // Expected token-ish fields include attackerUuid or sourceUuid.
           addUuidish(phasePayload.attackerUuid);
           addUuidish(phasePayload.sourceUuid);
+          addUuidish(phasePayload.tokenUuid);
+          addUuidish(phasePayload.subjectTokenUuid);
 
           // Fallbacks: actor-based
           if (!subjects.length) {
             const t1 = findTokenByActorUuidInCombat(combat, phasePayload.sourceActorUuid);
             const t2 = findTokenByActorUuidInCombat(combat, phasePayload.attackerActorUuid);
             const t3 = findTokenByActorUuidInCombat(combat, phasePayload.actorUuid);
+            const t4 = findTokenByActorUuidInCombat(combat, phasePayload.subjectActorUuid);
             addToken(t1);
             addToken(t2);
             addToken(t3);
+            addToken(t4);
           }
           break;
         }
+
         case "creature_enter_crisis":
-        case "creature_exit_crisis": {
-          // Crisis triggers should point at "the creature whose HP crossed the 50% threshold".
+        case "creature_exit_crisis":
+        case "creature_defeated": {
+          // These triggers point at the creature whose HP state changed.
           // We prefer token UUIDs when available; we also support actor UUID fallback.
           addUuidish(phasePayload.tokenUuid);
           addUuidish(phasePayload.targetUuid);
+          addUuidish(phasePayload.defeatedTokenUuid);
+          addUuidish(phasePayload.subjectTokenUuid);
           addManyUuidish(phasePayload.targets);
 
           if (!subjects.length) {
             const t1 = findTokenByActorUuidInCombat(combat, phasePayload.actorUuid);
             const t2 = findTokenByActorUuidInCombat(combat, phasePayload.targetActorUuid);
+            const t3 = findTokenByActorUuidInCombat(combat, phasePayload.defeatedActorUuid);
+            const t4 = findTokenByActorUuidInCombat(combat, phasePayload.subjectActorUuid);
             addToken(t1);
             addToken(t2);
+            addToken(t3);
+            addToken(t4);
           }
           break;
         }
-
 
         default:
           // For non "creature_*" triggers we don't build subjects here.
@@ -360,7 +385,7 @@ Hooks.once("ready", () => {
       return subjects;
     }
 
-      // ---------------------------------------------------------------------------
+    // ---------------------------------------------------------------------------
     // reaction_source matching
     // ---------------------------------------------------------------------------
 
@@ -423,7 +448,7 @@ Hooks.once("ready", () => {
       };
 
       // -------------------------------------------------------------------------
-      // 1) Creature-based triggers – use subject list from payload (unchanged)
+      // 1) Creature-based triggers – use subject list from payload
       // -------------------------------------------------------------------------
       if (triggerKey.startsWith("creature_")) {
         const subjects = getSubjectTokensForTrigger(triggerKey, phasePayload, combat);
