@@ -91,9 +91,6 @@ function buildPromptText({ mode, count, category }) {
     case MODES.ALL:
       return `Please confirm all ${getCategoryLabel(category, 2)}`;
 
-    case MODES.SELF:
-      return "Please confirm self target";
-
     case MODES.FREE:
     default:
       return UI.TEXT.DEFAULT_TITLE;
@@ -148,22 +145,6 @@ function buildAllResult({ raw, normalized, category }) {
   };
 }
 
-function buildSelfResult({ raw, normalized }) {
-  return {
-    raw,
-    normalized,
-    recognized: true,
-    mode: MODES.SELF,
-    category: TARGET_CATEGORIES.CREATURE,
-    count: 1,
-    minTargets: 1,
-    maxTargets: 1,
-    autoSelectAll: true,
-    acceptsZero: false,
-    promptText: buildPromptText({ mode: MODES.SELF, count: 1, category: TARGET_CATEGORIES.CREATURE })
-  };
-}
-
 export function buildJRPGFreeTargetingResult(raw = "") {
   const normalized = normalizeJRPGTargetingText(raw);
 
@@ -197,16 +178,6 @@ export function parseJRPGTargetingText(skillTargetText) {
     const result = buildJRPGFreeTargetingResult(raw);
     dbg.logRun(runId, "FREE MODE (empty/none)", result);
     return result;
-  }
-
-  // Self mode
-  {
-    const match = normalized.match(PARSER.REGEX.SELF);
-    if (match) {
-      const result = buildSelfResult({ raw, normalized });
-      dbg.logRun(runId, "PARSED SELF", result);
-      return result;
-    }
   }
 
   // All mode
