@@ -112,7 +112,11 @@ export function getJRPGMaxTargetCount(parsedTargeting) {
 }
 
 export function doesJRPGModeAutoSelectAll(parsedTargeting) {
-  return parsedTargeting?.mode === MODES.ALL || parsedTargeting?.autoSelectAll === true;
+  return (
+    parsedTargeting?.mode === MODES.ALL ||
+    parsedTargeting?.mode === MODES.SELF ||
+    parsedTargeting?.autoSelectAll === true
+  );
 }
 
 export function doesJRPGModeAllowManualSelection(parsedTargeting) {
@@ -254,6 +258,26 @@ export function validateJRPGTargetConfirmation({
     acceptsZero: parsed?.acceptsZero
   });
 
+  if (mode === MODES.SELF) {
+    if (selectedCount !== 1) {
+      const result = {
+        ok: false,
+        code: "SELF_REQUIRED",
+        notification: "This action requires the self target to be locked."
+      };
+      dbg.warnRun(runId, "BLOCK", result);
+      return result;
+    }
+
+    const result = {
+      ok: true,
+      code: "CONFIRM_SELF_OK",
+      notification: null
+    };
+    dbg.logRun(runId, "ALLOW", result);
+    return result;
+  }
+
   if (mode === MODES.ALL) {
     if (eligibleCount <= 0) {
       const result = {
@@ -369,6 +393,11 @@ export function getJRPGAutoSelectedTargets({
 
   if (!doesJRPGModeAutoSelectAll(parsed)) {
     dbg.logRun(runId, "SKIP", { reason: "Mode does not auto-select all." });
+    return [];
+  }
+
+  if (parsed?.mode === MODES.SELF) {
+    dbg.logRun(runId, "SKIP", { reason: "Self mode target is resolved by session." });
     return [];
   }
 
