@@ -100,8 +100,7 @@ export const JRPG_TARGETING = Object.freeze({
     FREE: "free",
     EXACT: "exact",
     UP_TO: "up_to",
-    ALL: "all",
-    SELF: "self"
+    ALL: "all"
   }),
 
   TARGET_CATEGORIES: Object.freeze({
@@ -127,7 +126,6 @@ export const JRPG_TARGETING = Object.freeze({
   WORDS: Object.freeze({
     NONE: Object.freeze(["", "-", "none", "nothing"]),
     ALL: Object.freeze(["all"]),
-    SELF: Object.freeze(["self"]),
     UP_TO: Object.freeze(["up to", "upto"]),
     CREATURE: Object.freeze(["creature", "creatures"]),
     ALLY: Object.freeze(["ally", "allies"]),
@@ -182,13 +180,11 @@ export const JRPG_TARGETING = Object.freeze({
     }),
 
     // Examples this should support later:
-    // "Self"
     // "One Creature"
     // "2 Creatures"
     // "Up to three ally"
     // "All Enemy"
     REGEX: Object.freeze({
-      SELF: /^self$/i,
       UP_TO: /^up\s*to\s+([a-z0-9-]+)\s+(creature|creatures|ally|allies|enemy|enemies)$/i,
       EXACT: /^([a-z0-9-]+)\s+(creature|creatures|ally|allies|enemy|enemies)$/i,
       ALL: /^all\s+(creature|creatures|ally|allies|enemy|enemies)$/i
