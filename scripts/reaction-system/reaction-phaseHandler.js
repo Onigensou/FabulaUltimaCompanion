@@ -203,6 +203,9 @@ Hooks.once("ready", () => {
   //   - "creature_is_targeted"
   //   - "creature_deals_damage"
   //   - "creature_takes_damage"
+  //   - "creature_recovers_hp"
+  //   - "creature_lose_mp"
+  //   - "creature_recovers_mp"
   //
   // All of these share the SAME event name ("oni:reactionPhase") but have
   // different trigger strings. A future ReactionHandler can listen once:
@@ -212,6 +215,9 @@ Hooks.once("ready", () => {
   //       case "start_of_turn":
   //       case "start_of_round":
   //       case "creature_deals_damage":
+  //       case "creature_recovers_hp":
+  //       case "creature_lose_mp":
+  //       case "creature_recovers_mp":
   //         // etc...
   //     }
   //   });
@@ -234,6 +240,15 @@ Hooks.once("ready", () => {
   //    to see a clear timeline of phases and verify everything is correct.
   // 4) Later, when you build the real ReactionHandler, you can treat this file
   //    as the "truth" for when each lifecycle phase begins and ends.
+  //
+  // NOTE (2026 update): combat-result triggers are now more specific on the
+  // resource side as well. Other scripts may emit:
+  //   - creature_takes_damage   (HP loss)
+  //   - creature_recovers_hp    (HP gain)
+  //   - creature_lose_mp        (MP loss)
+  //   - creature_recovers_mp    (MP gain)
+  // This PhaseHandler still only owns lifecycle phases; it does not emit those
+  // combat-result triggers directly.
   //
   // ============================================================================
 
