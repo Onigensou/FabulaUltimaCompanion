@@ -30,6 +30,7 @@
 
   const log = (...a) => DEBUG && console.log(TAG, ...a);
   const warn = (...a) => console.warn(TAG, ...a);
+  const err = (...a) => console.error(TAG, ...a);
 
   const STYLE_ID = "oni-passive-card-style-v1";
   const ROOT_ID = "oni-passive-card-root";
@@ -62,16 +63,19 @@
         const doc = await fromUuid(uuid);
         if (!doc) continue;
 
+        // TokenDocument / Token-like
         if (doc.documentName === "Token" || doc.documentName === "TokenDocument") {
           return doc?.uuid ?? doc?.document?.uuid ?? null;
         }
 
+        // Actor -> first active token on current scene
         if (doc.documentName === "Actor" || doc.type === "Actor" || doc.constructor?.name === "Actor") {
           const token = doc?.getActiveTokens?.()?.[0] ?? doc?.token?.object ?? null;
           const tokenUuid = token?.document?.uuid ?? token?.uuid ?? null;
           if (tokenUuid) return tokenUuid;
         }
 
+        // Generic best-effort
         const tokenObj = doc?.object ?? doc?.token?.object ?? null;
         const tokenUuid = tokenObj?.document?.uuid ?? tokenObj?.uuid ?? null;
         if (tokenUuid) return tokenUuid;
@@ -84,6 +88,7 @@
   }
 
   function buildScriptSource() {
+    // Executed by the Pseudo Animation listener on each client.
     return String.raw`
 const token = ctx.casterToken;
 const params = ctx.params ?? {};
@@ -154,7 +159,7 @@ function ensureStyles() {
     "  0%   { opacity: 1; transform: translate(-50%, 0); }",
     "  100% { opacity: 0; transform: translate(-62%, 0); }",
     "}"
-  ].join("\\n");
+  ].join("\n");
 
   style.textContent = css;
   document.head.appendChild(style);
@@ -188,12 +193,21 @@ const card = document.createElement("div");
 card.className = "oni-passive-card enter";
 card.style.setProperty("--oni-passive-in-ms", String(params.enterMs ?? 280) + "ms");
 card.style.setProperty("--oni-passive-out-ms", String(params.exitMs ?? 260) + "ms");
-card.innerHTML = [
-  '<div class="oni-passive-row">',
-  '  <span class="oni-passive-icon">' + String(params.icon ?? "📜") + '</span>',
-  '  <span class="oni-passive-name">' + foundry.utils.escapeHTML(String(params.title ?? "Passive")) + '</span>',
-  '</div>'
-].join("\\n");
+
+const row = document.createElement("div");
+row.className = "oni-passive-row";
+
+const iconEl = document.createElement("span");
+iconEl.className = "oni-passive-icon";
+iconEl.textContent = String(params.icon ?? "📜");
+
+const nameEl = document.createElement("span");
+nameEl.className = "oni-passive-name";
+nameEl.textContent = String(params.title ?? "Passive");
+
+row.appendChild(iconEl);
+row.appendChild(nameEl);
+card.appendChild(row);
 root.appendChild(card);
 
 const yOffset = Number(params.yOffset ?? 8) || 8;
@@ -256,9 +270,10 @@ try {
       return { ok: false, reason: "performer_token_not_found" };
     }
 
-    const finalTitle = str(
-      title,
-      str(actionContext?.core?.skillName, str(actionContext?.meta?.skillName, "Passive"))
+    const finalTitle = str(title,
+      str(actionContext?.core?.skillName,
+        str(actionContext?.meta?.skillName, "Passive")
+      )
     );
 
     const payload = {
@@ -306,6 +321,7 @@ try {
     broadcast
   };
 
+  // Back-compat alias for the action execution core fallback lookup.
   API_ROOT.api.passiveCardBroadcast = broadcast;
 
   log("API registered", {
