@@ -1,15 +1,15 @@
-// scripts/autoPassive-manager.js
+// scripts/passive-system/autoPassive-manager.js
 // Foundry VTT v12
 // [ONI] Auto Passive Manager
 //
 // PURPOSE
-// - Extend the Reaction detection results into an auto-execution branch for passive rows.
+// - Extend Reaction detection results into an auto-execution branch for passive rows.
 // - Split matched reaction rows into:
 //     1) manual Reaction rows (still go to Reaction UI)
 //     2) passive rows (auto-fire, no user input)
 // - Resolve preset passive targets through AutoPassiveTargetResolver.
-// - Hand the action into the existing ActionDataFetch macro in headless mode.
-// - Deduplicate same-event passive executions so a single trigger does not fire twice.
+// - Hand the action into ActionDataFetch in headless mode.
+// - Prevent passive self-loop / re-entry behavior with a root-chain gate.
 //
 // PUBLIC API
 //   window["oni.AutoPassiveManager"].processMatches({
@@ -25,11 +25,6 @@
 //     manualMatches: [...],
 //     passiveResults: [...]
 //   }
-//
-// IMPORTANT
-// - This script is logic-only. No UI here.
-// - ReactionManager should call this BEFORE spawning any Reaction button.
-// - Passive visuals are handled later by action-execution-core -> passive-card-ui.
 
 (() => {
   const ROOT = (globalThis.FUCompanion = globalThis.FUCompanion || {});
@@ -37,20 +32,29 @@
 
   const KEY = "oni.AutoPassiveManager";
   const TAG = "[ONI][AutoPassiveManager]";
+  const GATE_TAG = "[ONI][PassiveGate]";
   const DEBUG = true; // set false when stable
   const ADF_MACRO_NAME = "ActionDataFetch";
-  const LEDGER_TTL_MS = 15000;
+
+  // Passive gate tuning
+  const LEDGER_TTL_MS = 30000;
+  const ROOT_TTL_MS = 12000;
+  const GRACE_LOCK_MS = 1200;
 
   const log = (...a) => { if (DEBUG) console.log(TAG, ...a); };
   const warn = (...a) => { if (DEBUG) console.warn(TAG, ...a); };
   const err = (...a) => { if (DEBUG) console.error(TAG, ...a); };
+  const gate = (...a) => { if (DEBUG) console.log(GATE_TAG, ...a); };
+  const gateWarn = (...a) => { if (DEBUG) console.warn(GATE_TAG, ...a); };
 
   if (window[KEY]) {
     log("Already installed.");
     return;
   }
 
-  const _recentExecutions = new Map();
+  const _recentExecutions = new Map();      // executionKey -> ts
+  const _rootChainLedger = new Map();       // rootKey -> { createdAt, touchedAt, fired:Set<string> }
+  const _reentryGraceLocks = new Map();     // passiveIdentity -> expiresAt
 
   function str(v, d = "") {
     const s = (v ?? "").toString().trim();
@@ -92,15 +96,6 @@
       "self",
       "self"
     );
-  }
-
-  function cleanupLedger() {
-    const now = Date.now();
-    for (const [key, ts] of _recentExecutions.entries()) {
-      if ((now - Number(ts || 0)) > LEDGER_TTL_MS) {
-        _recentExecutions.delete(key);
-      }
-    }
   }
 
   function stableRowSignature(row, rowIndex) {
@@ -151,12 +146,149 @@
     );
   }
 
+  function cleanupLedgers() {
+    const now = Date.now();
+
+    for (const [key, ts] of _recentExecutions.entries()) {
+      if ((now - Number(ts || 0)) > LEDGER_TTL_MS) {
+        _recentExecutions.delete(key);
+      }
+    }
+
+    for (const [rootKey, entry] of _rootChainLedger.entries()) {
+      const touchedAt = Number(entry?.touchedAt || entry?.createdAt || 0);
+      if ((now - touchedAt) > ROOT_TTL_MS) {
+        _rootChainLedger.delete(rootKey);
+        gate("CLEAR EXPIRED ROOT KEY", { rootKey, touchedAt, ageMs: now - touchedAt });
+      }
+    }
+
+    for (const [passiveIdentity, expiresAt] of _reentryGraceLocks.entries()) {
+      if (now >= Number(expiresAt || 0)) {
+        _reentryGraceLocks.delete(passiveIdentity);
+      }
+    }
+  }
+
   function buildExecutionKey({ actor, item, triggerKey, phasePayload, phasePayloadByTrigger, row, rowIndex }) {
     const actorUuid = actor?.uuid ?? "(no-actor)";
     const itemUuid  = item?.uuid ?? "(no-item)";
     const eventStamp = pickEventStamp(triggerKey, phasePayload, phasePayloadByTrigger);
     const rowSig = stableRowSignature(row, rowIndex);
     return [eventStamp, triggerKey, actorUuid, itemUuid, rowSig].join("::");
+  }
+
+  function buildPassiveIdentity({ actor, item, row, rowIndex }) {
+    const actorUuid = actor?.uuid ?? "(no-actor)";
+    const itemUuid = item?.uuid ?? "(no-item)";
+    const rowSig = stableRowSignature(row, rowIndex);
+    return [actorUuid, itemUuid, rowSig].join("::");
+  }
+
+  function inferRootKey({ actor, item, row, rowIndex, triggerKey, phasePayload, phasePayloadByTrigger }) {
+    const inherited = str(
+      phasePayload?.meta?.passiveOrigin?.rootKey ??
+      phasePayload?.passiveOrigin?.rootKey ??
+      ""
+    );
+    if (inherited) return inherited;
+
+    const actorUuid = actor?.uuid ?? "(no-actor)";
+    const itemUuid  = item?.uuid ?? "(no-item)";
+    const rowSig = stableRowSignature(row, rowIndex);
+    const eventStamp = pickEventStamp(triggerKey, phasePayload, phasePayloadByTrigger);
+    return ["root", eventStamp, triggerKey || "(no-trigger)", actorUuid, itemUuid, rowSig].join("::");
+  }
+
+  function getAncestryFromPayload(phasePayload = {}) {
+    return toArrayUnique(
+      phasePayload?.meta?.passiveOrigin?.ancestry ??
+      phasePayload?.passiveOrigin?.ancestry ??
+      []
+    );
+  }
+
+  function getDepthFromPayload(phasePayload = {}) {
+    const depth = Number(
+      phasePayload?.meta?.passiveOrigin?.depth ??
+      phasePayload?.passiveOrigin?.depth ??
+      0
+    );
+    return Number.isFinite(depth) ? depth : 0;
+  }
+
+  function touchRootEntry(rootKey) {
+    const now = Date.now();
+    let entry = _rootChainLedger.get(rootKey);
+    if (!entry) {
+      entry = { createdAt: now, touchedAt: now, fired: new Set() };
+      _rootChainLedger.set(rootKey, entry);
+      gate("REGISTER ROOT EVENT", { rootKey, createdAt: now });
+    } else {
+      entry.touchedAt = now;
+    }
+    return entry;
+  }
+
+  function checkPassiveGate({ passiveIdentity, rootKey, ancestry = [], actor, item, triggerKey, rowIndex }) {
+    cleanupLedgers();
+
+    const now = Date.now();
+    const graceUntil = Number(_reentryGraceLocks.get(passiveIdentity) || 0);
+    if (graceUntil && now < graceUntil) {
+      gateWarn("BLOCK REENTRY GRACE LOCK", {
+        passiveIdentity,
+        rootKey,
+        triggerKey,
+        actorName: actor?.name,
+        itemName: item?.name,
+        rowIndex,
+        msRemaining: graceUntil - now
+      });
+      return { ok: false, reason: "grace_lock" };
+    }
+
+    if (Array.isArray(ancestry) && ancestry.includes(passiveIdentity)) {
+      gateWarn("BLOCK REENTRY ANCESTRY", {
+        passiveIdentity,
+        rootKey,
+        triggerKey,
+        actorName: actor?.name,
+        itemName: item?.name,
+        rowIndex,
+        ancestry
+      });
+      return { ok: false, reason: "ancestry_loop" };
+    }
+
+    const rootEntry = touchRootEntry(rootKey);
+    if (rootEntry.fired.has(passiveIdentity)) {
+      gateWarn("BLOCK REENTRY SAME EVENT", {
+        passiveIdentity,
+        rootKey,
+        triggerKey,
+        actorName: actor?.name,
+        itemName: item?.name,
+        rowIndex
+      });
+      return { ok: false, reason: "same_root_event" };
+    }
+
+    rootEntry.fired.add(passiveIdentity);
+    rootEntry.touchedAt = now;
+    _reentryGraceLocks.set(passiveIdentity, now + GRACE_LOCK_MS);
+
+    gate("ALLOW FIRST PASSIVE FIRE", {
+      passiveIdentity,
+      rootKey,
+      triggerKey,
+      actorName: actor?.name,
+      itemName: item?.name,
+      rowIndex,
+      graceLockMs: GRACE_LOCK_MS
+    });
+
+    return { ok: true, reason: "allowed", rootEntry };
   }
 
   function resolveOwnerUserIdForActor(actor) {
@@ -263,7 +395,7 @@
   }
 
   async function executePassiveEntry(entry, options = {}) {
-    cleanupLedger();
+    cleanupLedgers();
 
     const actor = entry?.actor ?? null;
     const token = entry?.token ?? null;
@@ -306,6 +438,38 @@
       };
     }
 
+    const passiveIdentity = buildPassiveIdentity({ actor, item, row, rowIndex });
+    const rootKey = inferRootKey({ actor, item, row, rowIndex, triggerKey, phasePayload, phasePayloadByTrigger });
+    const inheritedAncestry = getAncestryFromPayload(phasePayload);
+    const inheritedDepth = getDepthFromPayload(phasePayload);
+
+    const gateResult = checkPassiveGate({
+      passiveIdentity,
+      rootKey,
+      ancestry: inheritedAncestry,
+      actor,
+      item,
+      triggerKey,
+      rowIndex
+    });
+
+    if (!gateResult?.ok) {
+      return {
+        ok: true,
+        skipped: true,
+        reason: `passive_gate_${gateResult?.reason || "blocked"}`,
+        executionKey,
+        rootKey,
+        passiveIdentity,
+        actor,
+        token,
+        item,
+        row,
+        rowIndex,
+        triggerKey
+      };
+    }
+
     _recentExecutions.set(executionKey, Date.now());
 
     try {
@@ -320,6 +484,8 @@
           ok: false,
           reason: "target_resolver_missing",
           executionKey,
+          rootKey,
+          passiveIdentity,
           actor,
           token,
           item,
@@ -361,6 +527,8 @@
           ok: false,
           reason: "target_resolution_failed",
           executionKey,
+          rootKey,
+          passiveIdentity,
           actor,
           token,
           item,
@@ -378,6 +546,7 @@
       const attackerActorUuid = actor?.uuid ?? null;
       const attackerUuidForADF = attackerTokenUuid ?? attackerActorUuid ?? null;
       const runId = `AP-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const ancestry = toArrayUnique([...inheritedAncestry, passiveIdentity]);
 
       const payload = {
         source: "AutoPassive",
@@ -412,13 +581,23 @@
           reaction_phase_payload: preferredPayload,
           reaction_phase_payload_by_trigger: clone(phasePayloadByTrigger),
           triggerKey,
-          systemSource: "AutoPassiveManager"
+          systemSource: "AutoPassiveManager",
+          passiveOrigin: {
+            rootKey,
+            passiveIdentity,
+            rowSignature: stableRowSignature(row, rowIndex),
+            ancestry,
+            depth: inheritedDepth + 1,
+            rootTimestamp: pickEventStamp(triggerKey, phasePayload, phasePayloadByTrigger)
+          }
         }
       };
 
       log("EXECUTE passive -> ActionDataFetch", {
         runId,
         executionKey,
+        rootKey,
+        passiveIdentity,
         actorName: actor?.name,
         tokenName: token?.name,
         itemName: item?.name,
@@ -427,7 +606,9 @@
         rowIndex,
         passiveTargetMode,
         targets: payload.targets,
-        attacker_uuid: payload.attacker_uuid
+        attacker_uuid: payload.attacker_uuid,
+        ancestry,
+        depth: payload.meta?.passiveOrigin?.depth
       });
 
       const ADF = getADFMacro();
@@ -442,6 +623,8 @@
           ok: false,
           reason: "adf_macro_missing",
           executionKey,
+          rootKey,
+          passiveIdentity,
           actor,
           token,
           item,
@@ -458,6 +641,8 @@
       return {
         ok: true,
         executionKey,
+        rootKey,
+        passiveIdentity,
         actor,
         token,
         item,
@@ -482,6 +667,8 @@
         reason: "exception",
         error: e,
         executionKey,
+        rootKey,
+        passiveIdentity,
         actor,
         token,
         item,
@@ -600,9 +787,13 @@
     processContext,
     processMatches,
     _debug: {
-      cleanupLedger,
+      cleanupLedgers,
       recentExecutions: _recentExecutions,
+      rootChainLedger: _rootChainLedger,
+      reentryGraceLocks: _reentryGraceLocks,
       buildExecutionKey,
+      buildPassiveIdentity,
+      inferRootKey,
       boolish,
       normalizePassiveTargetMode
     }
