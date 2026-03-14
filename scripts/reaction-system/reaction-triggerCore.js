@@ -82,6 +82,9 @@ Hooks.once("ready", () => {
       "creature_miss_action",
       "creature_deals_damage",
       "creature_takes_damage",
+      "creature_recovers_hp",
+      "creature_lose_mp",
+      "creature_recovers_mp",
       "creature_enter_crisis",
       "creature_exit_crisis",
       "creature_defeated"
@@ -303,7 +306,10 @@ Hooks.once("ready", () => {
 
         case "creature_targeted_by_action":
         case "creature_hit_by_action":
-        case "creature_takes_damage": {
+        case "creature_takes_damage":
+        case "creature_recovers_hp":
+        case "creature_lose_mp":
+        case "creature_recovers_mp": {
           // From your console log we know we have:
           //   - payload.targetUuid      (single token UUID)
           //   - payload.targets[]       (array of token UUIDs)
