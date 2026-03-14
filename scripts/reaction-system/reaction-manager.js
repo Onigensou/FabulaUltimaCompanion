@@ -323,6 +323,37 @@ Hooks.once("ready", () => {
       }
     }
 
+    function pickPassiveEventStamp(payload = {}) {
+      return String(
+        payload?.meta?.passiveOrigin?.rootTimestamp ??
+        payload?.passiveOrigin?.rootTimestamp ??
+        payload?.timestamp ??
+        payload?.eventTimestamp ??
+        payload?.meta?.timestamp ??
+        payload?.meta?.eventTimestamp ??
+        payload?.meta?.runId ??
+        `${Date.now()}`
+      );
+    }
+
+    function buildPassiveSourceEvent({ rawTrigger, triggerKey, phaseBucket, payload }) {
+      return {
+        rawTrigger: rawTrigger ?? null,
+        triggerKey: triggerKey ?? null,
+        phaseBucket: phaseBucket ?? null,
+        timestamp: Date.now(),
+        eventStamp: pickPassiveEventStamp(payload),
+        payloadTimestamp: payload?.timestamp ?? payload?.eventTimestamp ?? payload?.meta?.timestamp ?? null,
+        attackerUuid: payload?.attacker_uuid ?? payload?.attackerUuid ?? payload?.meta?.attackerUuid ?? null,
+        targetUuid: payload?.target_uuid ?? payload?.targetUuid ?? payload?.meta?.targetUuid ?? null,
+        targetUuids: Array.isArray(payload?.targets) ? [...payload.targets] : [],
+        actionName: payload?.skill_name ?? payload?.skillName ?? payload?.itemName ?? payload?.meta?.passiveItemName ?? null,
+        passiveOrigin: foundry.utils.deepClone(
+          payload?.meta?.passiveOrigin ?? payload?.passiveOrigin ?? {}
+        )
+      };
+    }
+
     function makeWindowKey(phaseBucket, tokenId) {
       return `${phaseBucket}::${tokenId ?? "(no-token)"}`;
     }
@@ -640,13 +671,23 @@ Hooks.once("ready", () => {
 
       if (autoPassiveApi?.processMatches) {
         try {
+          const passiveSourceEvent = buildPassiveSourceEvent({
+            rawTrigger,
+            triggerKey,
+            phaseBucket,
+            payload
+          });
+
           const passiveProcessing = await autoPassiveApi.processMatches({
             matches: filteredMatches,
             triggerKey,
+            phaseBucket,
+            rawTrigger,
             phasePayload: payload,
             phasePayloadByTrigger: {
               [triggerKey]: foundry.utils.deepClone(payload ?? {})
-            }
+            },
+            sourceEvent: passiveSourceEvent
           });
 
           manualMatches = Array.isArray(passiveProcessing?.manualMatches)
@@ -667,9 +708,11 @@ Hooks.once("ready", () => {
                   actorName: r?.actor?.name ?? null,
                   itemName: r?.item?.name ?? null,
                   triggerKey: r?.triggerKey ?? null,
-                  reason: r?.reason ?? null
+                  reason: r?.reason ?? null,
+                  rootKey: r?.rootKey ?? null
                 }))
-              : []
+              : [],
+            passiveSourceEvent
           });
         } catch (err) {
           console.error("[ReactionManager] (GM) AutoPassiveManager.processMatches failed; falling back to old manual reaction flow.", {
@@ -1044,7 +1087,7 @@ Hooks.once("ready", () => {
         }));
       },
 
-      async processPassiveDebug(matches, triggerKey, phasePayload) {
+      async processPassiveDebug(matches, triggerKey, phasePayload, options = {}) {
         const autoPassiveApi = window["oni.AutoPassiveManager"] ?? globalThis.FUCompanion?.api?.autoPassiveManager ?? null;
         if (!autoPassiveApi?.processMatches) {
           console.warn("[ReactionManager] Debug processPassiveDebug: AutoPassiveManager not available.");
@@ -1054,13 +1097,26 @@ Hooks.once("ready", () => {
           };
         }
 
+        const phaseBucket = options?.phaseBucket ?? phaseBucketForTrigger(triggerKey);
+        const rawTrigger = options?.rawTrigger ?? triggerKey;
+        const normalizedPayload = phasePayload ?? {};
+        const sourceEvent = options?.sourceEvent ?? buildPassiveSourceEvent({
+          rawTrigger,
+          triggerKey,
+          phaseBucket,
+          payload: normalizedPayload
+        });
+
         return autoPassiveApi.processMatches({
           matches: Array.isArray(matches) ? matches : [],
           triggerKey,
-          phasePayload: phasePayload ?? {},
+          phaseBucket,
+          rawTrigger,
+          phasePayload: normalizedPayload,
           phasePayloadByTrigger: {
-            [triggerKey]: foundry.utils.deepClone(phasePayload ?? {})
-          }
+            [triggerKey]: foundry.utils.deepClone(normalizedPayload)
+          },
+          sourceEvent
         });
       }
     };
