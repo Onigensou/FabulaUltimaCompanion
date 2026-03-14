@@ -35,8 +35,16 @@
   const log = (...a) => DEBUG && console.log(TAG, ...a);
   const warn = (...a) => DEBUG && console.warn(TAG, ...a);
   const err = (...a) => DEBUG && console.error(TAG, ...a);
+  const gateLog = (...a) => DEBUG && console.log(PASSIVE_GATE_TAG, ...a);
+  const gateWarn = (...a) => DEBUG && console.warn(PASSIVE_GATE_TAG, ...a);
 
   const MODULE_NS = "fabula-ultima-companion";
+
+  const PASSIVE_GATE_TAG = "[ONI][PassiveGate]";
+  const PASSIVE_ROOT_TTL_MS = 12000;
+  const PASSIVE_GRACE_LOCK_MS = 1200;
+  const _passiveCoreRootLedger = new Map();   // rootKey -> { createdAt, touchedAt, fired:Set<string> }
+  const _passiveCoreGraceLocks = new Map();   // passiveIdentity -> expiresAt
 
   const safeString = (v, d = "") => {
     const s = (v ?? "").toString().trim();
@@ -97,6 +105,141 @@
       if (rx.test(k)) return n;
     }
     return 0;
+  }
+
+  function passiveCleanup() {
+    const now = Date.now();
+
+    for (const [rootKey, entry] of _passiveCoreRootLedger.entries()) {
+      const touchedAt = Number(entry?.touchedAt || entry?.createdAt || 0);
+      if ((now - touchedAt) > PASSIVE_ROOT_TTL_MS) {
+        _passiveCoreRootLedger.delete(rootKey);
+        gateLog("CORE CLEAR EXPIRED ROOT KEY", { rootKey, touchedAt, ageMs: now - touchedAt });
+      }
+    }
+
+    for (const [passiveIdentity, expiresAt] of _passiveCoreGraceLocks.entries()) {
+      if (now >= Number(expiresAt || 0)) {
+        _passiveCoreGraceLocks.delete(passiveIdentity);
+      }
+    }
+  }
+
+  function passiveToUniqueArray(values) {
+    return [...new Set((Array.isArray(values) ? values : []).filter(Boolean).map(v => String(v)))];
+  }
+
+  function getPassiveOrigin(actionContext) {
+    return actionContext?.meta?.passiveOrigin ?? actionContext?.passiveOrigin ?? null;
+  }
+
+  function getPassiveGateContext({ actionContext, executionMode }) {
+    const origin = getPassiveOrigin(actionContext);
+    const meta = actionContext?.meta ?? {};
+    const core = actionContext?.core ?? {};
+
+    const isPassiveExecution =
+      executionMode === "autoPassive" ||
+      meta?.executionMode === "autoPassive" ||
+      meta?.isPassiveExecution === true;
+
+    if (!isPassiveExecution) return { enabled: false, reason: "not_auto_passive", origin: null };
+
+    const rootKey = safeString(origin?.rootKey);
+    const passiveIdentity = safeString(
+      origin?.passiveIdentity ??
+      meta?.passiveIdentity ??
+      [
+        safeString(meta?.attackerActorUuid ?? meta?.attackerUuid ?? "(no-attacker)", "(no-attacker)"),
+        safeString(meta?.passiveItemUuid ?? meta?.itemUuid ?? core?.skillUuid ?? core?.itemUuid ?? "(no-item)", "(no-item)"),
+        safeString(origin?.rowSignature ?? meta?.passiveRowIndex ?? "(no-row)", "(no-row)")
+      ].join("::")
+    );
+    const ancestry = passiveToUniqueArray(origin?.ancestry ?? []);
+
+    return {
+      enabled: !!rootKey && !!passiveIdentity,
+      rootKey,
+      passiveIdentity,
+      ancestry,
+      origin,
+      reason: (!!rootKey && !!passiveIdentity) ? "ok" : "missing_origin_bits"
+    };
+  }
+
+  function touchPassiveCoreRoot(rootKey) {
+    const now = Date.now();
+    let entry = _passiveCoreRootLedger.get(rootKey);
+    if (!entry) {
+      entry = { createdAt: now, touchedAt: now, fired: new Set() };
+      _passiveCoreRootLedger.set(rootKey, entry);
+      gateLog("CORE REGISTER ROOT EVENT", { rootKey, createdAt: now });
+    } else {
+      entry.touchedAt = now;
+    }
+    return entry;
+  }
+
+  function checkPassiveCoreGate({ actionContext, executionMode, runId }) {
+    passiveCleanup();
+
+    const ctx = getPassiveGateContext({ actionContext, executionMode });
+    if (!ctx.enabled) {
+      if (ctx.reason === "missing_origin_bits") {
+        gateWarn("CORE PASSIVE GATE BYPASS (missing origin bits)", {
+          runId,
+          executionMode,
+          reason: ctx.reason,
+          origin: ctx.origin ?? null
+        });
+      }
+      return { ok: true, bypassed: true, reason: ctx.reason, ctx };
+    }
+
+    const now = Date.now();
+    const graceUntil = Number(_passiveCoreGraceLocks.get(ctx.passiveIdentity) || 0);
+    if (graceUntil && now < graceUntil) {
+      gateWarn("CORE BLOCK REENTRY GRACE LOCK", {
+        runId,
+        rootKey: ctx.rootKey,
+        passiveIdentity: ctx.passiveIdentity,
+        msRemaining: graceUntil - now
+      });
+      return { ok: false, reason: "grace_lock", ctx };
+    }
+
+    if (ctx.ancestry.includes(ctx.passiveIdentity)) {
+      gateWarn("CORE BLOCK REENTRY ANCESTRY", {
+        runId,
+        rootKey: ctx.rootKey,
+        passiveIdentity: ctx.passiveIdentity,
+        ancestry: ctx.ancestry
+      });
+      return { ok: false, reason: "ancestry_loop", ctx };
+    }
+
+    const rootEntry = touchPassiveCoreRoot(ctx.rootKey);
+    if (rootEntry.fired.has(ctx.passiveIdentity)) {
+      gateWarn("CORE BLOCK REENTRY SAME EVENT", {
+        runId,
+        rootKey: ctx.rootKey,
+        passiveIdentity: ctx.passiveIdentity
+      });
+      return { ok: false, reason: "same_root_event", ctx };
+    }
+
+    rootEntry.fired.add(ctx.passiveIdentity);
+    rootEntry.touchedAt = now;
+    _passiveCoreGraceLocks.set(ctx.passiveIdentity, now + PASSIVE_GRACE_LOCK_MS);
+
+    gateLog("CORE ALLOW FIRST PASSIVE FIRE", {
+      runId,
+      rootKey: ctx.rootKey,
+      passiveIdentity: ctx.passiveIdentity,
+      graceLockMs: PASSIVE_GRACE_LOCK_MS
+    });
+
+    return { ok: true, ctx };
   }
 
   async function resolveActorFromUuid(attackerUuid) {
@@ -463,6 +606,31 @@
       isSpellish: !!mergedArgs.isSpellish,
       elementType: mergedArgs.elementType
     });
+
+    const passiveGateResult = checkPassiveCoreGate({
+      actionContext: payload,
+      executionMode,
+      runId
+    });
+
+    if (!passiveGateResult?.ok) {
+      warn(runId, "BLOCKED by passive core gate", {
+        executionMode,
+        reason: passiveGateResult?.reason ?? "blocked",
+        rootKey: passiveGateResult?.ctx?.rootKey ?? null,
+        passiveIdentity: passiveGateResult?.ctx?.passiveIdentity ?? null
+      });
+      return {
+        ok: true,
+        skipped: true,
+        reason: `passive_core_gate_${passiveGateResult?.reason ?? "blocked"}`,
+        executionMode,
+        chatMsgId: chatMsgId ?? null,
+        confirmingUserId: confirmingUserId ?? null,
+        rootKey: passiveGateResult?.ctx?.rootKey ?? null,
+        passiveIdentity: passiveGateResult?.ctx?.passiveIdentity ?? null
+      };
+    }
 
     try {
       await executeCustomLogicResolution(payload, mergedArgs, runId);
