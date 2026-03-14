@@ -27,6 +27,7 @@
   "scripts/main.js",
   "scripts/speech-bubble.js",
   "scripts/turn-ui-manager.js",
+  "scripts/action-system/action-execution-core.js",
   "scripts/applyDamage-button.js",
   "scripts/invokeButtons.js",
   "scripts/fu-card-hydrate.js",
