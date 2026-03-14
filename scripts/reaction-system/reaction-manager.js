@@ -521,7 +521,7 @@ Hooks.once("ready", () => {
     // 3) Main event listener – reacts to oni:reactionPhase
     // -------------------------------------------------------------------------
 
-    Hooks.on("oni:reactionPhase", (payload) => {
+    Hooks.on("oni:reactionPhase", async (payload) => {
       // Grab our trigger helper API
       const triggerApi = window["oni.ReactionTriggerCore"];
       if (!triggerApi) {
@@ -632,10 +632,81 @@ Hooks.once("ready", () => {
       });
 
       // -----------------------------------------------------------------------
-      // 3) Merge each match into that token's active same-bucket reaction window,
-      //    then refresh the owners' UI using the MERGED context.
+      // 2.5) Split passive rows away from manual Reaction rows BEFORE any UI.
+      //      Passive rows auto-execute and should never spawn Reaction buttons.
       // -----------------------------------------------------------------------
-      for (const ctx of filteredMatches) {
+      let manualMatches = filteredMatches;
+      const autoPassiveApi = window["oni.AutoPassiveManager"] ?? globalThis.FUCompanion?.api?.autoPassiveManager ?? null;
+
+      if (autoPassiveApi?.processMatches) {
+        try {
+          const passiveProcessing = await autoPassiveApi.processMatches({
+            matches: filteredMatches,
+            triggerKey,
+            phasePayload: payload,
+            phasePayloadByTrigger: {
+              [triggerKey]: foundry.utils.deepClone(payload ?? {})
+            }
+          });
+
+          manualMatches = Array.isArray(passiveProcessing?.manualMatches)
+            ? passiveProcessing.manualMatches
+            : [];
+
+          console.log("[ReactionManager] (GM) Passive split complete.", {
+            triggerKey,
+            originalMatches: filteredMatches.length,
+            manualMatches: manualMatches.length,
+            passiveExecutions: Array.isArray(passiveProcessing?.passiveResults)
+              ? passiveProcessing.passiveResults.length
+              : 0,
+            passiveSummary: Array.isArray(passiveProcessing?.passiveResults)
+              ? passiveProcessing.passiveResults.map(r => ({
+                  ok: !!r?.ok,
+                  skipped: !!r?.skipped,
+                  actorName: r?.actor?.name ?? null,
+                  itemName: r?.item?.name ?? null,
+                  triggerKey: r?.triggerKey ?? null,
+                  reason: r?.reason ?? null
+                }))
+              : []
+          });
+        } catch (err) {
+          console.error("[ReactionManager] (GM) AutoPassiveManager.processMatches failed; falling back to old manual reaction flow.", {
+            triggerKey,
+            err
+          });
+          manualMatches = filteredMatches;
+        }
+      } else {
+        console.warn("[ReactionManager] (GM) AutoPassiveManager API not found; passive rows will behave like normal reactions until the script is loaded.", {
+          triggerKey
+        });
+      }
+
+      if (!Array.isArray(manualMatches) || manualMatches.length === 0) {
+        console.log("[ReactionManager] (GM) No manual Reaction rows remain after passive auto-processing.", {
+          triggerKey
+        });
+        return;
+      }
+
+      console.log("[ReactionManager] (GM) Manual reaction candidates remaining after passive split.", {
+        triggerKey,
+        matchCount: manualMatches.length,
+        matchSummary: manualMatches.map(m => ({
+          actorName: m.actor?.name,
+          tokenName: m.token?.name,
+          ownerUserIds: m.ownerUserIds,
+          numReactionItems: m.reactions?.length ?? 0
+        }))
+      });
+
+      // -----------------------------------------------------------------------
+      // 3) Merge each MANUAL match into that token's active same-bucket reaction
+      //    window, then refresh the owners' UI using the MERGED context.
+      // -----------------------------------------------------------------------
+      for (const ctx of manualMatches) {
         const token = ctx.token;
         const tokenId = token?.id ?? ctx.combatant?.tokenId ?? null;
         const actorUuid = ctx.actor?.uuid ?? null;
@@ -971,6 +1042,26 @@ Hooks.once("ready", () => {
           ownerUserIds: [...(ws.ownerUserIds ?? [])],
           numReactionItems: ws.reactionGroupsByItemUuid?.size ?? 0
         }));
+      },
+
+      async processPassiveDebug(matches, triggerKey, phasePayload) {
+        const autoPassiveApi = window["oni.AutoPassiveManager"] ?? globalThis.FUCompanion?.api?.autoPassiveManager ?? null;
+        if (!autoPassiveApi?.processMatches) {
+          console.warn("[ReactionManager] Debug processPassiveDebug: AutoPassiveManager not available.");
+          return {
+            ok: false,
+            reason: "auto_passive_manager_missing"
+          };
+        }
+
+        return autoPassiveApi.processMatches({
+          matches: Array.isArray(matches) ? matches : [],
+          triggerKey,
+          phasePayload: phasePayload ?? {},
+          phasePayloadByTrigger: {
+            [triggerKey]: foundry.utils.deepClone(phasePayload ?? {})
+          }
+        });
       }
     };
   })();
