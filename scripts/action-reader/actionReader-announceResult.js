@@ -117,10 +117,28 @@ function buildPlainText(context, options = {}) {
 }
 
 function buildHtmlText(context, options = {}) {
-  const performerName = foundry.utils.escapeHTML(getPerformerName(context));
-  const actionName = foundry.utils.escapeHTML(getActionName(context));
-  const actionIcon = foundry.utils.escapeHTML(getActionIcon(context));
-  const targetNames = getTargetNames(context).map(name => foundry.utils.escapeHTML(name));
+  function esc(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function buildHtmlText(context, options = {}) {
+  const performerName = esc(getPerformerName(context));
+  const actionName = esc(getActionName(context));
+  const actionIcon = esc(getActionIcon(context));
+  const targetNames = getTargetNames(context).map(name => esc(name));
+  const targetText = formatNameList(targetNames);
+
+  if (!targetText) {
+    return `<strong>${performerName}</strong> use ${actionIcon}<strong>${actionName}</strong>!`;
+  }
+
+  return `<strong>${performerName}</strong> use ${actionIcon}<strong>${actionName}</strong> on <strong>${targetText}</strong>!`;
+}
   const targetText = formatNameList(targetNames);
 
   if (!targetText) {
