@@ -5,26 +5,12 @@
  *
  * Suggested file path:
  *   scripts/action-reader/actionReader-announceResult.js
- *
- * Purpose:
- *   1. Build the final user-facing result text.
- *   2. Show a UI notification to the user who triggered the flow.
- *   3. Optionally create a chat message.
- *
- * Default notification format:
- *   <Actor Name> use <Icon><Action Name> on <Target Name>!
- *
- * Usage:
- *   import {
- *     announceActionReaderResult,
- *     registerActionReaderAnnounceResult
- *   } from "./actionReader-announceResult.js";
  * ========================================================================== */
 
 import { ActionReaderCore as AR } from "./actionReader-core.js";
 import { ActionReaderDebug as ARD } from "./actionReader-debug.js";
 
-export const ACTION_READER_ANNOUNCE_RESULT_VERSION = "1.0.0";
+export const ACTION_READER_ANNOUNCE_RESULT_VERSION = "1.0.1";
 export const ACTION_READER_ANNOUNCE_RESULT_STAGE = "AnnounceResult";
 
 function getModuleApiContainer(moduleId) {
@@ -35,10 +21,6 @@ function getModuleApiContainer(moduleId) {
   module.api.ActionReader ??= {};
   return module.api.ActionReader;
 }
-
-/* -------------------------------------------------------------------------- */
-/* Internal helpers                                                           */
-/* -------------------------------------------------------------------------- */
 
 function getPerformerName(context) {
   return (
@@ -101,23 +83,7 @@ function getTargetNames(context) {
   return getChosenTargets(context).map(getTargetDisplayName);
 }
 
-function buildPlainText(context, options = {}) {
-  const performerName = getPerformerName(context);
-  const actionName = getActionName(context);
-  const actionIcon = getActionIcon(context);
-  const targetNames = getTargetNames(context);
-  const targetText = formatNameList(targetNames);
-  const noTargetText = AR.toString(options?.noTargetText, "no target");
-
-  if (!targetText) {
-    return `${performerName} use ${actionIcon}${actionName}!`;
-  }
-
-  return `${performerName} use ${actionIcon}${actionName} on ${targetText}!`;
-}
-
-function buildHtmlText(context, options = {}) {
-  function esc(value) {
+function esc(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
@@ -126,19 +92,24 @@ function buildHtmlText(context, options = {}) {
     .replaceAll("'", "&#39;");
 }
 
-function buildHtmlText(context, options = {}) {
+function buildPlainText(context) {
+  const performerName = getPerformerName(context);
+  const actionName = getActionName(context);
+  const actionIcon = getActionIcon(context);
+  const targetText = formatNameList(getTargetNames(context));
+
+  if (!targetText) {
+    return `${performerName} use ${actionIcon}${actionName}!`;
+  }
+
+  return `${performerName} use ${actionIcon}${actionName} on ${targetText}!`;
+}
+
+function buildHtmlText(context) {
   const performerName = esc(getPerformerName(context));
   const actionName = esc(getActionName(context));
   const actionIcon = esc(getActionIcon(context));
   const targetNames = getTargetNames(context).map(name => esc(name));
-  const targetText = formatNameList(targetNames);
-
-  if (!targetText) {
-    return `<strong>${performerName}</strong> use ${actionIcon}<strong>${actionName}</strong>!`;
-  }
-
-  return `<strong>${performerName}</strong> use ${actionIcon}<strong>${actionName}</strong> on <strong>${targetText}</strong>!`;
-}
   const targetText = formatNameList(targetNames);
 
   if (!targetText) {
@@ -183,7 +154,7 @@ async function createResultChatMessage(context, html, options = {}) {
   return ChatMessage.create(chatData);
 }
 
-function summarizeAnnouncement(context, plainText, htmlText, options = {}) {
+function summarizeAnnouncement(context, plainText, options = {}) {
   return {
     performerName: getPerformerName(context),
     actionName: getActionName(context),
@@ -193,10 +164,6 @@ function summarizeAnnouncement(context, plainText, htmlText, options = {}) {
     showChatMessage: Boolean(options?.showChatMessage)
   };
 }
-
-/* -------------------------------------------------------------------------- */
-/* Exported stage function                                                    */
-/* -------------------------------------------------------------------------- */
 
 export async function announceActionReaderResult(context, options = {}) {
   const stage = ACTION_READER_ANNOUNCE_RESULT_STAGE;
@@ -222,12 +189,12 @@ export async function announceActionReaderResult(context, options = {}) {
       return context;
     }
 
-    const plainText = buildPlainText(context, options);
-    const htmlText = buildHtmlText(context, options);
+    const plainText = buildPlainText(context);
+    const htmlText = buildHtmlText(context);
 
     context.finalText = plainText;
     context.finalHtml = htmlText;
-    context.announceMeta = summarizeAnnouncement(context, plainText, htmlText, options);
+    context.announceMeta = summarizeAnnouncement(context, plainText, options);
 
     if (options?.showNotification !== false) {
       ui.notifications.info(plainText);
@@ -238,22 +205,6 @@ export async function announceActionReaderResult(context, options = {}) {
     }
 
     ARD.recordStage(context, stage, context.announceMeta);
-
-    if (ARD.isVerbose(context)) {
-      ARD.table(
-        stage,
-        "Announcement summary",
-        [{
-          performerName: context.announceMeta.performerName,
-          actionName: context.announceMeta.actionName,
-          targetNames: formatNameList(context.announceMeta.targetNames),
-          plainText: context.announceMeta.plainText,
-          showNotification: context.announceMeta.showNotification,
-          showChatMessage: context.announceMeta.showChatMessage
-        }],
-        context
-      );
-    }
 
     ARD.endStage(context, stage, {
       ok: true,
@@ -270,10 +221,6 @@ export async function announceActionReaderResult(context, options = {}) {
     return context;
   }
 }
-
-/* -------------------------------------------------------------------------- */
-/* Optional module API registration                                           */
-/* -------------------------------------------------------------------------- */
 
 export function registerActionReaderAnnounceResult(moduleId) {
   if (!moduleId || typeof moduleId !== "string") {
