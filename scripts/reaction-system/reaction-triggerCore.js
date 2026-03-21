@@ -3,7 +3,7 @@
  * ---------------------------------------------------------------------------
  * This file is safe to load automatically from a module (runs once per client).
  * Generated: 2026-01-09T07:27:00
- * Updated: 2026-03-07
+ * Updated: 2026-03-21
  * ---------------------------------------------------------------------------
  */
 
@@ -51,7 +51,6 @@ Hooks.once("ready", () => {
   //     phasePayload  // original payload from oni:reactionPhase
   //   }
   // ============================================================================
-
   (() => {
     const KEY = "oni.ReactionTriggerCore";
     if (window[KEY]) {
@@ -305,27 +304,50 @@ Hooks.once("ready", () => {
         }
 
         case "creature_targeted_by_action":
-        case "creature_hit_by_action":
+        case "creature_hit_by_action": {
+          // These triggers should point at the affected target creature.
+          addUuidish(phasePayload.targetUuid);
+          addUuidish(phasePayload.subjectTokenUuid);
+          addManyUuidish(phasePayload.targets);
+
+          if (!subjects.length) {
+            const t1 = findTokenByActorUuidInCombat(combat, phasePayload.targetActorUuid);
+            const t2 = findTokenByActorUuidInCombat(combat, phasePayload.subjectActorUuid);
+            if (t1) addToken(t1);
+            if (t2) addToken(t2);
+
+            if (Array.isArray(phasePayload.targetActorUuids)) {
+              for (const aUuid of phasePayload.targetActorUuids) {
+                const t = findTokenByActorUuidInCombat(combat, aUuid);
+                if (t) addToken(t);
+              }
+            }
+          }
+          break;
+        }
+
         case "creature_takes_damage":
         case "creature_recovers_hp":
         case "creature_lose_mp":
         case "creature_recovers_mp": {
-          // From your console log we know we have:
-          //   - payload.targetUuid      (single token UUID)
-          //   - payload.targets[]       (array of token UUIDs)
+          // IMPORTANT:
+          // For these "affected creature" triggers, the subject must be the
+          // creature who actually received the damage / heal / MP change.
+          //
+          // Do NOT read tokenUuid / actorUuid here.
+          // In your Create Damage Card pipeline, those fields are source-side
+          // fields (attacker / performer), while targetUuid / targetActorUuid
+          // are the affected creature.
           addUuidish(phasePayload.targetUuid);
-          addUuidish(phasePayload.tokenUuid);
           addUuidish(phasePayload.subjectTokenUuid);
           addManyUuidish(phasePayload.targets);
 
-          // Fallbacks if you ever use actor-level fields too
           if (!subjects.length) {
             const t1 = findTokenByActorUuidInCombat(combat, phasePayload.targetActorUuid);
-            const t2 = findTokenByActorUuidInCombat(combat, phasePayload.actorUuid);
-            const t3 = findTokenByActorUuidInCombat(combat, phasePayload.subjectActorUuid);
+            const t2 = findTokenByActorUuidInCombat(combat, phasePayload.subjectActorUuid);
             if (t1) addToken(t1);
             if (t2) addToken(t2);
-            if (t3) addToken(t3);
+
             if (Array.isArray(phasePayload.targetActorUuids)) {
               for (const aUuid of phasePayload.targetActorUuids) {
                 const t = findTokenByActorUuidInCombat(combat, aUuid);
