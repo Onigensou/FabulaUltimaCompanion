@@ -64,20 +64,125 @@ export function getJRPGTokenDisposition(token) {
   return token?.document?.disposition ?? token?._token?.document?.disposition ?? null;
 }
 
-export function isJRPGDispositionAllowedForCategory(disposition, category = TARGET_CATEGORIES.CREATURE) {
+export function getJRPGSourceDisposition({
+  sourceToken = null,
+  sourceDisposition = null
+} = {}) {
+  if (Number.isFinite(sourceDisposition)) return sourceDisposition;
+
+  const fromToken = getJRPGTokenDisposition(sourceToken);
+  if (Number.isFinite(fromToken)) return fromToken;
+
+  return null;
+}
+
+export function getJRPGAllowedDispositionsForCategory(
+  category = TARGET_CATEGORIES.CREATURE,
+  {
+    sourceToken = null,
+    sourceDisposition = null
+  } = {}
+) {
+  const resolvedSourceDisposition = getJRPGSourceDisposition({
+    sourceToken,
+    sourceDisposition
+  });
+
+  // Keep creature broad and unchanged.
+  if (category === TARGET_CATEGORIES.CREATURE) {
+    const allowed = ALLOWED_DISPOSITIONS?.[category];
+    return Array.isArray(allowed) ? [...allowed] : [];
+  }
+
+  // If source is unknown, preserve old behavior.
+  if (!Number.isFinite(resolvedSourceDisposition)) {
+    const allowed = ALLOWED_DISPOSITIONS?.[category];
+    return Array.isArray(allowed) ? [...allowed] : [];
+  }
+
+  // Relative ally / enemy logic:
+  // Friendly caster:
+  //   Ally  = Friendly side
+  //   Enemy = Hostile side
+  //
+  // Hostile caster:
+  //   Ally  = Hostile side
+  //   Enemy = Friendly side
+  //
+  // Neutral and Secret are preserved in both buckets
+  // to stay close to your current loose behavior.
+  if (category === TARGET_CATEGORIES.ALLY) {
+    if (resolvedSourceDisposition === DISPOSITIONS.HOSTILE) {
+      return [DISPOSITIONS.HOSTILE, DISPOSITIONS.NEUTRAL, DISPOSITIONS.SECRET];
+    }
+
+    if (resolvedSourceDisposition === DISPOSITIONS.FRIENDLY) {
+      return [DISPOSITIONS.FRIENDLY, DISPOSITIONS.NEUTRAL, DISPOSITIONS.SECRET];
+    }
+  }
+
+  if (category === TARGET_CATEGORIES.ENEMY) {
+    if (resolvedSourceDisposition === DISPOSITIONS.HOSTILE) {
+      return [DISPOSITIONS.FRIENDLY, DISPOSITIONS.NEUTRAL, DISPOSITIONS.SECRET];
+    }
+
+    if (resolvedSourceDisposition === DISPOSITIONS.FRIENDLY) {
+      return [DISPOSITIONS.HOSTILE, DISPOSITIONS.NEUTRAL, DISPOSITIONS.SECRET];
+    }
+  }
+
+  // Safe fallback for Neutral / Secret source casters.
   const allowed = ALLOWED_DISPOSITIONS?.[category];
-  if (!Array.isArray(allowed)) return false;
+  return Array.isArray(allowed) ? [...allowed] : [];
+}
+
+export function isJRPGDispositionAllowedForCategory(
+  disposition,
+  category = TARGET_CATEGORIES.CREATURE,
+  {
+    sourceToken = null,
+    sourceDisposition = null
+  } = {}
+) {
+  const allowed = getJRPGAllowedDispositionsForCategory(category, {
+    sourceToken,
+    sourceDisposition
+  });
+
   return allowed.includes(disposition);
 }
 
-export function isJRPGTokenEligibleForCategory(token, category = TARGET_CATEGORIES.CREATURE) {
+export function isJRPGTokenEligibleForCategory(
+  token,
+  category = TARGET_CATEGORIES.CREATURE,
+  {
+    sourceToken = null,
+    sourceDisposition = null
+  } = {}
+) {
   const disposition = getJRPGTokenDisposition(token);
   if (!Number.isFinite(disposition)) return false;
-  return isJRPGDispositionAllowedForCategory(disposition, category);
+
+  return isJRPGDispositionAllowedForCategory(disposition, category, {
+    sourceToken,
+    sourceDisposition
+  });
 }
 
-export function filterJRPGTokensByCategory(tokens, category = TARGET_CATEGORIES.CREATURE) {
-  return toArray(tokens).filter((token) => isJRPGTokenEligibleForCategory(token, category));
+export function filterJRPGTokensByCategory(
+  tokens,
+  category = TARGET_CATEGORIES.CREATURE,
+  {
+    sourceToken = null,
+    sourceDisposition = null
+  } = {}
+) {
+  return toArray(tokens).filter((token) =>
+    isJRPGTokenEligibleForCategory(token, category, {
+      sourceToken,
+      sourceDisposition
+    })
+  );
 }
 
 /* -------------------------------------------- */
@@ -129,10 +234,16 @@ export function doesJRPGModeAllowManualSelection(parsedTargeting) {
 
 export function getJRPGEligibleSceneTokens({
   sceneTokens = [],
-  parsedTargeting = null
+  parsedTargeting = null,
+  sourceToken = null,
+  sourceDisposition = null
 } = {}) {
   const category = parsedTargeting?.category ?? TARGET_CATEGORIES.CREATURE;
-  return filterJRPGTokensByCategory(sceneTokens, category);
+
+  return filterJRPGTokensByCategory(sceneTokens, category, {
+    sourceToken,
+    sourceDisposition
+  });
 }
 
 /* -------------------------------------------- */
@@ -142,7 +253,9 @@ export function getJRPGEligibleSceneTokens({
 export function validateJRPGTargetAttempt({
   parsedTargeting = null,
   currentTargets = [],
-  candidateToken = null
+  candidateToken = null,
+  sourceToken = null,
+  sourceDisposition = null
 } = {}) {
   const runId = dbg.makeRunId("VALIDATE-TARGET");
   const parsed = parsedTargeting ?? {};
@@ -151,6 +264,10 @@ export function validateJRPGTargetAttempt({
   const currentCount = current.length;
   const maxTargets = getJRPGMaxTargetCount(parsed);
   const isAlreadyTargeted = hasJRPGTarget(current, candidateToken);
+  const resolvedSourceDisposition = getJRPGSourceDisposition({
+    sourceToken,
+    sourceDisposition
+  });
 
   dbg.logRun(runId, "START", {
     mode: parsed?.mode,
@@ -158,6 +275,9 @@ export function validateJRPGTargetAttempt({
     currentCount,
     maxTargets,
     candidate: getTokenName(candidateToken),
+    candidateDisposition: getJRPGTokenDisposition(candidateToken),
+    source: getTokenName(sourceToken),
+    sourceDisposition: resolvedSourceDisposition,
     isAlreadyTargeted
   });
 
@@ -181,7 +301,10 @@ export function validateJRPGTargetAttempt({
     return result;
   }
 
-  if (!isJRPGTokenEligibleForCategory(candidateToken, category)) {
+  if (!isJRPGTokenEligibleForCategory(candidateToken, category, {
+    sourceToken,
+    sourceDisposition: resolvedSourceDisposition
+  })) {
     const result = {
       ok: false,
       code: "INVALID_TARGET_TYPE",
@@ -380,15 +503,23 @@ export function validateJRPGTargetConfirmation({
 
 export function getJRPGAutoSelectedTargets({
   parsedTargeting = null,
-  sceneTokens = []
+  sceneTokens = [],
+  sourceToken = null,
+  sourceDisposition = null
 } = {}) {
   const runId = dbg.makeRunId("AUTOSELECT");
   const parsed = parsedTargeting ?? {};
+  const resolvedSourceDisposition = getJRPGSourceDisposition({
+    sourceToken,
+    sourceDisposition
+  });
 
   dbg.logRun(runId, "START", {
     mode: parsed?.mode,
     category: parsed?.category,
-    sceneTokenCount: normalizeJRPGTargetCollection(sceneTokens).length
+    sceneTokenCount: normalizeJRPGTargetCollection(sceneTokens).length,
+    source: getTokenName(sourceToken),
+    sourceDisposition: resolvedSourceDisposition
   });
 
   if (!doesJRPGModeAutoSelectAll(parsed)) {
@@ -403,7 +534,9 @@ export function getJRPGAutoSelectedTargets({
 
   const result = getJRPGEligibleSceneTokens({
     sceneTokens,
-    parsedTargeting: parsed
+    parsedTargeting: parsed,
+    sourceToken,
+    sourceDisposition: resolvedSourceDisposition
   });
 
   dbg.logRun(runId, "RESULT", {
@@ -436,6 +569,8 @@ export function buildJRPGTargetRulesSummary(parsedTargeting = null) {
 
 export default {
   getJRPGTokenDisposition,
+  getJRPGSourceDisposition,
+  getJRPGAllowedDispositionsForCategory,
   isJRPGDispositionAllowedForCategory,
   isJRPGTokenEligibleForCategory,
   filterJRPGTokensByCategory,
