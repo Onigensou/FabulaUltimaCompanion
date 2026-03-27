@@ -29,6 +29,7 @@ import {
   doesJRPGModeAllowManualSelection,
   getJRPGAutoSelectedTargets,
   getJRPGEligibleSceneTokens,
+  getJRPGTokenDisposition,
   normalizeJRPGTargetCollection,
   validateJRPGTargetAttempt,
   validateJRPGTargetConfirmation
@@ -224,16 +225,16 @@ function getTokenAtCanvasPoint(x, y) {
   }) ?? null;
 }
 
-async function resolveSelfTargetToken({
+async function resolveSourceToken({
   sourceActorUuid = null,
   runId = ""
 } = {}) {
-  dbg.logRun(runId, "RESOLVE SELF TARGET START", {
+  dbg.logRun(runId, "RESOLVE SOURCE TOKEN START", {
     sourceActorUuid
   });
 
   if (!sourceActorUuid) {
-    dbg.warnRun(runId, "RESOLVE SELF TARGET FAILED - Missing sourceActorUuid");
+    dbg.warnRun(runId, "RESOLVE SOURCE TOKEN FAILED - Missing sourceActorUuid");
     return null;
   }
 
@@ -242,7 +243,7 @@ async function resolveSelfTargetToken({
   try {
     sourceDoc = await fromUuid(sourceActorUuid);
   } catch (err) {
-    dbg.errorRun(runId, "RESOLVE SELF TARGET fromUuid FAILED", {
+    dbg.errorRun(runId, "RESOLVE SOURCE TOKEN fromUuid FAILED", {
       sourceActorUuid,
       err
     });
@@ -250,7 +251,7 @@ async function resolveSelfTargetToken({
   }
 
   if (!sourceDoc) {
-    dbg.warnRun(runId, "RESOLVE SELF TARGET FAILED - Source document not found", {
+    dbg.warnRun(runId, "RESOLVE SOURCE TOKEN FAILED - Source document not found", {
       sourceActorUuid
     });
     return null;
@@ -259,7 +260,7 @@ async function resolveSelfTargetToken({
   // If the UUID already resolves to a TokenDocument.
   if (sourceDoc?.documentName === "Token") {
     const token = sourceDoc?.object ?? sourceDoc;
-    dbg.logRun(runId, "RESOLVE SELF TARGET -> TokenDocument", {
+    dbg.logRun(runId, "RESOLVE SOURCE TOKEN -> TokenDocument", {
       token: getTokenInfo(token)
     });
     return token;
@@ -268,7 +269,7 @@ async function resolveSelfTargetToken({
   // If the UUID resolves to a synthetic actor owned by a token.
   if (sourceDoc?.parent?.documentName === "Token") {
     const token = sourceDoc.parent?.object ?? sourceDoc.parent;
-    dbg.logRun(runId, "RESOLVE SELF TARGET -> Synthetic Actor Parent Token", {
+    dbg.logRun(runId, "RESOLVE SOURCE TOKEN -> Synthetic Actor Parent Token", {
       token: getTokenInfo(token)
     });
     return token;
@@ -278,7 +279,7 @@ async function resolveSelfTargetToken({
   if (sourceDoc?.token) {
     const token = sourceDoc.token?.object ?? sourceDoc.token;
     if (token) {
-      dbg.logRun(runId, "RESOLVE SELF TARGET -> Actor.token", {
+      dbg.logRun(runId, "RESOLVE SOURCE TOKEN -> Actor.token", {
         token: getTokenInfo(token)
       });
       return token;
@@ -290,12 +291,13 @@ async function resolveSelfTargetToken({
   const sourceActorId = sourceDoc?.id ?? null;
   const resolvedActorUuid = sourceDoc?.uuid ?? null;
 
-  const matched = sceneTokens.find((token) => getTokenActor(token)?.uuid === sourceActorUuid)
+  const matched =
+    sceneTokens.find((token) => getTokenActor(token)?.uuid === sourceActorUuid)
     ?? sceneTokens.find((token) => getTokenActor(token)?.uuid === resolvedActorUuid)
     ?? sceneTokens.find((token) => getTokenActor(token)?.id === sourceActorId)
     ?? null;
 
-  dbg.logRun(runId, "RESOLVE SELF TARGET FALLBACK RESULT", {
+  dbg.logRun(runId, "RESOLVE SOURCE TOKEN FALLBACK RESULT", {
     matched: getTokenInfo(matched)
   });
 
@@ -349,7 +351,9 @@ function buildActiveSessionSnapshot(instance) {
     mode: instance.parsedTargeting?.mode ?? null,
     category: instance.parsedTargeting?.category ?? null,
     rawSkillTarget: instance.rawSkillTarget,
-    sourceActorUuid: instance.sourceActorUuid ?? null
+    sourceActorUuid: instance.sourceActorUuid ?? null,
+    sourceTokenUuid: getTokenUuid(instance.sourceToken),
+    sourceDisposition: instance.sourceDisposition ?? null
   };
 }
 
@@ -378,6 +382,9 @@ export class JRPGTargetingSession {
 
     this.uiInstance = null;
     this.selfTargetToken = null;
+
+    this.sourceToken = null;
+    this.sourceDisposition = null;
 
     this.hooks = {
       targetToken: null
@@ -433,7 +440,9 @@ export class JRPGTargetingSession {
 
     return getJRPGEligibleSceneTokens({
       sceneTokens: getSceneTokens(),
-      parsedTargeting: this.parsedTargeting
+      parsedTargeting: this.parsedTargeting,
+      sourceToken: this.sourceToken,
+      sourceDisposition: this.sourceDisposition
     });
   }
 
@@ -448,6 +457,31 @@ export class JRPGTargetingSession {
 
   createSessionSnapshot() {
     return buildActiveSessionSnapshot(this);
+  }
+
+  async resolveSourceContext() {
+    if (this.sourceToken) {
+      this.sourceDisposition = getJRPGTokenDisposition(this.sourceToken);
+      dbg.logRun(this.runId, "SOURCE CONTEXT REUSED", {
+        sourceToken: getTokenInfo(this.sourceToken),
+        sourceDisposition: this.sourceDisposition
+      });
+      return;
+    }
+
+    const resolved = await resolveSourceToken({
+      sourceActorUuid: this.sourceActorUuid,
+      runId: this.runId
+    });
+
+    this.sourceToken = resolved ?? null;
+    this.sourceDisposition = getJRPGTokenDisposition(this.sourceToken);
+
+    dbg.logRun(this.runId, "SOURCE CONTEXT RESOLVED", {
+      sourceActorUuid: this.sourceActorUuid,
+      sourceToken: getTokenInfo(this.sourceToken),
+      sourceDisposition: this.sourceDisposition
+    });
   }
 
   /* ---------------------------------------- */
@@ -482,6 +516,8 @@ export class JRPGTargetingSession {
     this.state.active = true;
 
     globalThis[GLOBALS.ACTIVE_SESSION_KEY] = this;
+
+    await this.resolveSourceContext();
 
     setJRPGActiveTargetingSession(this.createSessionSnapshot());
     setJRPGTargetingSessionForUser(this.userId, this.createSessionSnapshot());
@@ -525,7 +561,9 @@ export class JRPGTargetingSession {
     notifyInfo("Targeting mode is now active.");
 
     dbg.logRun(this.runId, "TARGETING MODE ACTIVE", {
-      rulesSummary: this.rulesSummary
+      rulesSummary: this.rulesSummary,
+      sourceToken: getTokenInfo(this.sourceToken),
+      sourceDisposition: this.sourceDisposition
     });
 
     return this.resultPromise;
@@ -677,7 +715,9 @@ export class JRPGTargetingSession {
     const validation = validateJRPGTargetAttempt({
       parsedTargeting: this.parsedTargeting,
       currentTargets: this.getSelectedTargets(),
-      candidateToken: token
+      candidateToken: token,
+      sourceToken: this.sourceToken,
+      sourceDisposition: this.sourceDisposition
     });
 
     if (!validation.ok) {
@@ -749,10 +789,11 @@ export class JRPGTargetingSession {
 
   async applyAutoSelectIfNeeded() {
     if (this.parsedTargeting?.mode === MODES.SELF) {
-      this.selfTargetToken = await resolveSelfTargetToken({
-        sourceActorUuid: this.sourceActorUuid,
-        runId: this.runId
-      });
+      if (!this.sourceToken) {
+        await this.resolveSourceContext();
+      }
+
+      this.selfTargetToken = this.sourceToken ?? null;
 
       if (!this.selfTargetToken) {
         dbg.warnRun(this.runId, "SELF AUTO-SELECT FAILED", {
@@ -788,12 +829,17 @@ export class JRPGTargetingSession {
 
     const autoTargets = getJRPGAutoSelectedTargets({
       parsedTargeting: this.parsedTargeting,
-      sceneTokens: getSceneTokens()
+      sceneTokens: getSceneTokens(),
+      sourceToken: this.sourceToken,
+      sourceDisposition: this.sourceDisposition
     });
 
     if (!autoTargets.length) {
       dbg.logRun(this.runId, "AUTO-SELECT NONE", {
-        mode: this.parsedTargeting?.mode
+        mode: this.parsedTargeting?.mode,
+        category: this.parsedTargeting?.category,
+        sourceToken: getTokenInfo(this.sourceToken),
+        sourceDisposition: this.sourceDisposition
       });
 
       if (!doesJRPGModeAllowManualSelection(this.parsedTargeting)) {
@@ -805,7 +851,9 @@ export class JRPGTargetingSession {
 
     dbg.logRun(this.runId, "AUTO-SELECT START", {
       count: autoTargets.length,
-      targets: autoTargets.map(getTokenInfo)
+      targets: autoTargets.map(getTokenInfo),
+      sourceToken: getTokenInfo(this.sourceToken),
+      sourceDisposition: this.sourceDisposition
     });
 
     for (const token of autoTargets) {
@@ -961,6 +1009,8 @@ export class JRPGTargetingSession {
       }
 
       this.selfTargetToken = null;
+      this.sourceToken = null;
+      this.sourceDisposition = null;
       this.state.destroyed = true;
 
       const result = preserveResult ?? buildResolvedResult({
