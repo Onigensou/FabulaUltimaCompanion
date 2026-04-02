@@ -1,5 +1,5 @@
 /**
- * [ONI] Journal System — MODULE CORE (v1.0)
+ * [ONI] Journal System — MODULE CORE (v1.1)
  * Foundry VTT v12
  *
  * What it does:
@@ -16,7 +16,8 @@
  *   journalName: "Optional cached display name",
  *   journalType: "JournalEntry or JournalEntryPage",
  *   openMode: "ALL" | "CALLER",
- *   grantObserver: false
+ *   grantObserver: false,
+ *   proximityPx: 120
  * }
  */
 
@@ -42,7 +43,7 @@
   const SCOPE = "oni-journal-system";
 
   const CHANNELS = ["module.fabula-ultima-companion", "fabula-ultima-companion"];
-  const MSG_OPEN_REQ  = "ONI_JOURNAL_OPEN_REQ_V1";
+  const MSG_OPEN_REQ = "ONI_JOURNAL_OPEN_REQ_V1";
   const MSG_OPEN_DONE = "ONI_JOURNAL_OPEN_DONE_V1";
 
   const POS_OVERRIDE_TTL_MS = 800;
@@ -50,14 +51,12 @@
   const BOOK_SFX = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/Soundboard/Book2.ogg";
 
   const REQUIRE_PROXIMITY = true;
-  const MAX_DISTANCE_PX = 250;
+  const DEFAULT_DISTANCE_PX = 120;
   const GM_BYPASS_DISTANCE = false;
 
-  const getRangePx = () => MAX_DISTANCE_PX;
-
-  const log  = (...a) => DEBUG && console.log(TAG, ...a);
+  const log = (...a) => DEBUG && console.log(TAG, ...a);
   const warn = (...a) => console.warn(TAG, ...a);
-  const err  = (...a) => console.error(TAG, ...a);
+  const err = (...a) => console.error(TAG, ...a);
 
   // ─────────────────────────────────────────────────────────────
   // Helpers
@@ -96,6 +95,12 @@
       if (["false", "0", "no", "n", "off"].includes(s)) return false;
     }
     return fallback;
+  };
+
+  const normalizeDistancePx = (raw, fallback = DEFAULT_DISTANCE_PX) => {
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.max(40, Math.round(n));
   };
 
   const playBookSfx = () => {
@@ -137,6 +142,7 @@
     const source = cache?.source ?? null;
 
     if (!db) ui.notifications?.warn?.("No current game DB Actor found.");
+
     log("DB resolve:", {
       dbName: db?.name,
       dbUuid: db?.uuid,
@@ -195,7 +201,7 @@
   };
 
   // ─────────────────────────────────────────────────────────────
-  // Journal flags read (robust scan)
+  // Journal flags read
   // ─────────────────────────────────────────────────────────────
   const findJournalConfigObject = (tileDoc) => {
     const flags = tileDoc?.flags ?? {};
@@ -230,6 +236,7 @@
       journalType: String(data?.journalType ?? "").trim(),
       openMode: String(data?.openMode ?? "ALL").trim().toUpperCase() || "ALL",
       grantObserver: normalizeBoolean(data?.grantObserver, false),
+      proximityPx: normalizeDistancePx(data?.proximityPx, DEFAULT_DISTANCE_PX),
       _scope: found?.scope ?? null,
       _raw: data
     };
@@ -258,18 +265,21 @@
       return false;
     }
 
+    const journalData = readJournalData(tileDoc);
+    const maxDistancePx = normalizeDistancePx(journalData?.proximityPx, DEFAULT_DISTANCE_PX);
+
     const tileCenter = getTileCenter(tileDoc);
     const tokenCenter = partyTok.center ?? getTokenCenterPx(partyTok, null);
     const d = dist(tileCenter, tokenCenter);
 
     log("Distance check:", {
-      max: MAX_DISTANCE_PX,
+      max: maxDistancePx,
       dist: Math.round(d),
       token: { id: partyTok.id, name: partyTok.name },
       tile: { id: tileDoc.id, name: tileDoc.name }
     });
 
-    if (d > MAX_DISTANCE_PX) {
+    if (d > maxDistancePx) {
       if (notify) ui.notifications?.warn?.(`${TAG} You are too far away to read this note.`);
       return false;
     }
@@ -403,7 +413,7 @@
   width: 100vw;
   height: 100vh;
   pointer-events: none;
-  z-index: 10000;
+  z-index: 60;
 }
 
 .oni-journal-btn {
@@ -572,7 +582,7 @@
 
     const inRange = await checkProximityForTile(tileDoc, { notify: true });
     if (!inRange) {
-      warn("GM open: blocked by distance check.", { tileId });
+      warn("GM open: blocked by distance check.", { tileId, proximityPx: data.proximityPx });
       return;
     }
 
@@ -631,12 +641,13 @@
       tileId,
       requesterId,
       journalUuid: data.journalUuid,
-      openMode: data.openMode
+      openMode: data.openMode,
+      proximityPx: data.proximityPx
     });
   };
 
   // ─────────────────────────────────────────────────────────────
-  // Core object (module API)
+  // Core object
   // ─────────────────────────────────────────────────────────────
   const core = {
     installed: true,
@@ -704,7 +715,6 @@
 
         const tiles = canvas.tiles?.placeables ?? [];
         const desired = new Set();
-        const RANGE_PX = getRangePx();
 
         for (const t of tiles) {
           const jd = readJournalData(t);
@@ -715,13 +725,14 @@
 
           const tc = getTileCenter(t);
           const d = dist(partyCenter, tc);
+          const rangePx = normalizeDistancePx(jd.proximityPx, DEFAULT_DISTANCE_PX);
 
-          if (d <= RANGE_PX) desired.add(t.id);
+          if (d <= rangePx) desired.add(t.id);
         }
 
         log("Scan result:", {
           reason,
-          RANGE_PX,
+          defaultRangePx: DEFAULT_DISTANCE_PX,
           desired: Array.from(desired),
           override: ov ?? null
         });
@@ -833,12 +844,12 @@
 
       const onCreateToken = () => this._queueScan("createToken");
       const onDeleteToken = () => this._queueScan("deleteToken");
-      const onCreateTile  = () => this._queueScan("createTile");
-      const onDeleteTile  = () => this._queueScan("deleteTile");
-      const onUpdateTile  = () => this._queueScan("updateTile");
-      const onCanvasPan   = () => this.ui?.repositionAll();
+      const onCreateTile = () => this._queueScan("createTile");
+      const onDeleteTile = () => this._queueScan("deleteTile");
+      const onUpdateTile = () => this._queueScan("updateTile");
+      const onCanvasPan = () => this.ui?.repositionAll();
       const onCanvasReady = () => this._queueScan("canvasReady");
-      const onResize      = () => this.ui?.repositionAll();
+      const onResize = () => this.ui?.repositionAll();
 
       Hooks.on("updateToken", onUpdateToken);
       Hooks.on("createToken", onCreateToken);
@@ -865,7 +876,7 @@
       await this.scan("start");
 
       log("Journal System started.", {
-        RANGE_PX: getRangePx(),
+        defaultRangePx: DEFAULT_DISTANCE_PX,
         POS_OVERRIDE_TTL_MS,
         REQUIRE_PROXIMITY,
         GM_BYPASS_DISTANCE
