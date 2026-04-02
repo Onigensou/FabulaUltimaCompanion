@@ -5,13 +5,21 @@
  * What it does:
  * - Adds a "Journal Config" tab to Tile Config
  * - Stores config as Tile flags:
- *   flags.oni-journal-system.{isJournalTile,journalUuid,journalName,journalType,openMode,grantObserver}
+ *   flags.oni-journal-system.{
+ *     isJournalTile,
+ *     journalUuid,
+ *     journalName,
+ *     journalType,
+ *     openMode,
+ *     grantObserver,
+ *     proximityPx
+ *   }
  *
  * Notes:
  * - "Is Journal Object" acts as the main enable/disable gate.
  * - Drag & Drop accepts JournalEntry and JournalEntryPage.
  * - This script only handles the Tile Config UI.
- * - The actual opening behavior will be handled later by journalSystem-core.js
+ * - The actual opening behavior will be handled by journalSystem-core.js
  */
 
 function installJournalConfigUI() {
@@ -145,6 +153,12 @@ function installJournalConfigUI() {
     }
 
     return fallback;
+  }
+
+  function normalizeDistancePx(raw, fallback = 120) {
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.max(40, Math.round(n));
   }
 
   function readJournalFlags(tileDoc) {
@@ -292,6 +306,21 @@ function installJournalConfigUI() {
               <p class="notes">If ON, players may also be granted OBSERVER permission like your old macro option.</p>
             </div>
 
+            <div class="form-group">
+              <label>Proximity Range (px)</label>
+              <div class="form-fields">
+                <input
+                  type="number"
+                  name="flags.${SCOPE}.proximityPx"
+                  class="oni-proximity-px"
+                  value="120"
+                  min="40"
+                  step="10"
+                />
+              </div>
+              <p class="notes">How close the party token must be before the journal inspect icon appears.</p>
+            </div>
+
             <div class="oni-journal-actions">
               <button type="button" class="oni-debug-read">
                 <i class="fas fa-terminal"></i> Debug: Log Current Flags
@@ -325,6 +354,7 @@ function installJournalConfigUI() {
 
       const openModeEl = tabPanel.querySelector(".oni-open-mode");
       const grantObserverEl = tabPanel.querySelector(".oni-grant-observer");
+      const proximityPxEl = tabPanel.querySelector(".oni-proximity-px");
 
       const pickedWrap = tabPanel.querySelector(".oni-picked");
       const pickedImg = tabPanel.querySelector(".oni-picked-img");
@@ -342,6 +372,7 @@ function installJournalConfigUI() {
 
       openModeEl.value = String(safeGet(data, "openMode", "ALL") || "ALL").toUpperCase();
       grantObserverEl.checked = normalizeBoolean(safeGet(data, "grantObserver", false), false);
+      proximityPxEl.value = normalizeDistancePx(safeGet(data, "proximityPx", 120), 120);
 
       function refreshPickedUI() {
         const uuid = String(journalUuidEl.value || "").trim();
@@ -368,7 +399,8 @@ function installJournalConfigUI() {
         journalName: journalNameEl.value,
         journalType: journalTypeEl.value,
         openMode: openModeEl.value,
-        grantObserver: grantObserverEl.checked
+        grantObserver: grantObserverEl.checked,
+        proximityPx: proximityPxEl.value
       });
 
       // --------------------------------------------------------
@@ -386,7 +418,8 @@ function installJournalConfigUI() {
           journalName: journalNameEl.value,
           journalType: journalTypeEl.value,
           openMode: openModeEl.value,
-          grantObserver: grantObserverEl.checked
+          grantObserver: grantObserverEl.checked,
+          proximityPx: proximityPxEl.value
         };
         log("DEBUG READ (current form values):", dump);
         ui.notifications?.info?.("Journal Config logged to console.");
