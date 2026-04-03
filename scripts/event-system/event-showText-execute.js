@@ -146,7 +146,10 @@
     });
   }
 
-  function buildDialogPayload(row, speakerResult, context, anchor) {
+   function buildDialogPayload(row, speakerResult, context, anchor) {
+    const token = speakerResult?.token || anchor?.token || null;
+    const actor = speakerResult?.actor || anchor?.actor || null;
+
     return {
       rowId: row.id,
       eventType: C.EVENT_TYPES?.SHOW_TEXT || "showText",
@@ -164,13 +167,15 @@
       mode: row.bubbleMode,
       speed: row.speed,
 
-      token: speakerResult?.token || anchor?.token || null,
-      actor: speakerResult?.actor || anchor?.actor || null,
+      token,
+      actor,
       tokenUuid: speakerResult?.tokenUuid || null,
       actorUuid: speakerResult?.actorUuid || null,
 
       tokenId: anchor?.tokenId || null,
       actorId: anchor?.actorId || null,
+
+      portraitSrc: getPreferredPortraitSrc(token, actor),
 
       meta: {
         matchedBy: speakerResult?.matchedBy || null,
@@ -204,6 +209,14 @@
     return safe || C.SPECIAL_SPEAKER_SELF || "Speaker";
   }
 
+    function getPreferredPortraitSrc(token, actor) {
+    return stringOrEmpty(
+      token?.document?.texture?.src ||
+      token?.texture?.src ||
+      actor?.img
+    ) || null;
+  }
+
   // ------------------------------------------------------------
   // Adapter 1:
   // Your real FU Dialog System
@@ -232,14 +245,14 @@
       speed: payload.speed
     });
 
-    const resultPayload = await dialogApi.show({
+       const resultPayload = await dialogApi.show({
       tokenId,
       actorId,
       text: payload.text,
       name: payload.speakerName,
       mode: payload.mode || "normal",
       speed: payload.speed || 28,
-      portraitSrc: null,
+      portraitSrc: payload.portraitSrc || null,
       broadcast: true,
       sceneId: context.sceneId || canvas?.scene?.id || null
     });
