@@ -347,7 +347,7 @@
   width: 100vw;
   height: 100vh;
   pointer-events: none;
-  z-index: 100001;
+  z-index: 90;
 }
 
 .${C.INTERACT_BUTTON_CLASS || "oni-event-btn"} {
