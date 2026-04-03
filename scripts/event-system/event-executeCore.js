@@ -15,10 +15,11 @@
  * - Executes event rows in strict sequence, waiting for each row to finish
  *
  * Polished updates in this version:
- * - Icon styling now mirrors your old examine UI
- * - Button placement uses doc-based token position like your shop UI
+ * - Icon styling mirrors your old examine UI
+ * - Button placement uses doc-based token position
  * - Uses desired/show/hide state logic to reduce UI flicker
  * - Repositions immediately on move update + schedules follow-up scans
+ * - Temporarily despawns the "!" icon while the event sequence is running
  *
  * Requires:
  * - event-constants.js
@@ -55,9 +56,12 @@
   }
 
   const DEBUG_SCOPE = "ExecuteCore";
-  const SCOPE = C.FLAG_SCOPE;
-  const CHANNELS = Array.isArray(C.SOCKET_CHANNELS) ? C.SOCKET_CHANNELS : ["module.fabula-ultima-companion"];
+  const CHANNELS = Array.isArray(C.SOCKET_CHANNELS)
+    ? C.SOCKET_CHANNELS
+    : ["module.fabula-ultima-companion"];
+
   const MSG_EXECUTE_REQ = C.MSG_EVENT_EXECUTE_REQ || "ONI_EVENT_EXECUTE_REQ_V1";
+  const MSG_EXECUTE_START = "ONI_EVENT_EXECUTE_START_V1";
   const MSG_EXECUTE_DONE = C.MSG_EVENT_EXECUTE_DONE || "ONI_EVENT_EXECUTE_DONE_V1";
   const MSG_EXECUTE_ERROR = C.MSG_EVENT_EXECUTE_ERROR || "ONI_EVENT_EXECUTE_ERROR_V1";
 
@@ -75,8 +79,15 @@
 
   const DBG = D || FALLBACK_DEBUG;
 
-  // GM-side protection against duplicate execution
+  // ------------------------------------------------------------
+  // Runtime execution state
+  // ------------------------------------------------------------
+  // GM authoritative running tiles
   const gmActiveExecutions = new Set();
+
+  // Client-side suppression set
+  // If a tile is currently running, hide/suppress the "!" icon until it finishes.
+  const clientRunningTiles = new Set();
 
   // ------------------------------------------------------------
   // Helpers
@@ -209,6 +220,24 @@
     };
   }
 
+  function markTileRunning(tileId) {
+    const safeTileId = String(tileId || "");
+    if (!safeTileId) return;
+    clientRunningTiles.add(safeTileId);
+  }
+
+  function unmarkTileRunning(tileId) {
+    const safeTileId = String(tileId || "");
+    if (!safeTileId) return;
+    clientRunningTiles.delete(safeTileId);
+  }
+
+  function isTileRunningAnywhere(tileId) {
+    const safeTileId = String(tileId || "");
+    if (!safeTileId) return false;
+    return gmActiveExecutions.has(safeTileId) || clientRunningTiles.has(safeTileId);
+  }
+
   async function resolveCurrentDbContext() {
     try {
       const api = window.FUCompanion?.api;
@@ -285,10 +314,6 @@
       partyToken,
       partyActor: partyToken?.actor ?? null
     };
-  }
-
-  function isTileExecuting(tileId) {
-    return gmActiveExecutions.has(String(tileId || ""));
   }
 
   function emitSocketMessage(type, payload) {
@@ -498,7 +523,6 @@
 
     _show() {
       if (!this.button) return;
-
       if (this.state === "shown" || this.state === "showing") return;
 
       if (this.state === "hiding") {
@@ -539,20 +563,20 @@
       }, 160);
     }
 
-placeForToken(token, overrideXY = null) {
-  if (!this.button || !token) return;
+    placeForToken(token, overrideXY = null) {
+      if (!this.button || !token) return;
 
-  const center = getAuthoritativeTokenCenterPx(token, overrideXY);
-  const screen = worldToScreen(center.x, center.y);
+      const center = getAuthoritativeTokenCenterPx(token, overrideXY);
+      const screen = worldToScreen(center.x, center.y);
 
-  // Raised a bit higher than before
-  const verticalOffset = Math.max(54, Math.round((token.h / 2) + 43));
-  const finalX = screen.x;
-  const finalY = screen.y - verticalOffset;
+      // Slightly raised spawn point
+      const verticalOffset = Math.max(54, Math.round((token.h / 2) + 53));
+      const finalX = screen.x;
+      const finalY = screen.y - verticalOffset;
 
-  this.button.style.left = `${finalX}px`;
-  this.button.style.top = `${finalY}px`;
-}
+      this.button.style.left = `${finalX}px`;
+      this.button.style.top = `${finalY}px`;
+    }
   }
 
   // ------------------------------------------------------------
@@ -621,6 +645,13 @@ placeForToken(token, overrideXY = null) {
       }
 
       gmActiveExecutions.add(safeTileId);
+      markTileRunning(safeTileId);
+
+      emitSocketMessage(MSG_EXECUTE_START, {
+        sceneId: safeSceneId,
+        tileId: safeTileId,
+        requesterId
+      });
 
       const context = buildRuntimeContext({
         tileDoc,
@@ -719,6 +750,7 @@ placeForToken(token, overrideXY = null) {
       };
     } finally {
       gmActiveExecutions.delete(safeTileId);
+      unmarkTileRunning(safeTileId);
       if (grouped) DBG.groupEnd?.();
     }
   }
@@ -833,7 +865,7 @@ placeForToken(token, overrideXY = null) {
           if (!data.isEventTile) continue;
           if (data.isHidden) continue;
           if (!Array.isArray(data.eventRows) || !data.eventRows.length) continue;
-          if (isTileExecuting(tile.id)) continue;
+          if (isTileRunningAnywhere(tile.id)) continue;
 
           const rect = getTileRect(tile);
           const d = pointToRectDistance(partyCenter, rect);
@@ -874,9 +906,10 @@ placeForToken(token, overrideXY = null) {
     },
 
     async requestExecute(tileId) {
+      const safeTileId = String(tileId || "");
+
       try {
         const sceneId = canvas?.scene?.id;
-        const safeTileId = String(tileId || "");
         if (!sceneId || !safeTileId) return;
 
         DBG.log(DEBUG_SCOPE, "requestExecute called.", {
@@ -885,6 +918,13 @@ placeForToken(token, overrideXY = null) {
           userId: game?.user?.id ?? null,
           isGM: !!game?.user?.isGM
         });
+
+        // Immediate local suppression for snappier UX.
+        markTileRunning(safeTileId);
+        if (this._activeCandidate?.tileId === safeTileId) {
+          this._activeCandidate = null;
+          this.ui?.hide();
+        }
 
         if (game?.user?.isGM) {
           await gmExecuteEventTile({
@@ -896,12 +936,18 @@ placeForToken(token, overrideXY = null) {
           return;
         }
 
-        emitSocketMessage(MSG_EXECUTE_REQ, {
+        const emitted = emitSocketMessage(MSG_EXECUTE_REQ, {
           sceneId,
           tileId: safeTileId,
           requesterId: game?.user?.id ?? null
         });
+
+        if (!emitted) {
+          unmarkTileRunning(safeTileId);
+          this._queueScan("requestExecuteEmitFailed");
+        }
       } catch (e) {
+        unmarkTileRunning(safeTileId);
         DBG.error(DEBUG_SCOPE, "requestExecute failed:", e);
       }
     },
@@ -930,14 +976,43 @@ placeForToken(token, overrideXY = null) {
             return;
           }
 
+          if (msg.type === MSG_EXECUTE_START) {
+            DBG.verboseLog(DEBUG_SCOPE, "Socket RX execute start.", msg);
+
+            const runningTileId = String(msg?.payload?.tileId || "");
+            if (runningTileId) {
+              markTileRunning(runningTileId);
+
+              if (this._activeCandidate?.tileId === runningTileId) {
+                this._activeCandidate = null;
+                this.ui?.hide();
+              }
+            }
+
+            this._queueScan("after-execute-start");
+            return;
+          }
+
           if (msg.type === MSG_EXECUTE_DONE) {
             DBG.verboseLog(DEBUG_SCOPE, "Socket RX execute done.", msg);
+
+            const finishedTileId = String(msg?.payload?.tileId || "");
+            if (finishedTileId) {
+              unmarkTileRunning(finishedTileId);
+            }
+
             this._queueScan("after-execute-done");
             return;
           }
 
           if (msg.type === MSG_EXECUTE_ERROR) {
             DBG.warn(DEBUG_SCOPE, "Socket RX execute error.", msg);
+
+            const erroredTileId = String(msg?.payload?.tileId || "");
+            if (erroredTileId) {
+              unmarkTileRunning(erroredTileId);
+            }
+
             this._queueScan("after-execute-error");
             return;
           }
@@ -1050,6 +1125,7 @@ placeForToken(token, overrideXY = null) {
       this._scanQueued = false;
       this._activeCandidate = null;
       this._clearFollowupScans();
+      clientRunningTiles.clear();
 
       this.ui?.stop();
       this.ui = null;
