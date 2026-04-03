@@ -125,28 +125,40 @@
   }
 
   function makeResult({
-    ok = true,
-    mode = "text",
-    input = "",
-    matchedBy = "plainTextFallback",
-    speakerName = "",
-    token = null,
-    actor = null,
-    document = null
-  } = {}) {
-    return {
-      ok,
-      mode,
-      input,
-      matchedBy,
-      speakerName: stringOrEmpty(speakerName) || C.SPECIAL_SPEAKER_SELF,
-      token,
-      actor,
-      tokenUuid: getTokenDocumentUuid(token),
-      actorUuid: actor?.uuid ?? null,
-      document: document ?? token?.document ?? actor ?? null
-    };
-  }
+  ok = true,
+  mode = "text",
+  input = "",
+  matchedBy = "plainTextFallback",
+  speakerName = "",
+  token = null,
+  actor = null,
+  document = null
+} = {}) {
+  const preferredTokenName = getTokenName(token);
+  const fallbackActorName = stringOrEmpty(actor?.name);
+
+  return {
+    ok,
+    mode,
+    input,
+    matchedBy,
+
+    // Always prefer current-scene token name first.
+    // If no token name exists, then fall back to provided speakerName,
+    // then actor name, then Self.
+    speakerName:
+      preferredTokenName ||
+      stringOrEmpty(speakerName) ||
+      fallbackActorName ||
+      C.SPECIAL_SPEAKER_SELF,
+
+    token,
+    actor,
+    tokenUuid: getTokenDocumentUuid(token),
+    actorUuid: actor?.uuid ?? null,
+    document: document ?? token?.document ?? actor ?? null
+  };
+}
 
   function findCurrentSceneTokenForActor(actor, context = {}) {
     if (!actor) return null;
