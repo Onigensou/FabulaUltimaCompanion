@@ -87,9 +87,18 @@
     return value == null ? "" : String(value).trim();
   }
 
-  function hasText(value) {
-    return cleanString(value).length > 0;
-  }
+function hasText(value) {
+  return cleanString(value).length > 0;
+}
+
+function escapeHtml(value) {
+  return cleanString(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
 
   function safeGet(obj, path, fallback = undefined) {
     try {
@@ -418,13 +427,13 @@
         ? `${userName} — ${metaParts.join(" • ")}`
         : userName;
 
-      return `<option value="${foundry.utils.escapeHTML(userId)}">${foundry.utils.escapeHTML(label)}</option>`;
+      return `<option value="${escapeHtml(userId)}">${escapeHtml(label)}</option>`;
     }).join("");
 
     return `
       <div class="oni-mc-pass-dialog">
         <div class="oni-mc-pass-dialog__note">
-          Current Controller: <strong>${foundry.utils.escapeHTML(currentControllerName)}</strong><br>
+          Current Controller: <strong>${escapeHtml(currentControllerName)}</strong><br>
           Choose which eligible player should become the new Main Controller.
         </div>
 
