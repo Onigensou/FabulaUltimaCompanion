@@ -2,7 +2,7 @@
   "id": "fabula-ultima-companion",
   "title": "FabulaUltimaCompanion",
   "description": "Adds custom hooks and cool functionality.",
-  "version": "1.0.383",
+  "version": "1.0.384",
   "compatibility": {
     "minimum": "12",
     "verified": "12"
@@ -92,6 +92,7 @@
   "scripts/event-system/event-showText-execute.js",
   "scripts/event-system/event-eventRegistry.js",
   "scripts/event-system/event-configUI.js",
+  "scripts/event-system/event-runtimeUI.js",
   "scripts/event-system/event-executeCore.js",
   "scripts/event-system/event-bootstrap.js",
   "scripts/exp-awarder/expAwarder-ui-listener.js",
@@ -122,5 +123,5 @@
   "styles": ["styles/style.css"],
   "packs": [],
   "manifest": "https://raw.githubusercontent.com/Onigensou/FabulaUltimaCompanion/refs/heads/main/module.json",
-  "download": "https://codeload.github.com/Onigensou/FabulaUltimaCompanion/zip/refs/tags/v1.0.383"
+  "download": "https://codeload.github.com/Onigensou/FabulaUltimaCompanion/zip/refs/tags/v1.0.384"
 }
