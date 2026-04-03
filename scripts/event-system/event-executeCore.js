@@ -546,7 +546,7 @@ placeForToken(token, overrideXY = null) {
   const screen = worldToScreen(center.x, center.y);
 
   // Raised a bit higher than before
-  const verticalOffset = Math.max(54, Math.round((token.h / 2) + 28));
+  const verticalOffset = Math.max(54, Math.round((token.h / 2) + 43));
   const finalX = screen.x;
   const finalY = screen.y - verticalOffset;
 
