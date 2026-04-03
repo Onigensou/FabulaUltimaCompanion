@@ -264,6 +264,45 @@
       #${MENU_ID} .oni-mc-pass-option:active {
         filter: brightness(0.98);
       }
+
+      /* Connected open/close animation for the main controller row */
+      #oni-movement-control-badge-root .mc-controller-row {
+        transition:
+          transform 180ms ease,
+          filter 180ms ease;
+        transform-origin: left center;
+      }
+
+      #oni-movement-control-badge-root.mc-pass-menu-open .mc-controller-row {
+        transform: translateY(var(--mc-row-shift, 0px));
+        filter: drop-shadow(0 4px 10px rgba(0,0,0,0.18));
+      }
+
+      #oni-movement-control-badge-root .mc-controller-badge {
+        transition:
+          transform 180ms ease,
+          box-shadow 180ms ease,
+          filter 180ms ease;
+        transform-origin: left center;
+      }
+
+      #oni-movement-control-badge-root.mc-pass-menu-open .mc-controller-badge {
+        transform: scale(1.02);
+        box-shadow:
+          0 8px 18px rgba(0,0,0,0.30),
+          inset 0 1px 0 rgba(255,255,255,0.10),
+          0 0 0 1px rgba(255,255,255,0.06);
+        filter: brightness(1.03);
+      }
+
+      #oni-movement-control-badge-root .mc-controller-slot {
+        transition: transform 180ms ease;
+        transform-origin: left center;
+      }
+
+      #oni-movement-control-badge-root.mc-pass-menu-open .mc-controller-slot {
+        transform: translateX(2px);
+      }
     `;
     document.head.appendChild(style);
   }
@@ -411,6 +450,19 @@
     menu.innerHTML = "";
   }
 
+  function setMainBadgeOpenVisual(isOpen) {
+    const badgeAPI = getBadgeAPI();
+    const root = badgeAPI?.getRootElement?.() ?? null;
+
+    if (!root) return;
+
+    const direction = state.currentDirection === "up" ? "up" : "down";
+
+    // Small opposite nudge so the row feels like it is "making space"
+    root.style.setProperty("--mc-row-shift", direction === "up" ? "2px" : "-2px");
+    root.classList.toggle("mc-pass-menu-open", !!isOpen);
+  }
+
   function closeMenu(reason = "manual") {
     const menu = ensureMenu();
     const button = ensureButton();
@@ -418,6 +470,7 @@
     state.isOpen = false;
     menu.classList.remove("is-open");
     button.classList.remove("is-open");
+    setMainBadgeOpenVisual(false);
 
     DBG.verbose("PassDialog", "Fan-out menu closed", { reason });
   }
@@ -513,6 +566,7 @@
     updateMenuDirection(measuredHeight);
 
     state.isOpen = true;
+    setMainBadgeOpenVisual(true);
 
     DBG.verbose("PassDialog", "Fan-out menu opened", {
       direction: state.currentDirection,
@@ -649,7 +703,7 @@
     }
   }
 
-   async function refresh({ reason = "manual" } = {}) {
+  async function refresh({ reason = "manual" } = {}) {
     if (state.destroyed) return;
 
     const mounted = mountUi();
@@ -692,7 +746,6 @@
           eligibleCount: uiState.eligibleControllers?.length ?? 0
         });
       }
-
       return;
     }
 
@@ -729,6 +782,7 @@
     state.refreshTimer = null;
 
     closeMenu("destroy");
+    setMainBadgeOpenVisual(false);
     removeGlobalListeners();
     unmountUi();
 
