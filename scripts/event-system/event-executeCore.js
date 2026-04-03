@@ -539,19 +539,20 @@
       }, 160);
     }
 
-    placeForToken(token, overrideXY = null) {
-      if (!this.button || !token) return;
+placeForToken(token, overrideXY = null) {
+  if (!this.button || !token) return;
 
-      const center = getAuthoritativeTokenCenterPx(token, overrideXY);
-      const screen = worldToScreen(center.x, center.y);
+  const center = getAuthoritativeTokenCenterPx(token, overrideXY);
+  const screen = worldToScreen(center.x, center.y);
 
-      const verticalOffset = Math.max(42, Math.round((token.h / 2) + 10));
-      const finalX = screen.x;
-      const finalY = screen.y - verticalOffset;
+  // Raised a bit higher than before
+  const verticalOffset = Math.max(54, Math.round((token.h / 2) + 22));
+  const finalX = screen.x;
+  const finalY = screen.y - verticalOffset;
 
-      this.button.style.left = `${finalX}px`;
-      this.button.style.top = `${finalY}px`;
-    }
+  this.button.style.left = `${finalX}px`;
+  this.button.style.top = `${finalY}px`;
+}
   }
 
   // ------------------------------------------------------------
