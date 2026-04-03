@@ -331,9 +331,9 @@
       return { ok: false, reason: "notTokenOwner", token };
     }
 
-    const src = cleanString(linkedActor.prototypeToken.texture?.src || linkedActor.img || "");
-    const scaleX = linkedActor.prototypeToken.texture?.scaleX ?? 1;
-    const scaleY = linkedActor.prototypeToken.texture?.scaleY ?? 1;
+        const src = cleanString(linkedActor.prototypeToken.texture?.src || linkedActor.img || "");
+    const centralScaleX = token.document.texture?.scaleX ?? 1;
+    const centralScaleY = token.document.texture?.scaleY ?? 1;
     const newName = cleanString(linkedActor.name || controllerRow?.userName || token.name);
 
     const updateData = {
@@ -344,24 +344,25 @@
       updateData["texture.src"] = src;
     }
 
-    updateData["texture.scaleX"] = scaleX;
-    updateData["texture.scaleY"] = scaleY;
+    // Preserve the current central party token scaling.
+    updateData["texture.scaleX"] = centralScaleX;
+    updateData["texture.scaleY"] = centralScaleY;
 
     try {
       await token.document.update(updateData);
 
-      DBG.groupCollapsed("API", "Applied controller visual to central party token", {
-        tokenId: token.id,
-        previousTokenName: token.name,
-        nextTokenName: newName,
-        textureSrc: src || null,
-        scaleX,
-        scaleY,
-        linkedActorId: linkedActor.id,
-        linkedActorName: linkedActor.name,
-        controllerUserId: controllerRow?.userId ?? null,
-        controllerUserName: controllerRow?.userName ?? null
-      });
+              DBG.groupCollapsed("API", "Applied controller visual to central party token", {
+          tokenId: token.id,
+          previousTokenName: token.name,
+          nextTokenName: newName,
+          textureSrc: src || null,
+          preservedScaleX: centralScaleX,
+          preservedScaleY: centralScaleY,
+          linkedActorId: linkedActor.id,
+          linkedActorName: linkedActor.name,
+          controllerUserId: controllerRow?.userId ?? null,
+          controllerUserName: controllerRow?.userName ?? null
+        });
 
       return {
         ok: true,
