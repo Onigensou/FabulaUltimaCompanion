@@ -10,9 +10,13 @@
  * - Supports:
  *   1) empty input          -> Self
  *   2) "Self"               -> current party speaker
- *   3) Actor UUID           -> actor name
- *   4) Token UUID           -> token name
- *   5) plain text name      -> use as-is, with optional scene lookup
+ *   3) Actor UUID           -> current-scene token for that actor if possible
+ *   4) Token UUID           -> current-scene token match if possible
+ *   5) plain text name      -> current-scene token / actor lookup, else plain text
+ *
+ * Important rule:
+ * - When resolving non-party speakers, always try to anchor to a token
+ *   on the CURRENT scene first.
  *
  * Exposes API to:
  *   window.oni.EventSystem.ShowText.SpeakerResolver
@@ -79,21 +83,32 @@
     return s === String(C.SPECIAL_SPEAKER_SELF).toLowerCase();
   }
 
-  function getSceneFromContext(context = {}) {
-    const sceneId = stringOrEmpty(context.sceneId);
-    if (sceneId && game?.scenes?.has(sceneId)) return game.scenes.get(sceneId);
-    return canvas?.scene ?? null;
+  function getCurrentSceneId(context = {}) {
+    return stringOrEmpty(context.sceneId) || canvas?.scene?.id || null;
   }
 
-  function getSceneTokens(scene) {
-    if (!scene) return [];
-    if (scene.id === canvas?.scene?.id) return canvas?.tokens?.placeables ?? [];
-    return scene.tokens?.contents ?? [];
+  function getCurrentSceneTokens(context = {}) {
+    const sceneId = getCurrentSceneId(context);
+    if (!sceneId) return [];
+
+    // User specifically wants current-scene matching only.
+    if (canvas?.scene?.id === sceneId) {
+      return canvas?.tokens?.placeables ?? [];
+    }
+
+    // If context scene differs from current canvas, still only use current canvas
+    // because off-scene speaking is not desired for this system.
+    return canvas?.tokens?.placeables ?? [];
   }
 
   function getTokenDocumentUuid(tokenLike) {
     if (!tokenLike) return null;
     return tokenLike.document?.uuid || tokenLike.uuid || null;
+  }
+
+  function getTokenDocumentId(tokenLike) {
+    if (!tokenLike) return null;
+    return tokenLike.document?.id || tokenLike.id || null;
   }
 
   function getTokenActor(tokenLike) {
@@ -109,10 +124,58 @@
     );
   }
 
+  function makeResult({
+    ok = true,
+    mode = "text",
+    input = "",
+    matchedBy = "plainTextFallback",
+    speakerName = "",
+    token = null,
+    actor = null,
+    document = null
+  } = {}) {
+    return {
+      ok,
+      mode,
+      input,
+      matchedBy,
+      speakerName: stringOrEmpty(speakerName) || C.SPECIAL_SPEAKER_SELF,
+      token,
+      actor,
+      tokenUuid: getTokenDocumentUuid(token),
+      actorUuid: actor?.uuid ?? null,
+      document: document ?? token?.document ?? actor ?? null
+    };
+  }
+
+  function findCurrentSceneTokenForActor(actor, context = {}) {
+    if (!actor) return null;
+    const tokens = getCurrentSceneTokens(context);
+    return tokens.find(t => getTokenActor(t)?.id === actor.id) || null;
+  }
+
+  function findCurrentSceneTokenByTokenId(tokenId, context = {}) {
+    const safeId = stringOrEmpty(tokenId);
+    if (!safeId) return null;
+    const tokens = getCurrentSceneTokens(context);
+    return tokens.find(t => String(getTokenDocumentId(t)) === safeId) || null;
+  }
+
+  function findCurrentSceneTokenByName(name, context = {}) {
+    const safe = stringOrEmpty(name).toLowerCase();
+    if (!safe) return null;
+
+    const tokens = getCurrentSceneTokens(context);
+
+    return (
+      tokens.find(t => getTokenName(t).toLowerCase() === safe) ||
+      tokens.find(t => stringOrEmpty(getTokenActor(t)?.name).toLowerCase() === safe) ||
+      null
+    );
+  }
+
   // ------------------------------------------------------------
   // Party / Self resolution
-  // Mirrors the spirit of your other tile systems:
-  // controlled token first, then FUCompanion DB actor fallback
   // ------------------------------------------------------------
   async function resolveCurrentDbContext() {
     try {
@@ -135,20 +198,19 @@
 
   async function resolvePartyToken(context = {}) {
     try {
-      const scene = getSceneFromContext(context);
-      const sceneTokens = getSceneTokens(scene);
+      const currentSceneTokens = getCurrentSceneTokens(context);
 
       // 1) explicit token from context
       const explicitTokenId = stringOrEmpty(context.partyTokenId || context.tokenId);
       if (explicitTokenId) {
         const explicit =
-          sceneTokens.find(t => String(t.id) === explicitTokenId) ||
+          currentSceneTokens.find(t => String(getTokenDocumentId(t)) === explicitTokenId) ||
           canvas?.tokens?.get?.(explicitTokenId) ||
           null;
 
         if (explicit) {
           DBG.verboseLog(DEBUG_SCOPE, "Resolved party token from explicit tokenId.", {
-            tokenId: explicit.id,
+            tokenId: getTokenDocumentId(explicit),
             tokenName: getTokenName(explicit)
           });
           return explicit;
@@ -158,7 +220,7 @@
       // 2) explicit token object from context
       if (context.partyToken) {
         DBG.verboseLog(DEBUG_SCOPE, "Resolved party token from context.partyToken.", {
-          tokenId: context.partyToken.id,
+          tokenId: getTokenDocumentId(context.partyToken),
           tokenName: getTokenName(context.partyToken)
         });
         return context.partyToken;
@@ -182,15 +244,15 @@
       }
 
       const dbToken =
-        sceneTokens.find(t => t?.actor?.id === db.id) ||
-        (source ? sceneTokens.find(t => t?.actor?.id === source.id) : null) ||
-        sceneTokens.find(t => getTokenName(t) === db.name) ||
-        sceneTokens.find(t => stringOrEmpty(t?.actor?.name) === db.name) ||
+        currentSceneTokens.find(t => getTokenActor(t)?.id === db.id) ||
+        (source ? currentSceneTokens.find(t => getTokenActor(t)?.id === source.id) : null) ||
+        currentSceneTokens.find(t => getTokenName(t) === db.name) ||
+        currentSceneTokens.find(t => stringOrEmpty(getTokenActor(t)?.name) === db.name) ||
         null;
 
       if (dbToken) {
         DBG.verboseLog(DEBUG_SCOPE, "Resolved party token from FUCompanion DB fallback.", {
-          tokenId: dbToken.id,
+          tokenId: getTokenDocumentId(dbToken),
           tokenName: getTokenName(dbToken)
         });
       }
@@ -210,7 +272,7 @@
     const actorName = stringOrEmpty(actor?.name);
     const displayName = tokenName || actorName || C.SPECIAL_SPEAKER_SELF;
 
-    const result = {
+    const result = makeResult({
       ok: true,
       mode: "self",
       input: C.SPECIAL_SPEAKER_SELF,
@@ -218,10 +280,8 @@
       speakerName: displayName,
       token,
       actor,
-      tokenUuid: getTokenDocumentUuid(token),
-      actorUuid: actor?.uuid ?? null,
       document: token?.document ?? actor ?? null
-    };
+    });
 
     DBG.verboseLog(DEBUG_SCOPE, "Resolved Self speaker:", result);
     return result;
@@ -229,7 +289,6 @@
 
   // ------------------------------------------------------------
   // UUID resolution
-  // Supports Actor, TokenDocument, Token, and fallback to name if possible
   // ------------------------------------------------------------
   async function resolveUuidSpeaker(raw, context = {}) {
     const input = normalizeSpeakerInput(raw);
@@ -241,70 +300,67 @@
         return null;
       }
 
-      // Actor
+      // Actor UUID
       if (doc.documentName === "Actor") {
-        const scene = getSceneFromContext(context);
-        const sceneTokens = getSceneTokens(scene);
+        const sceneToken = findCurrentSceneTokenForActor(doc, context);
 
-        const sceneToken =
-          sceneTokens.find(t => t?.actor?.id === doc.id) ||
-          null;
-
-        const result = {
+        const result = makeResult({
           ok: true,
           mode: "uuid",
           input,
-          matchedBy: "actorUuid",
-          speakerName: stringOrEmpty(doc.name) || "Unknown Speaker",
+          matchedBy: sceneToken ? "actorUuid+currentSceneToken" : "actorUuid",
+          speakerName: stringOrEmpty(doc.name) || getTokenName(sceneToken) || "Unknown Speaker",
           token: sceneToken,
           actor: doc,
-          tokenUuid: getTokenDocumentUuid(sceneToken),
-          actorUuid: doc.uuid,
-          document: doc
-        };
+          document: sceneToken?.document ?? doc
+        });
 
         DBG.verboseLog(DEBUG_SCOPE, "Resolved speaker from Actor UUID:", result);
         return result;
       }
 
-      // TokenDocument
+      // Token / TokenDocument UUID
       if (doc.documentName === "Token") {
-        const liveToken =
-          canvas?.tokens?.get?.(doc.id) ||
+        const actor = doc.actor ?? null;
+
+        const currentSceneToken =
+          findCurrentSceneTokenByTokenId(doc.id, context) ||
+          findCurrentSceneTokenForActor(actor, context) ||
+          findCurrentSceneTokenByName(doc.name, context) ||
           null;
 
-        const result = {
+        const result = makeResult({
           ok: true,
           mode: "uuid",
           input,
-          matchedBy: "tokenUuid",
-          speakerName: stringOrEmpty(doc.name) || stringOrEmpty(doc.actor?.name) || "Unknown Speaker",
-          token: liveToken || doc.object || doc,
-          actor: doc.actor ?? null,
-          tokenUuid: doc.uuid,
-          actorUuid: doc.actor?.uuid ?? null,
-          document: doc
-        };
+          matchedBy: currentSceneToken ? "tokenUuid+currentSceneMatch" : "tokenUuid",
+          speakerName:
+            stringOrEmpty(actor?.name) ||
+            getTokenName(currentSceneToken) ||
+            stringOrEmpty(doc.name) ||
+            "Unknown Speaker",
+          token: currentSceneToken || doc.object || null,
+          actor,
+          document: currentSceneToken?.document ?? doc
+        });
 
         DBG.verboseLog(DEBUG_SCOPE, "Resolved speaker from Token UUID:", result);
         return result;
       }
 
-      // If someone drops in some other UUID by mistake, try to salvage a display name
+      // Anything else: salvage display name if possible
       const fallbackName = stringOrEmpty(doc.name);
       if (fallbackName) {
-        const result = {
+        const result = makeResult({
           ok: true,
           mode: "uuid",
           input,
           matchedBy: "otherDocumentUuid",
           speakerName: fallbackName,
-          token: null,
+          token: findCurrentSceneTokenByName(fallbackName, context),
           actor: null,
-          tokenUuid: null,
-          actorUuid: null,
           document: doc
-        };
+        });
 
         DBG.warn(DEBUG_SCOPE, "Speaker UUID was not Actor/Token, using document name as fallback:", {
           input,
@@ -324,87 +380,58 @@
 
   // ------------------------------------------------------------
   // Name resolution
-  // First try scene tokens by token name / actor name
-  // Then world actors
-  // Finally use plain text as-is
   // ------------------------------------------------------------
   async function resolveNameSpeaker(raw, context = {}) {
     const input = normalizeSpeakerInput(raw);
-    const scene = getSceneFromContext(context);
-    const sceneTokens = getSceneTokens(scene);
     const lowered = input.toLowerCase();
 
     // Scene token exact token-name match
-    let token =
-      sceneTokens.find(t => stringOrEmpty(t?.name).toLowerCase() === lowered) ||
-      null;
+    let token = findCurrentSceneTokenByName(input, context);
 
     if (token) {
-      const result = {
+      const actor = getTokenActor(token);
+
+      // Prefer actor name for display if it exists, because that matches your NPC use better
+      const result = makeResult({
         ok: true,
         mode: "name",
         input,
-        matchedBy: "sceneTokenName",
-        speakerName: getTokenName(token) || input,
+        matchedBy: "currentSceneNameMatch",
+        speakerName: stringOrEmpty(actor?.name) || getTokenName(token) || input,
         token,
-        actor: getTokenActor(token),
-        tokenUuid: getTokenDocumentUuid(token),
-        actorUuid: getTokenActor(token)?.uuid ?? null,
+        actor,
         document: token?.document ?? token
-      };
+      });
 
-      DBG.verboseLog(DEBUG_SCOPE, "Resolved speaker from scene token name:", result);
+      DBG.verboseLog(DEBUG_SCOPE, "Resolved speaker from current-scene name match:", result);
       return result;
     }
 
-    // Scene token actor-name match
-    token =
-      sceneTokens.find(t => stringOrEmpty(t?.actor?.name).toLowerCase() === lowered) ||
-      null;
-
-    if (token) {
-      const result = {
-        ok: true,
-        mode: "name",
-        input,
-        matchedBy: "sceneActorName",
-        speakerName: stringOrEmpty(token.actor?.name) || getTokenName(token) || input,
-        token,
-        actor: getTokenActor(token),
-        tokenUuid: getTokenDocumentUuid(token),
-        actorUuid: getTokenActor(token)?.uuid ?? null,
-        document: token?.document ?? token
-      };
-
-      DBG.verboseLog(DEBUG_SCOPE, "Resolved speaker from scene actor name:", result);
-      return result;
-    }
-
-    // World actor exact match
+    // World actor exact match -> immediately try to anchor it to current-scene token
     const actor =
       game?.actors?.find?.(a => stringOrEmpty(a?.name).toLowerCase() === lowered) ||
       null;
 
     if (actor) {
-      const result = {
+      token = findCurrentSceneTokenForActor(actor, context);
+
+      const result = makeResult({
         ok: true,
         mode: "name",
         input,
-        matchedBy: "worldActorName",
+        matchedBy: token ? "worldActorName+currentSceneToken" : "worldActorName",
         speakerName: stringOrEmpty(actor.name) || input,
-        token: null,
+        token,
         actor,
-        tokenUuid: null,
-        actorUuid: actor.uuid,
-        document: actor
-      };
+        document: token?.document ?? actor
+      });
 
       DBG.verboseLog(DEBUG_SCOPE, "Resolved speaker from world actor name:", result);
       return result;
     }
 
     // Plain text fallback
-    const result = {
+    const result = makeResult({
       ok: true,
       mode: "text",
       input,
@@ -412,10 +439,8 @@
       speakerName: input,
       token: null,
       actor: null,
-      tokenUuid: null,
-      actorUuid: null,
       document: null
-    };
+    });
 
     DBG.verboseLog(DEBUG_SCOPE, "Resolved speaker as plain text fallback:", result);
     return result;
@@ -436,7 +461,8 @@
       DBG.log(DEBUG_SCOPE, "Resolving speaker...", {
         rawSpeaker,
         normalized,
-        context
+        sceneId: getCurrentSceneId(context),
+        tokenId: context?.tokenId ?? null
       });
 
       // Self / empty
@@ -449,7 +475,7 @@
         const fromUuidResult = await resolveUuidSpeaker(normalized, context);
         if (fromUuidResult) return fromUuidResult;
 
-        DBG.warn(DEBUG_SCOPE, "UUID speaker did not resolve cleanly, falling back to plain text/name resolution.", {
+        DBG.warn(DEBUG_SCOPE, "UUID speaker did not resolve cleanly, falling back to name/plain text resolution.", {
           input: normalized
         });
       }
