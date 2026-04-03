@@ -7,12 +7,7 @@
  * - Show the current Main Controller as a small green badge
  * - Position the badge above the Foundry Player tab at bottom-left
  * - Reposition when the Player tab rerenders, resizes, or moves
- * - Keep UI fully separate from core controller logic
- *
- * Notes:
- * - This script only renders the badge UI
- * - It does not create the pass-control button
- * - It exposes a small host slot so future UI scripts can mount beside the badge
+ * - Expose root/layout helpers for other UI layers like the pass menu
  *
  * Globals:
  *   globalThis.__ONI_MOVEMENT_CONTROL_CONTROLLER_BADGE__
@@ -84,10 +79,6 @@
     return value == null ? "" : String(value).trim();
   }
 
-  function hasText(value) {
-    return cleanString(value).length > 0;
-  }
-
   function safeGet(obj, path, fallback = undefined) {
     try {
       const parts = String(path).split(".");
@@ -143,6 +134,7 @@
       }
 
       #${ROOT_ID} .mc-controller-row {
+        position: relative;
         display: inline-flex;
         align-items: center;
         gap: 8px;
@@ -203,6 +195,7 @@
       }
 
       #${ROOT_ID} .mc-controller-slot {
+        position: relative;
         display: inline-flex;
         align-items: center;
         gap: 8px;
@@ -428,6 +421,67 @@
     return state.slot;
   }
 
+  function getRootElement() {
+    ensureRoot();
+    return state.root;
+  }
+
+  function getRowElement() {
+    ensureRoot();
+    return state.row;
+  }
+
+  function getBadgeElement() {
+    ensureRoot();
+    return state.badge;
+  }
+
+  function getLayoutInfo(estimatedMenuHeight = 0) {
+    ensureRoot();
+
+    const rootRect = state.root?.getBoundingClientRect?.() ?? null;
+    const rowRect = state.row?.getBoundingClientRect?.() ?? null;
+    const badgeRect = state.badge?.getBoundingClientRect?.() ?? null;
+
+    if (!rootRect) {
+      return {
+        direction: "down",
+        spaceAbove: 0,
+        spaceBelow: 0,
+        rootRect: null,
+        rowRect: null,
+        badgeRect: null
+      };
+    }
+
+    const viewportPad = 8;
+    const spaceAbove = Math.max(0, rootRect.top - viewportPad);
+    const spaceBelow = Math.max(0, window.innerHeight - rootRect.bottom - viewportPad);
+
+    let direction = "down";
+
+    if (estimatedMenuHeight > 0) {
+      if (spaceBelow >= estimatedMenuHeight) direction = "down";
+      else if (spaceAbove >= estimatedMenuHeight) direction = "up";
+      else direction = spaceBelow >= spaceAbove ? "down" : "up";
+    } else {
+      direction = spaceBelow >= spaceAbove ? "down" : "up";
+    }
+
+    return {
+      direction,
+      spaceAbove,
+      spaceBelow,
+      rootRect,
+      rowRect,
+      badgeRect
+    };
+  }
+
+  function getFanDirection(estimatedMenuHeight = 0) {
+    return getLayoutInfo(estimatedMenuHeight).direction;
+  }
+
   function clearHostElement() {
     ensureRoot();
     if (state.slot) state.slot.innerHTML = "";
@@ -467,6 +521,12 @@
     reposition,
 
     getHostElement,
+    getRootElement,
+    getRowElement,
+    getBadgeElement,
+    getLayoutInfo,
+    getFanDirection,
+
     clearHostElement,
     destroy
   };
