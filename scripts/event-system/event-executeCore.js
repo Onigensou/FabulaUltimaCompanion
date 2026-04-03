@@ -570,7 +570,7 @@
       const screen = worldToScreen(center.x, center.y);
 
       // Slightly raised spawn point
-      const verticalOffset = Math.max(54, Math.round((token.h / 2) + 53));
+      const verticalOffset = Math.max(54, Math.round((token.h / 2) + 63));
       const finalX = screen.x;
       const finalY = screen.y - verticalOffset;
 
