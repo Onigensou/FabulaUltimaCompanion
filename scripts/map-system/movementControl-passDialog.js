@@ -1,19 +1,14 @@
 /**
  * movementControl-passDialog.js
- * Fabula Ultima Companion - Movement Control Pass Controller Dialog UI
+ * Fabula Ultima Companion - Movement Control Pass Controller Fan-Out UI
  * Foundry VTT v12
  *
  * Purpose:
  * - Mount a small "Pass" button beside the controller badge
- * - Only show the button to the current Main Controller or GM override
- * - Open a dialog with a dropdown of eligible controller users
- * - Call the Movement Control API to pass controller status
- *
- * Notes:
- * - Pure UI layer
- * - Relies on:
- *   - movementControl-api.js
- *   - movementControl-controllerBadge.js
+ * - Remove the old dialog window flow entirely
+ * - Fan out vertically from the controller badge using badge-style buttons
+ * - Dynamically choose upward or downward fan direction based on screen space
+ * - Let the current Main Controller or GM override click a player badge to pass control
  *
  * Globals:
  *   globalThis.__ONI_MOVEMENT_CONTROL_PASS_DIALOG__
@@ -35,7 +30,7 @@
 
   const STYLE_ID = "oni-movement-control-pass-dialog-style";
   const BUTTON_ID = "oni-movement-control-pass-button";
-  const DIALOG_ID = "oni-movement-control-pass-dialog";
+  const MENU_ID = "oni-movement-control-pass-menu";
 
   const state = {
     installed: true,
@@ -43,10 +38,16 @@
     destroyed: false,
 
     button: null,
-    dialogApp: null,
+    menu: null,
+    mountedHost: null,
+    mountedRoot: null,
+
+    isOpen: false,
+    currentDirection: "down",
 
     refreshTimer: null,
-    mountedHost: null
+    boundDocPointerDown: null,
+    boundKeyDown: null
   };
 
   function getDebug() {
@@ -86,19 +87,6 @@
   function cleanString(value) {
     return value == null ? "" : String(value).trim();
   }
-
-function hasText(value) {
-  return cleanString(value).length > 0;
-}
-
-function escapeHtml(value) {
-  return cleanString(value)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
 
   function safeGet(obj, path, fallback = undefined) {
     try {
@@ -143,8 +131,8 @@ function escapeHtml(value) {
         appearance: none;
         border: 1px solid rgba(255,255,255,0.16);
         background:
-          linear-gradient(180deg, rgba(42, 52, 68, 0.98) 0%, rgba(24, 31, 42, 0.98) 100%);
-        color: #f4f8ff;
+          linear-gradient(180deg, rgba(94, 88, 46, 0.98) 0%, rgba(71, 65, 31, 0.98) 100%);
+        color: #fff8dc;
         min-height: 32px;
         padding: 6px 12px;
         border-radius: 999px;
@@ -173,42 +161,93 @@ function escapeHtml(value) {
         filter: brightness(0.98);
       }
 
+      #${BUTTON_ID}.is-open {
+        filter: brightness(1.08);
+      }
+
       #${BUTTON_ID}[hidden] {
         display: none !important;
       }
 
-      .oni-mc-pass-dialog {
+      #${MENU_ID} {
+        position: absolute;
+        left: 0;
         display: flex;
         flex-direction: column;
-        gap: 12px;
+        gap: 8px;
+        min-width: max-content;
+        pointer-events: none;
+        opacity: 0;
+        visibility: hidden;
+        z-index: 1;
       }
 
-      .oni-mc-pass-dialog__note {
+      #${MENU_ID}.fan-down {
+        top: calc(100% + 8px);
+        bottom: auto;
+      }
+
+      #${MENU_ID}.fan-up {
+        bottom: calc(100% + 8px);
+        top: auto;
+      }
+
+      #${MENU_ID}.is-open {
+        pointer-events: auto;
+        opacity: 1;
+        visibility: visible;
+      }
+
+      #${MENU_ID} .oni-mc-pass-option {
+        appearance: none;
+        border: 1px solid rgba(255,255,255,0.16);
+        background:
+          linear-gradient(180deg, rgba(41, 153, 86, 0.98) 0%, rgba(23, 112, 60, 0.98) 100%);
+        color: #f4fff7;
+        min-height: 32px;
+        padding: 6px 12px;
+        border-radius: 999px;
+        box-shadow:
+          0 6px 16px rgba(0,0,0,0.28),
+          inset 0 1px 0 rgba(255,255,255,0.10);
         font-size: 13px;
-        line-height: 1.45;
-        color: #d8dee9;
-      }
-
-      .oni-mc-pass-dialog__field {
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-      }
-
-      .oni-mc-pass-dialog__label {
-        font-size: 12px;
         font-weight: 700;
-        color: #f5f7fb;
+        letter-spacing: 0.02em;
+        line-height: 1;
+        white-space: nowrap;
+        text-align: left;
+        text-shadow: 0 1px 1px rgba(0,0,0,0.35);
+        backdrop-filter: blur(2px);
+        cursor: pointer;
+        pointer-events: auto;
+        opacity: 0;
+        transform: translateY(var(--mc-offset, 8px)) scale(0.985);
+        transition:
+          opacity 150ms ease,
+          transform 170ms ease,
+          filter 100ms ease;
+        transition-delay: calc(var(--mc-index, 0) * 26ms);
       }
 
-      .oni-mc-pass-dialog__select {
-        width: 100%;
-        min-height: 34px;
+      #${MENU_ID}.fan-up .oni-mc-pass-option {
+        --mc-offset: 8px;
       }
 
-      .oni-mc-pass-dialog__meta {
-        font-size: 12px;
-        color: #9fb1c7;
+      #${MENU_ID}.fan-down .oni-mc-pass-option {
+        --mc-offset: -8px;
+      }
+
+      #${MENU_ID}.is-open .oni-mc-pass-option {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+      }
+
+      #${MENU_ID} .oni-mc-pass-option:hover {
+        filter: brightness(1.08);
+      }
+
+      #${MENU_ID} .oni-mc-pass-option:active {
+        filter: brightness(0.98);
       }
     `;
     document.head.appendChild(style);
@@ -230,37 +269,58 @@ function escapeHtml(value) {
     button.addEventListener("click", onPassButtonClick);
 
     state.button = button;
-
-    DBG.verbose("PassDialog", "Created pass button");
     return button;
   }
 
-  function mountButton() {
+  function ensureMenu() {
+    ensureStyles();
+
+    if (state.menu?.isConnected) return state.menu;
+
+    const existing = document.getElementById(MENU_ID);
+    if (existing) existing.remove();
+
+    const menu = document.createElement("div");
+    menu.id = MENU_ID;
+    menu.className = "fan-down";
+    menu.addEventListener("pointerdown", (ev) => {
+      ev.stopPropagation();
+    });
+
+    state.menu = menu;
+    return menu;
+  }
+
+  function mountUi() {
     const badgeAPI = getBadgeAPI();
     const host = badgeAPI?.getHostElement?.() ?? null;
-    const button = ensureButton();
+    const root = badgeAPI?.getRootElement?.() ?? null;
 
-    if (!host) {
-      DBG.verbose("PassDialog", "mountButton skipped because badge host is unavailable");
+    const button = ensureButton();
+    const menu = ensureMenu();
+
+    if (!host || !root) {
       return false;
     }
 
     if (state.mountedHost !== host || !button.isConnected) {
       host.appendChild(button);
       state.mountedHost = host;
+    }
 
-      DBG.verbose("PassDialog", "Mounted pass button into badge host");
+    if (state.mountedRoot !== root || !menu.isConnected) {
+      root.appendChild(menu);
+      state.mountedRoot = root;
     }
 
     return true;
   }
 
-  function unmountButton() {
-    try {
-      state.button?.remove();
-    } catch (_) {}
-
+  function unmountUi() {
+    try { state.button?.remove(); } catch (_) {}
+    try { state.menu?.remove(); } catch (_) {}
     state.mountedHost = null;
+    state.mountedRoot = null;
   }
 
   function setButtonVisible(visible) {
@@ -297,17 +357,25 @@ function escapeHtml(value) {
       };
     }
 
-    let currentController = null;
-    let canPass = { ok: false, reason: "unknown" };
-    let eligibleControllers = [];
-
     try {
-      currentController = await api.getCurrentControllerUser();
-      canPass = await api.canCurrentUserPassControl();
-      eligibleControllers = await api.getEligibleControllers({
+      const currentController = await api.getCurrentControllerUser();
+      const canPass = await api.canCurrentUserPassControl();
+      const eligibleControllers = await api.getEligibleControllers({
         onlineOnly: true,
         includeGM: false
       });
+
+      const filteredEligible = (eligibleControllers ?? []).filter(row => {
+        return cleanString(row?.userId) !== cleanString(currentController?.userId);
+      });
+
+      return {
+        active: true,
+        canPass: !!canPass?.ok,
+        canPassReason: canPass?.reason ?? "unknown",
+        currentController,
+        eligibleControllers: filteredEligible
+      };
     } catch (err) {
       DBG.warn("PassDialog", "Failed to build UI state", {
         error: err?.message ?? err
@@ -321,142 +389,108 @@ function escapeHtml(value) {
         eligibleControllers: []
       };
     }
-
-    const filteredEligible = (eligibleControllers ?? []).filter(row => {
-      return cleanString(row?.userId) !== cleanString(currentController?.userId);
-    });
-
-    return {
-      active: true,
-      canPass: !!canPass?.ok,
-      canPassReason: canPass?.reason ?? "unknown",
-      currentController,
-      eligibleControllers: filteredEligible
-    };
   }
 
-  async function refresh({ reason = "manual" } = {}) {
-    if (state.destroyed) return;
+  function clearMenuItems() {
+    const menu = ensureMenu();
+    menu.innerHTML = "";
+  }
 
-    const mounted = mountButton();
-    if (!mounted) {
-      setButtonVisible(false);
-      return;
-    }
+  function closeMenu(reason = "manual") {
+    const menu = ensureMenu();
+    const button = ensureButton();
+
+    state.isOpen = false;
+    menu.classList.remove("is-open");
+    button.classList.remove("is-open");
+
+    DBG.verbose("PassDialog", "Fan-out menu closed", { reason });
+  }
+
+  function updateMenuDirection(estimatedMenuHeight = 0) {
+    const badgeAPI = getBadgeAPI();
+    const menu = ensureMenu();
+
+    const direction = badgeAPI?.getFanDirection?.(estimatedMenuHeight) ?? "down";
+    state.currentDirection = direction;
+
+    menu.classList.remove("fan-up", "fan-down");
+    menu.classList.add(direction === "up" ? "fan-up" : "fan-down");
+  }
+
+  function buildOptionLabel(row) {
+    return cleanString(row?.userName) || "Unknown";
+  }
+
+  function renderMenuItems(uiState) {
+    const menu = ensureMenu();
+    clearMenuItems();
+
+    const rows = Array.isArray(uiState?.eligibleControllers) ? uiState.eligibleControllers : [];
+
+    rows.forEach((row, index) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "oni-mc-pass-option";
+      btn.style.setProperty("--mc-index", String(index));
+      btn.textContent = buildOptionLabel(row);
+      btn.title = buildOptionLabel(row);
+
+      btn.addEventListener("click", async (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        closeMenu("optionSelected");
+        await performPass(row?.userId);
+      });
+
+      menu.appendChild(btn);
+    });
+
+    return rows.length;
+  }
+
+  async function openMenu() {
+    const mounted = mountUi();
+    if (!mounted) return;
 
     const uiState = await getUiState();
-
-    if (!uiState.active) {
-      setButtonVisible(false);
-      closeDialog();
-      DBG.verbose("PassDialog", "Pass button hidden because system is inactive", { reason });
+    if (!uiState.active || !uiState.canPass) {
+      closeMenu("openDenied");
       return;
     }
 
-    const shouldShow = uiState.canPass;
-    const hasTargets = (uiState.eligibleControllers?.length ?? 0) > 0;
-
-    setButtonVisible(shouldShow);
-    setButtonEnabled(shouldShow && hasTargets);
-
-    if (state.button) {
-      if (!hasTargets && shouldShow) {
-        state.button.title = "No other eligible player is available right now.";
-      } else if (uiState.canPassReason === "gmOverride") {
-        state.button.title = "GM override: pass control to another eligible player.";
-      } else {
-        state.button.title = "Pass main controller status to another eligible player.";
-      }
+    if (!Array.isArray(uiState.eligibleControllers) || uiState.eligibleControllers.length === 0) {
+      ui.notifications?.warn("No other eligible player is available to receive control.");
+      closeMenu("noTargets");
+      return;
     }
 
-    DBG.verbose("PassDialog", "Pass button refreshed", {
-      reason,
-      shouldShow,
-      hasTargets,
-      currentControllerUserId: uiState.currentController?.userId ?? null,
-      currentControllerUserName: uiState.currentController?.userName ?? null,
-      eligibleCount: uiState.eligibleControllers?.length ?? 0,
-      canPassReason: uiState.canPassReason
+    const menu = ensureMenu();
+    const button = ensureButton();
+
+    renderMenuItems(uiState);
+
+    updateMenuDirection(0);
+    menu.classList.add("is-open");
+    button.classList.add("is-open");
+
+    const measuredHeight = menu.offsetHeight || 0;
+    updateMenuDirection(measuredHeight);
+
+    state.isOpen = true;
+
+    DBG.verbose("PassDialog", "Fan-out menu opened", {
+      direction: state.currentDirection,
+      targetCount: uiState.eligibleControllers.length
     });
   }
 
-  function scheduleRefresh(reason = "scheduled", delay = 0) {
-    if (state.destroyed) return;
-
-    if (state.refreshTimer) clearTimeout(state.refreshTimer);
-    state.refreshTimer = setTimeout(() => {
-      state.refreshTimer = null;
-      refresh({ reason });
-    }, Math.max(0, Number(delay) || 0));
-  }
-
-  async function buildDialogData() {
-    const api = getMovementAPI();
-    if (!api) return null;
-
-    const currentController = await api.getCurrentControllerUser();
-    const canPass = await api.canCurrentUserPassControl();
-    const eligibleControllers = await api.getEligibleControllers({
-      onlineOnly: true,
-      includeGM: false
-    });
-
-    const targets = (eligibleControllers ?? []).filter(row => {
-      return cleanString(row?.userId) !== cleanString(currentController?.userId);
-    });
-
-    return {
-      canPass,
-      currentController,
-      targets
-    };
-  }
-
-  function buildDialogContent(data) {
-    const currentControllerName = cleanString(data?.currentController?.userName) || "Unknown";
-    const targets = Array.isArray(data?.targets) ? data.targets : [];
-
-    const optionsHtml = targets.map(row => {
-      const userId = cleanString(row?.userId);
-      const userName = cleanString(row?.userName) || "Unknown User";
-      const actorName = cleanString(row?.linkedActorName || row?.partyMemberActorName || "");
-      const slotText = row?.partyMemberSlot != null ? `Slot ${row.partyMemberSlot}` : "";
-
-      const metaParts = [slotText, actorName].filter(Boolean);
-      const label = metaParts.length > 0
-        ? `${userName} — ${metaParts.join(" • ")}`
-        : userName;
-
-      return `<option value="${escapeHtml(userId)}">${escapeHtml(label)}</option>`;
-    }).join("");
-
-    return `
-      <div class="oni-mc-pass-dialog">
-        <div class="oni-mc-pass-dialog__note">
-          Current Controller: <strong>${escapeHtml(currentControllerName)}</strong><br>
-          Choose which eligible player should become the new Main Controller.
-        </div>
-
-        <div class="oni-mc-pass-dialog__field">
-          <label class="oni-mc-pass-dialog__label" for="oni-mc-pass-dialog-target">Pass control to</label>
-          <select id="oni-mc-pass-dialog-target" class="oni-mc-pass-dialog__select">
-            ${optionsHtml}
-          </select>
-        </div>
-
-        <div class="oni-mc-pass-dialog__meta">
-          The selected player will become the new Main Controller, and the central party token will update to match their linked actor.
-        </div>
-      </div>
-    `;
-  }
-
-  function closeDialog() {
-    try {
-      state.dialogApp?.close?.();
-    } catch (_) {}
-
-    state.dialogApp = null;
+  async function toggleMenu() {
+    if (state.isOpen) {
+      closeMenu("toggleClose");
+      return;
+    }
+    await openMenu();
   }
 
   async function performPass(targetUserId) {
@@ -477,11 +511,11 @@ function escapeHtml(value) {
 
       if (game.user?.isGM) {
         result = await api.forceSetController(cleanTargetUserId, {
-          source: "passDialogGM"
+          source: "passFanMenuGM"
         });
       } else {
         result = await api.requestPassController(cleanTargetUserId, {
-          source: "passDialogPlayer"
+          source: "passFanMenuPlayer"
         });
       }
 
@@ -494,7 +528,7 @@ function escapeHtml(value) {
           result
         });
 
-        scheduleRefresh("performPassFailed", 100);
+        scheduleRefresh("performPassFailed", 120);
         return result;
       }
 
@@ -523,61 +557,113 @@ function escapeHtml(value) {
     }
   }
 
-  async function openDialog() {
-    const data = await buildDialogData();
-
-    if (!data?.canPass?.ok) {
-      ui.notifications?.warn("You are not allowed to pass control right now.");
-      scheduleRefresh("openDialogDenied", 0);
-      return;
-    }
-
-    if (!Array.isArray(data.targets) || data.targets.length === 0) {
-      ui.notifications?.warn("No other eligible player is available to receive control.");
-      scheduleRefresh("openDialogNoTargets", 0);
-      return;
-    }
-
-    closeDialog();
-
-    state.dialogApp = new Dialog({
-      title: "Pass Main Controller",
-      content: buildDialogContent(data),
-      buttons: {
-        confirm: {
-          label: "Confirm",
-          callback: async (html) => {
-            const targetUserId = html.find("#oni-mc-pass-dialog-target").val();
-            await performPass(targetUserId);
-          }
-        },
-        cancel: {
-          label: "Cancel"
-        }
-      },
-      default: "confirm",
-      render: (html) => {
-        html.closest(".app").attr("id", DIALOG_ID);
-      },
-      close: () => {
-        state.dialogApp = null;
-        scheduleRefresh("dialogClosed", 50);
-      }
-    });
-
-    state.dialogApp.render(true);
-
-    DBG.verbose("PassDialog", "Opened pass dialog", {
-      currentControllerUserId: data.currentController?.userId ?? null,
-      currentControllerUserName: data.currentController?.userName ?? null,
-      targetCount: data.targets.length
-    });
-  }
-
   async function onPassButtonClick(ev) {
     ev.preventDefault();
     ev.stopPropagation();
-    await openDialog();
+    await toggleMenu();
+  }
+
+  function installGlobalListeners() {
+    if (!state.boundDocPointerDown) {
+      state.boundDocPointerDown = (ev) => {
+        if (!state.isOpen) return;
+
+        const target = ev.target;
+        if (state.button?.contains(target)) return;
+        if (state.menu?.contains(target)) return;
+
+        closeMenu("outsideClick");
+      };
+
+      document.addEventListener("pointerdown", state.boundDocPointerDown, true);
+    }
+
+    if (!state.boundKeyDown) {
+      state.boundKeyDown = (ev) => {
+        if (!state.isOpen) return;
+        if (ev.key === "Escape") {
+          closeMenu("escape");
+        }
+      };
+
+      document.addEventListener("keydown", state.boundKeyDown, true);
+    }
+  }
+
+  function removeGlobalListeners() {
+    if (state.boundDocPointerDown) {
+      document.removeEventListener("pointerdown", state.boundDocPointerDown, true);
+      state.boundDocPointerDown = null;
+    }
+
+    if (state.boundKeyDown) {
+      document.removeEventListener("keydown", state.boundKeyDown, true);
+      state.boundKeyDown = null;
+    }
+  }
+
+  async function refresh({ reason = "manual" } = {}) {
+    if (state.destroyed) return;
+
+    const mounted = mountUi();
+    if (!mounted) {
+      setButtonVisible(false);
+      closeMenu("mountFailed");
+      return;
+    }
+
+    const uiState = await getUiState();
+
+    if (!uiState.active) {
+      setButtonVisible(false);
+      closeMenu("inactive");
+      return;
+    }
+
+    const shouldShow = uiState.canPass;
+    const hasTargets = (uiState.eligibleControllers?.length ?? 0) > 0;
+
+    setButtonVisible(shouldShow);
+    setButtonEnabled(shouldShow && hasTargets);
+
+    if (state.button) {
+      if (!hasTargets && shouldShow) {
+        state.button.title = "No other eligible player is available right now.";
+      } else if (uiState.canPassReason === "gmOverride") {
+        state.button.title = "GM override: pass control to another eligible player.";
+      } else {
+        state.button.title = "Pass main controller status to another eligible player.";
+      }
+    }
+
+    if (state.isOpen) {
+      if (!shouldShow || !hasTargets) {
+        closeMenu("refreshInvalidated");
+      } else {
+        renderMenuItems(uiState);
+        const menu = ensureMenu();
+        const measuredHeight = menu.offsetHeight || 0;
+        updateMenuDirection(measuredHeight);
+      }
+    }
+
+    DBG.verbose("PassDialog", "Pass fan-out UI refreshed", {
+      reason,
+      shouldShow,
+      hasTargets,
+      currentDirection: state.currentDirection,
+      eligibleCount: uiState.eligibleControllers?.length ?? 0
+    });
+  }
+
+  function scheduleRefresh(reason = "scheduled", delay = 0) {
+    if (state.destroyed) return;
+
+    if (state.refreshTimer) clearTimeout(state.refreshTimer);
+    state.refreshTimer = setTimeout(() => {
+      state.refreshTimer = null;
+      refresh({ reason });
+    }, Math.max(0, Number(delay) || 0));
   }
 
   function destroy() {
@@ -586,13 +672,16 @@ function escapeHtml(value) {
     if (state.refreshTimer) clearTimeout(state.refreshTimer);
     state.refreshTimer = null;
 
-    closeDialog();
-    unmountButton();
+    closeMenu("destroy");
+    removeGlobalListeners();
+    unmountUi();
 
     state.button = null;
+    state.menu = null;
     state.mountedHost = null;
+    state.mountedRoot = null;
 
-    DBG.verbose("PassDialog", "Pass dialog UI destroyed");
+    DBG.verbose("PassDialog", "Pass fan-out UI destroyed");
   }
 
   const api = {
@@ -602,8 +691,8 @@ function escapeHtml(value) {
 
     refresh,
     scheduleRefresh,
-    openDialog,
-    closeDialog,
+    openMenu,
+    closeMenu,
     destroy
   };
 
@@ -617,6 +706,8 @@ function escapeHtml(value) {
     } catch (err) {
       console.warn("[MovementControl:PassDialog] Failed to attach API to FUCompanion.api", err);
     }
+
+    installGlobalListeners();
 
     state.ready = true;
     scheduleRefresh("ready", 100);
@@ -650,6 +741,10 @@ function escapeHtml(value) {
 
   Hooks.on("controlToken", () => {
     scheduleRefresh("controlToken", 40);
+  });
+
+  window.addEventListener("resize", () => {
+    scheduleRefresh("windowResize", 20);
   });
 
   Hooks.once("shutdown", () => {
