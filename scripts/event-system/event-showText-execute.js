@@ -8,9 +8,9 @@
  * What this does:
  * - Executes one "Show Text" event row
  * - Resolves the speaker using event-showText-speakerResolver.js
- * - Tries to hand off the text to your existing JRPG dialog system
- * - Waits until the dialog is finished before resolving
- * - Falls back to a simple Foundry dialog if no JRPG dialog bridge is found
+ * - Uses your existing FU Dialog System first (same in-game bubble UI)
+ * - Waits for the spawned dialog bubble to finish on the executing client
+ * - Keeps a simple fallback only if FU.Dialog is unavailable
  *
  * Exposes API to:
  *   window.oni.EventSystem.ShowText.Execute
@@ -19,6 +19,8 @@
  * - event-constants.js
  * - event-debug.js
  * - event-showText-speakerResolver.js
+ * - scripts/dialog-system/dialog-core.js
+ * - scripts/dialog-system/dialog-ui.js
  */
 
 (() => {
@@ -56,7 +58,12 @@
     log: (...args) => console.log(`[ONI][EventSystem][${DEBUG_SCOPE}]`, ...args),
     verboseLog: (...args) => console.log(`[ONI][EventSystem][${DEBUG_SCOPE}]`, ...args),
     warn: (...args) => console.warn(`[ONI][EventSystem][${DEBUG_SCOPE}]`, ...args),
-    error: (...args) => console.error(`[ONI][EventSystem][${DEBUG_SCOPE}]`, ...args)
+    error: (...args) => console.error(`[ONI][EventSystem][${DEBUG_SCOPE}]`, ...args),
+    group: (...args) => {
+      console.groupCollapsed(`[ONI][EventSystem][${DEBUG_SCOPE}]`, ...args);
+      return true;
+    },
+    groupEnd: () => console.groupEnd()
   };
 
   const DBG = D || FALLBACK_DEBUG;
@@ -68,13 +75,22 @@
     return String(value ?? "").trim();
   }
 
+  function escapeHTML(s) {
+    return String(s ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
   function normalizeRow(row = {}) {
     return {
       id: stringOrEmpty(row.id) || foundry.utils.randomID(),
       type: C.normalizeEventType ? C.normalizeEventType(row.type) : String(row.type || C.DEFAULT_ROW_TYPE),
       speaker: stringOrEmpty(row.speaker || C.DEFAULT_SHOW_TEXT_SPEAKER || C.SPECIAL_SPEAKER_SELF),
       text: String(row.text ?? C.DEFAULT_SHOW_TEXT_MESSAGE ?? ""),
-      bubbleMode: stringOrEmpty(row.bubbleMode || "normal") || "normal",
+      bubbleMode: stringOrEmpty(row.bubbleMode || row.mode || "normal") || "normal",
       speed: Number.isFinite(Number(row.speed)) ? Number(row.speed) : 28
     };
   }
@@ -92,7 +108,45 @@
     };
   }
 
-  function buildDialogPayload(row, speakerResult, context) {
+  function estimateDialogLifetimeMs(text, speed) {
+    const cps = Math.max(1, Number(speed) || 28);
+    const chars = String(text ?? "").length;
+    const typingMs = Math.ceil((chars / cps) * 1000);
+    const holdMs = 1600;
+    const enterExitMs = 600;
+    return Math.max(2500, Math.min(30000, typingMs + holdMs + enterExitMs + 1200));
+  }
+
+  function getBubbleElById(bubbleId) {
+    if (!bubbleId) return null;
+    return document.getElementById(String(bubbleId));
+  }
+
+  async function waitForBubbleToFinish(bubbleId, { timeoutMs = 10000 } = {}) {
+    if (!bubbleId) return;
+
+    const startedAt = Date.now();
+    let sawBubble = false;
+
+    while ((Date.now() - startedAt) < timeoutMs) {
+      const el = getBubbleElById(bubbleId);
+
+      if (el) {
+        sawBubble = true;
+      } else if (sawBubble) {
+        return;
+      }
+
+      await new Promise(r => setTimeout(r, 50));
+    }
+
+    DBG.warn(DEBUG_SCOPE, "Timed out while waiting for dialog bubble to finish.", {
+      bubbleId,
+      timeoutMs
+    });
+  }
+
+  function buildDialogPayload(row, speakerResult, context, anchor) {
     return {
       rowId: row.id,
       eventType: C.EVENT_TYPES?.SHOW_TEXT || "showText",
@@ -107,14 +161,17 @@
       html: row.text,
 
       bubbleMode: row.bubbleMode,
+      mode: row.bubbleMode,
       speed: row.speed,
 
-      token: speakerResult?.token || null,
-      actor: speakerResult?.actor || null,
+      token: speakerResult?.token || anchor?.token || null,
+      actor: speakerResult?.actor || anchor?.actor || null,
       tokenUuid: speakerResult?.tokenUuid || null,
       actorUuid: speakerResult?.actorUuid || null,
 
-      // Extra meta for future flexibility
+      tokenId: anchor?.tokenId || null,
+      actorId: anchor?.actorId || null,
+
       meta: {
         matchedBy: speakerResult?.matchedBy || null,
         resolutionMode: speakerResult?.mode || null
@@ -122,13 +179,24 @@
     };
   }
 
-  function escapeHTML(s) {
-    return String(s ?? "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#039;");
+  function buildAnchorTarget(speakerResult, context) {
+    const token =
+      speakerResult?.token ||
+      context.partyToken ||
+      null;
+
+    const actor =
+      speakerResult?.actor ||
+      token?.actor ||
+      context.partyActor ||
+      null;
+
+    return {
+      token,
+      actor,
+      tokenId: token?.id || token?.document?.id || context.tokenId || null,
+      actorId: actor?.id || context.actorId || null
+    };
   }
 
   function localizeTitle(speakerName) {
@@ -138,8 +206,61 @@
 
   // ------------------------------------------------------------
   // Adapter 1:
-  // Explicit context bridge
-  // Best option if event-executeCore later injects your own dialog runner.
+  // Your real FU Dialog System
+  // ------------------------------------------------------------
+  async function tryFUDialogSystem(payload, context) {
+    const dialogApi = globalThis?.FU?.Dialog;
+    if (typeof dialogApi?.show !== "function") {
+      return { ok: false };
+    }
+
+    const tokenId = payload.tokenId || null;
+    const actorId = payload.actorId || null;
+
+    if (!tokenId && !actorId) {
+      DBG.warn(DEBUG_SCOPE, "FU.Dialog.show could not be used because no anchor token/actor was resolved.", {
+        payload
+      });
+      return { ok: false };
+    }
+
+    DBG.verboseLog(DEBUG_SCOPE, "Using FU.Dialog.show.", {
+      tokenId,
+      actorId,
+      speakerName: payload.speakerName,
+      mode: payload.mode,
+      speed: payload.speed
+    });
+
+    const resultPayload = await dialogApi.show({
+      tokenId,
+      actorId,
+      text: payload.text,
+      name: payload.speakerName,
+      mode: payload.mode || "normal",
+      speed: payload.speed || 28,
+      portraitSrc: null,
+      broadcast: true,
+      sceneId: context.sceneId || canvas?.scene?.id || null
+    });
+
+    const bubbleId = resultPayload?.bubbleId || null;
+
+    await waitForBubbleToFinish(bubbleId, {
+      timeoutMs: estimateDialogLifetimeMs(payload.text, payload.speed)
+    });
+
+    return {
+      ok: true,
+      adapter: "FU.Dialog.show",
+      bubbleId,
+      resultPayload
+    };
+  }
+
+  // ------------------------------------------------------------
+  // Adapter 2:
+  // Explicit runtime bridge if you want one later
   // ------------------------------------------------------------
   async function tryContextBridge(payload, context) {
     try {
@@ -169,9 +290,8 @@
   }
 
   // ------------------------------------------------------------
-  // Adapter 2:
-  // Optional shared bridge under window.oni.EventSystem.DialogBridge
-  // This lets you wire your JRPG text system later without rewriting this file.
+  // Adapter 3:
+  // EventSystem bridge if you want one later
   // ------------------------------------------------------------
   async function tryEventSystemBridge(payload, context) {
     try {
@@ -191,43 +311,8 @@
   }
 
   // ------------------------------------------------------------
-  // Adapter 3:
-  // FUCompanion bridge if you later decide to expose one there
-  // ------------------------------------------------------------
-  async function tryFUCompanionBridge(payload, context) {
-    try {
-      const api = window.FUCompanion?.api;
-
-      if (typeof api?.showEventText === "function") {
-        DBG.verboseLog(DEBUG_SCOPE, "Using FUCompanion.api.showEventText.");
-        await api.showEventText(payload, context);
-        return { ok: true, adapter: "window.FUCompanion.api.showEventText" };
-      }
-
-      if (typeof api?.showDialogText === "function") {
-        DBG.verboseLog(DEBUG_SCOPE, "Using FUCompanion.api.showDialogText.");
-        await api.showDialogText(payload, context);
-        return { ok: true, adapter: "window.FUCompanion.api.showDialogText" };
-      }
-
-      if (typeof api?.jrpgDialogShow === "function") {
-        DBG.verboseLog(DEBUG_SCOPE, "Using FUCompanion.api.jrpgDialogShow.");
-        await api.jrpgDialogShow(payload, context);
-        return { ok: true, adapter: "window.FUCompanion.api.jrpgDialogShow" };
-      }
-    } catch (e) {
-      DBG.error(DEBUG_SCOPE, "FUCompanion bridge failed:", e);
-      throw e;
-    }
-
-    return { ok: false };
-  }
-
-  // ------------------------------------------------------------
   // Adapter 4:
-  // Fallback simple Foundry dialog
-  // This guarantees the sequence can still wait correctly even
-  // before your JRPG dialog bridge is wired in.
+  // Simple fallback only if dialog system is unavailable
   // ------------------------------------------------------------
   async function showFallbackDialog(payload) {
     const title = localizeTitle(payload.speakerName);
@@ -238,7 +323,6 @@
       </div>
     `;
 
-    // Foundry v12 can still use Dialog.confirm reliably.
     return new Promise((resolve) => {
       try {
         new Dialog({
@@ -263,22 +347,22 @@
   }
 
   async function runDialogAdapters(payload, context) {
-    // Order matters:
-    // 1. explicit runtime bridge
-    // 2. shared EventSystem bridge
-    // 3. FUCompanion bridge
-    // 4. fallback dialog
+    // Preferred order:
+    // 1. real FU dialog system
+    // 2. explicit runtime bridge
+    // 3. EventSystem bridge
+    // 4. fallback popup (only if nothing else exists)
 
-    let result = await tryContextBridge(payload, context);
+    let result = await tryFUDialogSystem(payload, context);
+    if (result.ok) return result;
+
+    result = await tryContextBridge(payload, context);
     if (result.ok) return result;
 
     result = await tryEventSystemBridge(payload, context);
     if (result.ok) return result;
 
-    result = await tryFUCompanionBridge(payload, context);
-    if (result.ok) return result;
-
-    DBG.warn(DEBUG_SCOPE, "No JRPG dialog bridge found. Falling back to simple Foundry Dialog.");
+    DBG.warn(DEBUG_SCOPE, "FU Dialog System not available. Falling back to simple Foundry Dialog.");
     return showFallbackDialog(payload);
   }
 
@@ -292,60 +376,37 @@
       const row = normalizeRow(rawRow);
       const context = buildExecutionContext(rawContext);
 
-      DBG.group?.(DEBUG_SCOPE, `Execute Show Text [${row.id}]`, true);
+      const grouped = !!DBG.group?.(DEBUG_SCOPE, `Execute Show Text [${row.id}]`, true);
       DBG.log(DEBUG_SCOPE, "Raw row:", rawRow);
       DBG.verboseLog(DEBUG_SCOPE, "Normalized row:", row);
       DBG.verboseLog(DEBUG_SCOPE, "Execution context:", context);
 
       try {
         const speakerResult = await SpeakerResolver.resolve(row.speaker, context);
+        const safeSpeakerResult = speakerResult?.ok
+          ? speakerResult
+          : {
+              ok: true,
+              mode: "fallback",
+              input: row.speaker,
+              matchedBy: "executeFallback",
+              speakerName: C.SPECIAL_SPEAKER_SELF,
+              token: null,
+              actor: null,
+              tokenUuid: null,
+              actorUuid: null
+            };
 
-        if (!speakerResult?.ok) {
-          const fallbackSpeaker = {
-            ok: true,
-            speakerName: C.SPECIAL_SPEAKER_SELF,
-            matchedBy: "executeFallback",
-            mode: "fallback",
-            token: null,
-            actor: null,
-            tokenUuid: null,
-            actorUuid: null
-          };
-
-          DBG.warn(DEBUG_SCOPE, "Speaker resolution failed cleanly. Using fallback speaker.", {
-            requestedSpeaker: row.speaker,
-            fallbackSpeaker
-          });
-
-          const payload = buildDialogPayload(row, fallbackSpeaker, context);
-          const dialogResult = await runDialogAdapters(payload, context);
-
-          DBG.log(DEBUG_SCOPE, "Show Text completed with fallback speaker.", {
-            rowId: row.id,
-            adapter: dialogResult?.adapter || null
-          });
-
-          return {
-            ok: true,
-            rowId: row.id,
-            type: row.type,
-            adapter: dialogResult?.adapter || null,
-            payload
-          };
-        }
-
-        const payload = buildDialogPayload(row, speakerResult, context);
+        const anchor = buildAnchorTarget(safeSpeakerResult, context);
+        const payload = buildDialogPayload(row, safeSpeakerResult, context, anchor);
 
         DBG.log(DEBUG_SCOPE, "Final Show Text payload:", {
           rowId: payload.rowId,
           speakerName: payload.speakerName,
-          matchedBy: payload.meta?.matchedBy,
-          adapterCandidates: [
-            "context bridge",
-            "EventSystem DialogBridge",
-            "FUCompanion bridge",
-            "fallback Dialog"
-          ]
+          mode: payload.mode,
+          tokenId: payload.tokenId,
+          actorId: payload.actorId,
+          matchedBy: payload.meta?.matchedBy
         });
 
         DBG.verboseLog(DEBUG_SCOPE, "Payload full dump:", payload);
@@ -375,7 +436,7 @@
           error: e
         };
       } finally {
-        DBG.groupEnd?.();
+        if (grouped) DBG.groupEnd?.();
       }
     }
   };
