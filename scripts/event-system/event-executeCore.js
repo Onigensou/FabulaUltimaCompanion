@@ -14,6 +14,12 @@
  * - Sends execution requests to GM through fabula-ultima-companion socket
  * - Executes event rows in strict sequence, waiting for each row to finish
  *
+ * Polished updates in this version:
+ * - Icon styling now mirrors your old examine UI
+ * - Button placement uses doc-based token position like your shop UI
+ * - Uses desired/show/hide state logic to reduce UI flicker
+ * - Repositions immediately on move update + schedules follow-up scans
+ *
  * Requires:
  * - event-constants.js
  * - event-debug.js
@@ -80,11 +86,11 @@
   }
 
   function worldToScreen(x, y) {
-    const t = canvas?.stage?.worldTransform;
-    if (!t) return { x, y };
+    const wt = canvas?.app?.stage?.worldTransform || canvas?.stage?.worldTransform;
+    if (!wt) return { x, y };
     return {
-      x: (t.a * x) + t.tx,
-      y: (t.d * y) + t.ty
+      x: (x * wt.a) + wt.tx,
+      y: (y * wt.d) + wt.ty
     };
   }
 
@@ -100,31 +106,13 @@
     };
   }
 
-  function getTileCenter(tileLike) {
-    const d = tileLike?.document ?? tileLike;
-    return {
-      x: Number(d?.x ?? 0) + (Number(d?.width ?? 0) / 2),
-      y: Number(d?.y ?? 0) + (Number(d?.height ?? 0) / 2)
-    };
-  }
-
-  function getTokenCenterPx(token, overrideXY = null) {
-    const doc = token?.document ?? token;
+  function getAuthoritativeTokenCenterPx(token, overrideXY = null) {
+    const doc = token?.document;
     const baseX = overrideXY?.x ?? doc?.x ?? token?.x ?? 0;
     const baseY = overrideXY?.y ?? doc?.y ?? token?.y ?? 0;
-
-    const widthPx =
-      token?.w ??
-      (Number(doc?.width ?? 1) * Number(canvas?.grid?.size ?? 100));
-
-    const heightPx =
-      token?.h ??
-      (Number(doc?.height ?? 1) * Number(canvas?.grid?.size ?? 100));
-
-    return {
-      x: baseX + (widthPx / 2),
-      y: baseY + (heightPx / 2)
-    };
+    const w = token?.w ?? 0;
+    const h = token?.h ?? 0;
+    return { x: baseX + (w / 2), y: baseY + (h / 2) };
   }
 
   function pointToRectDistance(point, rect) {
@@ -275,7 +263,7 @@
 
   async function checkProximityForTile(tileLike, partyToken, overrideXY = null) {
     const data = readEventData(tileLike);
-    const point = getTokenCenterPx(partyToken, overrideXY);
+    const point = getAuthoritativeTokenCenterPx(partyToken, overrideXY);
     const rect = getTileRect(tileLike);
     const d = pointToRectDistance(point, rect);
 
@@ -334,38 +322,58 @@
   width: 100vw;
   height: 100vh;
   pointer-events: none;
-  z-index: 60;
+  z-index: 100001;
 }
 
 .${C.INTERACT_BUTTON_CLASS || "oni-event-btn"} {
   position: absolute;
   pointer-events: auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 42px;
-  height: 42px;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  background: rgba(255,255,255,0.95);
+  border: 2px solid rgba(0,0,0,0.75);
   border-radius: 999px;
-  background: rgba(30,30,30,.88);
-  border: 1px solid rgba(255,255,255,.18);
-  box-shadow: 0 10px 22px rgba(0,0,0,.35);
-  color: #fff;
-  font-size: 24px;
-  font-weight: 900;
-  line-height: 1;
+  box-shadow: 0 6px 10px rgba(0,0,0,0.35);
+  cursor: pointer;
+  user-select: none;
+  transform: translate(-50%, -50%) scale(0.75);
+  transform-origin: 50% 100%;
   opacity: 0;
-  transform: translate(-50%,-50%) scale(.85);
-  transition: opacity 180ms ease, transform 180ms cubic-bezier(.2,.8,.2,1);
+  transition:
+    transform 160ms ease-out,
+    opacity 160ms ease-out;
+}
+
+.${C.INTERACT_BUTTON_CLASS || "oni-event-btn"} .mark {
+  font-family: "Cinzel","Signika",var(--font-primary,"Signika"),system-ui,sans-serif;
+  font-weight: 900;
+  font-size: 20px;
+  line-height: 1;
+  color: rgba(20,16,10,0.95);
+  transform: translateY(-1px);
 }
 
 .${C.INTERACT_BUTTON_CLASS || "oni-event-btn"}.is-visible {
+  transform: translate(-50%, -50%) scale(1);
   opacity: 1;
-  transform: translate(-50%,-50%) scale(1);
 }
 
 .${C.INTERACT_BUTTON_CLASS || "oni-event-btn"}.is-hiding {
+  transform: translate(-50%, -50%) scale(0.78);
   opacity: 0;
-  transform: translate(-50%,-50%) scale(.78);
+  transition:
+    transform 140ms ease-in,
+    opacity 140ms ease-in;
+}
+
+.${C.INTERACT_BUTTON_CLASS || "oni-event-btn"}:hover {
+  transform: translate(-50%, -50%) scale(1.06);
+}
+
+.${C.INTERACT_BUTTON_CLASS || "oni-event-btn"}:active {
+  transform: translate(-50%, -50%) scale(0.98);
 }
     `;
     document.head.appendChild(style);
@@ -376,9 +384,16 @@
       this.core = core;
       this.layer = null;
       this.button = null;
-      this.visible = false;
-      this.opening = false;
+
       this.currentTileId = null;
+      this.currentTokenId = null;
+
+      this.desiredVisible = false;
+      this.state = "hidden";
+      this.hideTimer = null;
+      this.opening = false;
+
+      this._tickerFn = null;
     }
 
     start() {
@@ -390,13 +405,13 @@
       this.layer.id = C.UI_LAYER_ID || "oni-event-ui-layer";
       document.body.appendChild(this.layer);
 
-      this.button = document.createElement("button");
-      this.button.type = "button";
-      this.button.className = C.INTERACT_BUTTON_CLASS || "oni-event-btn";
-      this.button.textContent = C.INTERACT_BUTTON_TEXT || "!";
-      this.button.title = "Interact";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = C.INTERACT_BUTTON_CLASS || "oni-event-btn";
+      btn.title = "Interact";
+      btn.innerHTML = `<div class="mark">${C.INTERACT_BUTTON_TEXT || "!"}</div>`;
 
-      this.button.addEventListener("click", async (ev) => {
+      btn.addEventListener("click", async (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
 
@@ -405,7 +420,7 @@
         if (this.opening) return;
 
         this.opening = true;
-        this.button.disabled = true;
+        btn.disabled = true;
 
         try {
           await this.core.requestExecute(tileId);
@@ -417,61 +432,125 @@
         }
       });
 
-      this.layer.appendChild(this.button);
+      this.layer.appendChild(btn);
+      this.button = btn;
+
+      this._tickerFn = () => {
+        if (!this.desiredVisible) return;
+        if (!this.currentTokenId) return;
+
+        const token = canvas?.tokens?.get?.(this.currentTokenId) || null;
+        if (!token) return;
+
+        const override = this.core._getOverride(this.currentTokenId);
+        this.placeForToken(token, override ? { x: override.x, y: override.y } : null);
+      };
+
+      try {
+        canvas.app.ticker.add(this._tickerFn, undefined, PIXI.UPDATE_PRIORITY.LOW);
+      } catch (_) {}
 
       DBG.verboseLog(DEBUG_SCOPE, "Runtime UI started.");
     }
 
     stop() {
+      if (this.hideTimer) {
+        clearTimeout(this.hideTimer);
+        this.hideTimer = null;
+      }
+
+      try {
+        if (this._tickerFn) canvas.app.ticker.remove(this._tickerFn);
+      } catch (_) {}
+
       this.button?.remove();
       this.layer?.remove();
 
       this.button = null;
       this.layer = null;
-      this.visible = false;
       this.currentTileId = null;
+      this.currentTokenId = null;
+      this.desiredVisible = false;
+      this.state = "hidden";
       this.opening = false;
+      this._tickerFn = null;
 
       DBG.verboseLog(DEBUG_SCOPE, "Runtime UI stopped.");
     }
 
-    showForCandidate(candidate, partyToken) {
+    showForCandidate(candidate, partyToken, overrideXY = null) {
       if (!this.button || !partyToken) return;
 
       this.currentTileId = candidate?.tileId ?? null;
-      this.button.title = candidate?.tileName
-        ? `Interact: ${candidate.tileName}`
-        : "Interact";
+      this.currentTokenId = partyToken.id;
+      this.desiredVisible = true;
+      this.button.title = candidate?.tileName ? `Interact: ${candidate.tileName}` : "Interact";
 
-      this.repositionForToken(partyToken);
-
-      if (!this.visible) {
-        this.button.classList.remove("is-hiding");
-        requestAnimationFrame(() => this.button?.classList.add("is-visible"));
-        this.visible = true;
-      }
+      this.placeForToken(partyToken, overrideXY);
+      this._show();
     }
 
     hide() {
-      if (!this.button || !this.visible) {
-        this.currentTileId = null;
-        return;
-      }
-
-      this.button.classList.remove("is-visible");
-      this.button.classList.add("is-hiding");
-      this.visible = false;
+      this.desiredVisible = false;
       this.currentTileId = null;
+      this._hide();
     }
 
-    repositionForToken(partyToken) {
-      if (!this.button || !partyToken) return;
+    _show() {
+      if (!this.button) return;
 
-      const center = getTokenCenterPx(partyToken, null);
+      if (this.state === "shown" || this.state === "showing") return;
+
+      if (this.state === "hiding") {
+        if (this.hideTimer) clearTimeout(this.hideTimer);
+        this.hideTimer = null;
+      }
+
+      this.state = "showing";
+      this.button.classList.remove("is-hiding");
+
+      requestAnimationFrame(() => {
+        if (!this.button) return;
+        this.button.classList.add("is-visible");
+        this.state = "shown";
+      });
+    }
+
+    _hide() {
+      if (!this.button) return;
+      if (this.state === "hidden" || this.state === "hiding") return;
+
+      this.state = "hiding";
+      this.button.classList.remove("is-visible");
+      this.button.classList.add("is-hiding");
+
+      this.hideTimer = setTimeout(() => {
+        if (this.desiredVisible) {
+          this.button?.classList.remove("is-hiding");
+          this.button?.classList.add("is-visible");
+          this.state = "shown";
+          this.hideTimer = null;
+          return;
+        }
+
+        this.button?.classList.remove("is-hiding");
+        this.state = "hidden";
+        this.hideTimer = null;
+      }, 160);
+    }
+
+    placeForToken(token, overrideXY = null) {
+      if (!this.button || !token) return;
+
+      const center = getAuthoritativeTokenCenterPx(token, overrideXY);
       const screen = worldToScreen(center.x, center.y);
 
-      this.button.style.left = `${screen.x}px`;
-      this.button.style.top = `${screen.y - Number(C.BUTTON_OFFSET_Y ?? 32)}px`;
+      const verticalOffset = Math.max(42, Math.round((token.h / 2) + 10));
+      const finalX = screen.x;
+      const finalY = screen.y - verticalOffset;
+
+      this.button.style.left = `${finalX}px`;
+      this.button.style.top = `${finalY}px`;
     }
   }
 
@@ -482,7 +561,7 @@
     const safeTileId = String(tileId || "");
     const safeSceneId = String(sceneId || "");
 
-    DBG.group?.(DEBUG_SCOPE, `GM Execute Tile [${safeTileId}]`, true);
+    const grouped = !!DBG.group?.(DEBUG_SCOPE, `GM Execute Tile [${safeTileId}]`, true);
     DBG.log(DEBUG_SCOPE, "Execution request received.", {
       sceneId: safeSceneId,
       tileId: safeTileId,
@@ -639,7 +718,7 @@
       };
     } finally {
       gmActiveExecutions.delete(safeTileId);
-      DBG.groupEnd?.();
+      if (grouped) DBG.groupEnd?.();
     }
   }
 
@@ -656,6 +735,7 @@
     _posOverrides: new Map(),
     _scanQueued: false,
     _activeCandidate: null,
+    _followupScanTimers: [],
 
     getActiveCandidate() {
       return this._activeCandidate ? foundry.utils.deepClone(this._activeCandidate) : null;
@@ -692,6 +772,25 @@
       }
     },
 
+    _clearFollowupScans() {
+      for (const t of this._followupScanTimers) {
+        try { clearTimeout(t); } catch (_) {}
+      }
+      this._followupScanTimers = [];
+    },
+
+    _scheduleFollowupScans(reasonBase = "followup") {
+      this._clearFollowupScans();
+
+      const delays = [80, 180, 320, 520];
+      for (const ms of delays) {
+        const timer = setTimeout(() => {
+          this._queueScan(`${reasonBase}:${ms}ms`);
+        }, ms);
+        this._followupScanTimers.push(timer);
+      }
+    },
+
     _queueScan(reason = "unknown") {
       if (this._scanQueued) return;
       this._scanQueued = true;
@@ -720,9 +819,12 @@
         }
 
         const ov = this._getOverride(partyToken.id);
-        const partyCenter = getTokenCenterPx(partyToken, ov ? { x: ov.x, y: ov.y } : null);
-        const tiles = canvas.tiles?.placeables ?? [];
+        const partyCenter = getAuthoritativeTokenCenterPx(
+          partyToken,
+          ov ? { x: ov.x, y: ov.y } : null
+        );
 
+        const tiles = canvas.tiles?.placeables ?? [];
         let best = null;
 
         for (const tile of tiles) {
@@ -750,16 +852,19 @@
         this._activeCandidate = best;
 
         if (best) {
-          this.ui?.showForCandidate(best, partyToken);
+          this.ui?.showForCandidate(
+            best,
+            partyToken,
+            ov ? { x: ov.x, y: ov.y } : null
+          );
         } else {
           this.ui?.hide();
         }
 
-        this.ui?.repositionForToken(partyToken);
-
         DBG.verboseLog(DEBUG_SCOPE, "Scan result.", {
           reason,
           partyTokenId: partyToken.id,
+          override: ov ?? null,
           activeCandidate: best
         });
       } catch (e) {
@@ -861,7 +966,13 @@
         const afterY = ("y" in changes) ? changes.y : tokenDoc.y;
 
         this._setOverride(tokenDoc.id, afterX, afterY);
+
+        // Reposition immediately using authoritative doc coords
+        this.ui?.placeForToken(partyToken, { x: afterX, y: afterY });
+
+        // Immediate + delayed rescans to reduce spawn/hide drift during token slide
         this._queueScan("updateToken(move)");
+        this._scheduleFollowupScans("updateTokenFollowup");
       };
 
       const onCreateToken = () => this._queueScan("createToken");
@@ -869,16 +980,19 @@
       const onCreateTile = () => this._queueScan("createTile");
       const onDeleteTile = () => this._queueScan("deleteTile");
       const onUpdateTile = () => this._queueScan("updateTile");
-      const onCanvasPan = () => {
-        resolvePartyToken().then((partyToken) => {
-          if (partyToken) this.ui?.repositionForToken(partyToken);
-        });
+      const onControlToken = () => this._queueScan("controlToken");
+      const onCanvasPan = async () => {
+        const partyToken = await resolvePartyToken();
+        if (!partyToken) return;
+        const ov = this._getOverride(partyToken.id);
+        this.ui?.placeForToken(partyToken, ov ? { x: ov.x, y: ov.y } : null);
       };
       const onCanvasReady = () => this._queueScan("canvasReady");
-      const onResize = () => {
-        resolvePartyToken().then((partyToken) => {
-          if (partyToken) this.ui?.repositionForToken(partyToken);
-        });
+      const onResize = async () => {
+        const partyToken = await resolvePartyToken();
+        if (!partyToken) return;
+        const ov = this._getOverride(partyToken.id);
+        this.ui?.placeForToken(partyToken, ov ? { x: ov.x, y: ov.y } : null);
       };
 
       Hooks.on("updateToken", onUpdateToken);
@@ -887,6 +1001,7 @@
       Hooks.on("createTile", onCreateTile);
       Hooks.on("deleteTile", onDeleteTile);
       Hooks.on("updateTile", onUpdateTile);
+      Hooks.on("controlToken", onControlToken);
       Hooks.on("canvasPan", onCanvasPan);
       Hooks.on("canvasReady", onCanvasReady);
       window.addEventListener("resize", onResize);
@@ -897,6 +1012,7 @@
       this._hooks.push(["createTile", onCreateTile]);
       this._hooks.push(["deleteTile", onDeleteTile]);
       this._hooks.push(["updateTile", onUpdateTile]);
+      this._hooks.push(["controlToken", onControlToken]);
       this._hooks.push(["canvasPan", onCanvasPan]);
       this._hooks.push(["canvasReady", onCanvasReady]);
       this._hooks.push(["resize", onResize]);
@@ -932,6 +1048,7 @@
       this._posOverrides.clear();
       this._scanQueued = false;
       this._activeCandidate = null;
+      this._clearFollowupScans();
 
       this.ui?.stop();
       this.ui = null;
