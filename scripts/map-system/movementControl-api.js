@@ -499,18 +499,38 @@
         return null;
       }
 
-      const controllerInfo = await getEffectiveControllerInfo(snapshot, stored);
+            const controllerInfo = await getEffectiveControllerInfo(snapshot, stored);
       const effectiveRow = controllerInfo?.effectiveRow ?? null;
 
-      if (store?.touchSnapshot) {
-        await store.touchSnapshot(snapshot, {
-          reason: `refresh:${source}`
-        });
-      }
+      const currentGameActor = store?.resolveCurrentGameActor
+        ? await store.resolveCurrentGameActor()
+        : null;
 
-      if (effectiveRow && store?.setController) {
-        await store.setController(effectiveRow, {
-          reason: `refreshResolvedController:${source}`
+      const canWriteState = !!(
+        store?.canWriteToCurrentGameActor &&
+        currentGameActor &&
+        store.canWriteToCurrentGameActor(currentGameActor)
+      );
+
+      if (canWriteState) {
+        if (store?.touchSnapshot) {
+          await store.touchSnapshot(snapshot, {
+            reason: `refresh:${source}`
+          });
+        }
+
+        if (effectiveRow && store?.setController) {
+          await store.setController(effectiveRow, {
+            reason: `refreshResolvedController:${source}`
+          });
+        }
+      } else {
+        DBG.verbose("API", "Skipping refresh store writes because current user is not owner of Current Game actor", {
+          source,
+          currentUserId: game.user?.id ?? null,
+          currentUserName: game.user?.name ?? null,
+          currentGameActorId: currentGameActor?.id ?? null,
+          currentGameActorName: currentGameActor?.name ?? null
         });
       }
 
