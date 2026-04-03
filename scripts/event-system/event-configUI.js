@@ -289,7 +289,6 @@
 
       const tabCount = tabsNav.querySelectorAll(".item").length;
 
-      // widen a bit as more tabs get added, but clamp to a reasonable range
       const targetWidth = Math.min(
         Math.max(760, tabCount * 96),
         1180
@@ -593,15 +592,26 @@
     syncRowsJson(hiddenJsonEl, rowsWrap);
   }
 
-  function patchSubmitData(app, rowsWrap) {
-    if (app._oniEventConfigSubmitPatched) return;
-
-    const originalGetSubmitData = app._getSubmitData.bind(app);
+  function patchSubmitData(app) {
+    if (!app?._oniEventConfigOriginalGetSubmitData) {
+      app._oniEventConfigOriginalGetSubmitData = app._getSubmitData.bind(app);
+    }
 
     app._getSubmitData = function (updateData = {}) {
-      const data = originalGetSubmitData(updateData);
+      const data = app._oniEventConfigOriginalGetSubmitData(updateData);
 
       try {
+        const root = getRoot(null, app);
+        const rowsWrap = root?.querySelector?.(".oni-event-table");
+
+        if (!rowsWrap) {
+          DBG.warn(DEBUG_SCOPE, "Patched _getSubmitData could not find current rowsWrap.", {
+            appId: app?.appId ?? null,
+            tileId: app?.document?.id ?? app?.object?.id ?? null
+          });
+          return data;
+        }
+
         const rows = collectRows(rowsWrap);
         data[`flags.${SCOPE}.eventRows`] = rows;
 
@@ -618,7 +628,7 @@
 
     app._oniEventConfigSubmitPatched = true;
 
-    DBG.verboseLog(DEBUG_SCOPE, "Submit patch installed.", {
+    DBG.verboseLog(DEBUG_SCOPE, "Submit patch installed/refreshed.", {
       appId: app?.appId ?? null
     });
   }
@@ -837,7 +847,7 @@
         syncRowsJson(hiddenJsonEl, rowsWrap);
       });
 
-      patchSubmitData(app, rowsWrap);
+      patchSubmitData(app);
 
       resizeTileConfigForTabs(app, root);
 
