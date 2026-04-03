@@ -44,11 +44,26 @@
 
     isOpen: false,
     currentDirection: "down",
+    passInFlight: false,
 
     refreshTimer: null,
     boundDocPointerDown: null,
     boundKeyDown: null
   };
+
+  function shouldFreezeMenuRefresh(reason = "scheduled") {
+    if (!state.isOpen) return false;
+
+    const allowedReasons = new Set([
+      "performPassSuccess",
+      "performPassFailed",
+      "performPassException",
+      "inactive",
+      "destroy"
+    ]);
+
+    return !allowedReasons.has(String(reason || ""));
+  }
 
   function getDebug() {
     const dbg = globalThis.__ONI_MOVEMENT_CONTROL_DEBUG__;
@@ -436,11 +451,31 @@
       btn.textContent = buildOptionLabel(row);
       btn.title = buildOptionLabel(row);
 
-      btn.addEventListener("click", async (ev) => {
+      btn.addEventListener("pointerdown", async (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
-        closeMenu("optionSelected");
-        await performPass(row?.userId);
+
+        if (state.passInFlight) {
+          DBG.verbose("PassDialog", "Ignoring option press because a pass is already in flight", {
+            targetUserId: row?.userId ?? null,
+            targetUserName: row?.userName ?? null
+          });
+          return;
+        }
+
+        DBG.verbose("PassDialog", "Pass option pressed", {
+          targetUserId: row?.userId ?? null,
+          targetUserName: row?.userName ?? null
+        });
+
+        state.passInFlight = true;
+
+        try {
+          closeMenu("optionSelected");
+          await performPass(row?.userId);
+        } finally {
+          state.passInFlight = false;
+        }
       });
 
       menu.appendChild(btn);
@@ -506,6 +541,13 @@
       return { ok: false, reason: "missingTargetUserId" };
     }
 
+    DBG.verbose("PassDialog", "performPass started", {
+      targetUserId: cleanTargetUserId,
+      currentUserId: game.user?.id ?? null,
+      currentUserName: game.user?.name ?? null,
+      isGM: !!game.user?.isGM
+    });
+
     try {
       let result = null;
 
@@ -560,6 +602,11 @@
   async function onPassButtonClick(ev) {
     ev.preventDefault();
     ev.stopPropagation();
+
+    DBG.verbose("PassDialog", "Pass button pressed", {
+      isOpen: state.isOpen
+    });
+
     await toggleMenu();
   }
 
@@ -602,7 +649,7 @@
     }
   }
 
-  async function refresh({ reason = "manual" } = {}) {
+   async function refresh({ reason = "manual" } = {}) {
     if (state.destroyed) return;
 
     const mounted = mountUi();
@@ -640,11 +687,13 @@
       if (!shouldShow || !hasTargets) {
         closeMenu("refreshInvalidated");
       } else {
-        renderMenuItems(uiState);
-        const menu = ensureMenu();
-        const measuredHeight = menu.offsetHeight || 0;
-        updateMenuDirection(measuredHeight);
+        DBG.verbose("PassDialog", "Menu refresh skipped while open to prevent DOM rebuild", {
+          reason,
+          eligibleCount: uiState.eligibleControllers?.length ?? 0
+        });
       }
+
+      return;
     }
 
     DBG.verbose("PassDialog", "Pass fan-out UI refreshed", {
@@ -658,6 +707,13 @@
 
   function scheduleRefresh(reason = "scheduled", delay = 0) {
     if (state.destroyed) return;
+
+    if (shouldFreezeMenuRefresh(reason)) {
+      DBG.verbose("PassDialog", "Skipping scheduled refresh because fan menu is open", {
+        reason
+      });
+      return;
+    }
 
     if (state.refreshTimer) clearTimeout(state.refreshTimer);
     state.refreshTimer = setTimeout(() => {
