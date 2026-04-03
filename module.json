@@ -2,7 +2,7 @@
   "id": "fabula-ultima-companion",
   "title": "FabulaUltimaCompanion",
   "description": "Adds custom hooks and cool functionality.",
-  "version": "1.0.385",
+  "version": "1.0.386",
   "compatibility": {
     "minimum": "12",
     "verified": "12"
@@ -55,7 +55,15 @@
   "scripts/item-transfer/item-trading/TradeWindow_UI.js",
   "scripts/item-transfer/item-trading/Trade_ModuleListener.js",
   "scripts/item-transfer/item-trading/Trade_StartTrade_API.js",
-  "scripts/map-system/camera-follow-actor.js",
+  "scripts/map-system/movementControl-debug.js",
+  "scripts/map-system/movementControl-resolver.js",
+  "scripts/map-system/movementControl-store.js",
+  "scripts/map-system/movementControl-socket.js",
+  "scripts/map-system/movementControl-api.js",
+  "scripts/map-system/movementControl-controllerBadge.js",
+  "scripts/map-system/movementControl-passDialog.js",
+  "scripts/map-system/movementControl-cameraRuntime.js",
+  "scripts/map-system/movementControl-bootstrap.js",
   "scripts/check-roller/checkRoller-manager.js",
   "scripts/check-roller/checkRoller-core.js",
   "scripts/check-roller/checkRoller-createCard.js",
@@ -123,5 +131,5 @@
   "styles": ["styles/style.css"],
   "packs": [],
   "manifest": "https://raw.githubusercontent.com/Onigensou/FabulaUltimaCompanion/refs/heads/main/module.json",
-  "download": "https://codeload.github.com/Onigensou/FabulaUltimaCompanion/zip/refs/tags/v1.0.385"
+  "download": "https://codeload.github.com/Onigensou/FabulaUltimaCompanion/zip/refs/tags/v1.0.386"
 }
