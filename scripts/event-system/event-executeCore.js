@@ -248,49 +248,38 @@
     }
   }
 
-  const _partyTokenResolveDebugState = {
-  lastKey: null
-};
+  async function resolvePartyToken() {
+    if (!canvas?.ready) return null;
 
-function debugResolvedPartyToken(mode, token, silent = false) {
-  if (silent || !token) return;
+    const controlled = canvas.tokens?.controlled?.[0] ?? null;
+    if (controlled) {
+      DBG.verboseLog(DEBUG_SCOPE, "Party token resolved from controlled token.", {
+        tokenId: controlled.id,
+        tokenName: controlled.name
+      });
+      return controlled;
+    }
 
-  const key = `${mode}:${token.id}`;
-  if (_partyTokenResolveDebugState.lastKey === key) return;
-  _partyTokenResolveDebugState.lastKey = key;
+    const { db, source } = await resolveCurrentDbContext();
+    if (!db) return null;
 
-  DBG.verboseLog(DEBUG_SCOPE, `Party token resolved from ${mode}.`, {
-    tokenId: token.id,
-    tokenName: token.name
-  });
-}
+    const tokens = canvas.tokens?.placeables ?? [];
+    const dbToken =
+      tokens.find(t => t?.actor?.id === db.id) ||
+      (source ? tokens.find(t => t?.actor?.id === source.id) : null) ||
+      tokens.find(t => String(t?.name || "").trim() === String(db?.name || "").trim()) ||
+      tokens.find(t => String(t?.actor?.name || "").trim() === String(db?.name || "").trim()) ||
+      null;
 
-async function resolvePartyToken({ silent = false } = {}) {
-  if (!canvas?.ready) return null;
+    if (dbToken) {
+      DBG.verboseLog(DEBUG_SCOPE, "Party token resolved from FUCompanion DB fallback.", {
+        tokenId: dbToken.id,
+        tokenName: dbToken.name
+      });
+    }
 
-  const { db, source } = await resolveCurrentDbContext();
-  const tokens = canvas.tokens?.placeables ?? [];
-
-  const dbToken =
-    (db ? tokens.find(t => t?.actor?.id === db.id) : null) ||
-    (source ? tokens.find(t => t?.actor?.id === source.id) : null) ||
-    (db ? tokens.find(t => String(t?.name || "").trim() === String(db?.name || "").trim()) : null) ||
-    (db ? tokens.find(t => String(t?.actor?.name || "").trim() === String(db?.name || "").trim()) : null) ||
-    null;
-
-  if (dbToken) {
-    debugResolvedPartyToken("FUCompanion DB", dbToken, silent);
     return dbToken;
   }
-
-  const controlled = canvas.tokens?.controlled?.[0] ?? null;
-  if (controlled) {
-    debugResolvedPartyToken("controlled token", controlled, silent);
-    return controlled;
-  }
-
-  return null;
-}
 
   async function checkProximityForTile(tileLike, partyToken, overrideXY = null) {
     const data = readEventData(tileLike);
@@ -380,7 +369,7 @@ async function resolvePartyToken({ silent = false } = {}) {
         return { ok: false, reason: "alreadyExecuting", tileId: safeTileId };
       }
 
-      const partyToken = await resolvePartyToken({ silent: true });
+      const partyToken = await resolvePartyToken();
       if (!partyToken) {
         DBG.warn(DEBUG_SCOPE, "Execution blocked because no party token could be resolved.", { tileId: safeTileId });
         return { ok: false, reason: "noPartyToken", tileId: safeTileId };
@@ -812,18 +801,18 @@ async function resolvePartyToken({ silent = false } = {}) {
       const onUpdateTile = () => this._queueScan("updateTile");
       const onControlToken = () => this._queueScan("controlToken");
       const onCanvasPan = async () => {
-  const partyToken = await resolvePartyToken({ silent: true });
-  if (!partyToken) return;
-  const ov = this._getOverride(partyToken.id);
-  this.ui?.placeForToken(partyToken, ov ? { x: ov.x, y: ov.y } : null);
-};
-
-const onResize = async () => {
-  const partyToken = await resolvePartyToken({ silent: true });
-  if (!partyToken) return;
-  const ov = this._getOverride(partyToken.id);
-  this.ui?.placeForToken(partyToken, ov ? { x: ov.x, y: ov.y } : null);
-};
+        const partyToken = await resolvePartyToken();
+        if (!partyToken) return;
+        const ov = this._getOverride(partyToken.id);
+        this.ui?.placeForToken(partyToken, ov ? { x: ov.x, y: ov.y } : null);
+      };
+      const onCanvasReady = () => this._queueScan("canvasReady");
+      const onResize = async () => {
+        const partyToken = await resolvePartyToken();
+        if (!partyToken) return;
+        const ov = this._getOverride(partyToken.id);
+        this.ui?.placeForToken(partyToken, ov ? { x: ov.x, y: ov.y } : null);
+      };
 
       Hooks.on("updateToken", onUpdateToken);
       Hooks.on("createToken", onCreateToken);
