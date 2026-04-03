@@ -95,6 +95,22 @@
         display: none !important;
       }
 
+      /* ------------------------------------------------------
+         Make Tile Config tab row more resilient as more tabs get added
+      ------------------------------------------------------ */
+      [data-oni-event-config="1"] nav.sheet-tabs {
+        display: flex;
+        flex-wrap: wrap;
+        row-gap: 4px;
+        column-gap: 8px;
+        align-items: center;
+      }
+
+      [data-oni-event-config="1"] nav.sheet-tabs .item {
+        flex: 0 0 auto;
+        white-space: nowrap;
+      }
+
       .oni-event-table {
         display: flex;
         flex-direction: column;
@@ -238,6 +254,15 @@
     }
   }
 
+  function escapeHTML(s) {
+    return String(s ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
   function normalizeBoolean(raw, fallback = false) {
     if (raw === true || raw === false) return raw;
     if (raw === 1 || raw === 0) return !!raw;
@@ -257,6 +282,33 @@
     return Math.max(C.MIN_PROXIMITY_PX ?? 0, Math.round(n));
   }
 
+  function resizeTileConfigForTabs(app, root) {
+    try {
+      const tabsNav = root?.querySelector("nav.sheet-tabs");
+      if (!tabsNav) return;
+
+      const tabCount = tabsNav.querySelectorAll(".item").length;
+
+      // widen a bit as more tabs get added, but clamp to a reasonable range
+      const targetWidth = Math.min(
+        Math.max(760, tabCount * 96),
+        1180
+      );
+
+      app.setPosition({
+        width: targetWidth,
+        height: "auto"
+      });
+
+      DBG.verboseLog(DEBUG_SCOPE, "TileConfig resized for tab count.", {
+        tabCount,
+        targetWidth
+      });
+    } catch (e) {
+      DBG.warn(DEBUG_SCOPE, "resizeTileConfigForTabs failed.", e);
+    }
+  }
+
   function readEventFlags(tileDoc) {
     const mod = tileDoc?.flags?.[SCOPE];
     if (mod && Object.keys(mod).length) return mod;
@@ -270,7 +322,6 @@
   function normalizeEventRows(rawRows) {
     let rows = rawRows;
 
-    // Accept legacy JSON-string fallback if it ever exists
     if (typeof rows === "string") {
       try {
         rows = JSON.parse(rows);
@@ -281,7 +332,7 @@
 
     if (!Array.isArray(rows)) rows = [];
 
-    return rows.map((row, index) => {
+    return rows.map((row) => {
       const type = EventRegistry.has(row?.type)
         ? row.type
         : (C.DEFAULT_ROW_TYPE || C.EVENT_TYPES?.SHOW_TEXT || "showText");
@@ -399,7 +450,7 @@
           <input
             type="text"
             class="oni-event-row-speaker"
-            value="${foundry.utils.escapeHTML(String(rowData.speaker ?? C.DEFAULT_SHOW_TEXT_SPEAKER ?? "Self"))}"
+            value="${escapeHTML(String(rowData.speaker ?? C.DEFAULT_SHOW_TEXT_SPEAKER ?? "Self"))}"
             placeholder="Self / Actor UUID / Token UUID / Name"
           />
           <div class="oni-event-mini-note">
@@ -430,7 +481,7 @@
     wrapper.innerHTML = `
       <div class="oni-event-row-notes">
         This event type is not recognized by the current registry.<br>
-        Type: <code>${foundry.utils.escapeHTML(String(rowData.type || ""))}</code>
+        Type: <code>${escapeHTML(String(rowData.type || ""))}</code>
       </div>
     `;
     return wrapper;
@@ -493,15 +544,8 @@
     typeSelect.addEventListener("change", () => {
       const nextType = String(typeSelect.value || C.DEFAULT_ROW_TYPE || "showText");
 
-      const currentRows = collectRows(rowsWrap);
-      const currentIndex = Array.from(rowsWrap.querySelectorAll(".oni-event-row")).indexOf(rowEl);
-
-      const oldRow = currentRows[currentIndex] || { id: rowEl.dataset.rowId };
-      const newBase = buildDefaultRow(nextType);
-
-      // Keep the same row id when changing type
       const rebuiltRow = foundry.utils.mergeObject(
-        foundry.utils.deepClone(newBase),
+        foundry.utils.deepClone(buildDefaultRow(nextType)),
         { id: rowEl.dataset.rowId, type: nextType },
         { inplace: false, overwrite: true }
       );
@@ -511,7 +555,6 @@
 
       DBG.log(DEBUG_SCOPE, "Event row type changed.", {
         rowId: rowEl.dataset.rowId,
-        oldType: oldRow?.type ?? null,
         newType: nextType
       });
     });
@@ -550,7 +593,7 @@
     syncRowsJson(hiddenJsonEl, rowsWrap);
   }
 
-  function patchSubmitData(app, root, rowsWrap) {
+  function patchSubmitData(app, rowsWrap) {
     if (app._oniEventConfigSubmitPatched) return;
 
     const originalGetSubmitData = app._getSubmitData.bind(app);
@@ -584,12 +627,21 @@
   // Main injection
   // ------------------------------------------------------------
   Hooks.on("renderTileConfig", async (app, html) => {
+    let grouped = false;
+
     try {
       ensureStyle();
 
       const root = getRoot(html, app);
-      if (!root) return DBG.warn(DEBUG_SCOPE, "No TileConfig root found.");
-      if (root.hasAttribute(MARKER_ATTR)) return DBG.verboseLog(DEBUG_SCOPE, "Already injected; skipping.");
+      if (!root) {
+        DBG.warn(DEBUG_SCOPE, "No TileConfig root found.");
+        return;
+      }
+
+      if (root.hasAttribute(MARKER_ATTR)) {
+        DBG.verboseLog(DEBUG_SCOPE, "Already injected; skipping.");
+        return;
+      }
 
       root.setAttribute(MARKER_ATTR, "1");
 
@@ -602,7 +654,7 @@
         return;
       }
 
-      DBG.group?.(DEBUG_SCOPE, `Render TileConfig [${tileDoc?.id ?? "unknown"}]`, true);
+      grouped = !!DBG.group?.(DEBUG_SCOPE, `Render TileConfig [${tileDoc?.id ?? "unknown"}]`, true);
       DBG.log(DEBUG_SCOPE, "Injecting Event Config tab.", {
         appId: app?.appId,
         tileId: tileDoc?.id,
@@ -704,6 +756,8 @@
       const bound = bindTabs(app, root);
       if (!bound.ok) DBG.warn(DEBUG_SCOPE, "bindTabs failed.", bound.reason);
 
+      resizeTileConfigForTabs(app, root);
+
       // --------------------------------------------------------
       // Prefill
       // --------------------------------------------------------
@@ -745,6 +799,8 @@
           tileId: tileDoc?.id ?? null,
           isEventTile: isEventEl.checked
         });
+
+        resizeTileConfigForTabs(app, root);
       });
 
       addRowBtn?.addEventListener("click", () => {
@@ -759,9 +815,7 @@
           row
         });
 
-        try {
-          app.setPosition({ height: "auto" });
-        } catch (_) {}
+        resizeTileConfigForTabs(app, root);
       });
 
       debugBtn?.addEventListener("click", () => {
@@ -783,12 +837,9 @@
         syncRowsJson(hiddenJsonEl, rowsWrap);
       });
 
-      // Patch submit so eventRows gets saved as a real array, not just text.
-      patchSubmitData(app, root, rowsWrap);
+      patchSubmitData(app, rowsWrap);
 
-      try {
-        app.setPosition({ height: "auto" });
-      } catch (_) {}
+      resizeTileConfigForTabs(app, root);
 
       DBG.log(DEBUG_SCOPE, "Event Config UI injection complete.", {
         tileId: tileDoc?.id ?? null
@@ -796,7 +847,7 @@
     } catch (e) {
       console.error(INSTALL_TAG, "Fatal error in renderTileConfig:", e);
     } finally {
-      DBG.groupEnd?.();
+      if (grouped) DBG.groupEnd?.();
     }
   });
 
