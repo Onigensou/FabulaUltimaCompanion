@@ -172,36 +172,31 @@ Hooks.once("ready", () => {
     // ignore reaction_source (all rows match regardless of source).
 
     function normalizeSourceKey(raw) {
-  if (raw == null) return "all";
-  const k = String(raw).trim().toLowerCase();
-  if (!k) return "all";
+      if (!raw || raw === "") return "all";
+      const k = String(raw).toLowerCase();
+      switch (k) {
+        case "self":
+        case "ally":
+        case "enemy":
+        case "neutral":
+        case "all":
+          return k;
+        default:
+          return "all";
+      }
+    }
 
-  switch (k) {
-    case "self":
-    case "ally":
-    case "enemy":
-    case "neutral":
-    case "all":
-      return k;
-    default:
-      return "all";
-  }
-}
-
-function normalizeDisposition(disposition) {
-  // Foundry dispositions:
-  //  1  = Friendly
-  //  0  = Neutral
-  // -1  = Hostile
-  // -2  = Secret (treat as Neutral)
-
-  const n = Number(disposition);
-
-  if (n === -2) return 0;
-  if (n === 1)  return 1;
-  if (n === -1) return -1;
-  return 0;
-}
+    function normalizeDisposition(disposition) {
+      // Foundry dispositions:
+      //  1  = Friendly
+      //  0  = Neutral
+      // -1  = Hostile
+      // -2  = Secret  (we treat as Neutral)
+      if (disposition === -2) return 0;
+      if (disposition === 1)  return 1;
+      if (disposition === -1) return -1;
+      return 0;
+    }
 
     // ---------------------------------------------------------------------------
     // Token resolution helpers
@@ -476,23 +471,6 @@ function normalizeDisposition(disposition) {
               return true;
           }
         };
-
-        if (triggerKey === "creature_miss_action") {
-  console.log("[ReactionTriggerCore][MISS SOURCE DEBUG]", {
-    rowSourceRaw,
-    sourceKey,
-    reactionTokenName: reactionToken?.name ?? null,
-    reactionTokenId: reactionToken?.id ?? null,
-    reactionDispositionRaw: reactionToken?.document?.disposition,
-    reactionDispositionNormalized: reactDisp,
-    subjects: subjects.map(s => ({
-      name: s?.name ?? null,
-      id: s?.id ?? null,
-      dispositionRaw: s?.document?.disposition,
-      dispositionNormalized: normalizeDisposition(s?.document?.disposition ?? 0)
-    }))
-  });
-}
 
         return subjects.some(matchOne);
       };
