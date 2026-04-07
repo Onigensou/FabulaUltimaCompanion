@@ -31,7 +31,8 @@ export const JRPG_TARGETING = Object.freeze({
     API_KEY: "__ONI_JRPG_TARGETING_API__",
     ACTIVE_SESSION_KEY: "__ONI_JRPG_TARGETING_ACTIVE_SESSION__",
     STORE_KEY: "__ONI_JRPG_TARGETING_STORE__",
-    UI_STATE_KEY: "__ONI_JRPG_TARGETING_UI__"
+    UI_STATE_KEY: "__ONI_JRPG_TARGETING_UI__",
+    HIGHLIGHT_STATE_KEY: "__ONI_JRPG_TARGETING_HIGHLIGHT__"
   }),
 
   FLAGS: Object.freeze({
@@ -94,6 +95,23 @@ export const JRPG_TARGETING = Object.freeze({
       zIndexTop: 100000,
       zIndexControls: 100000
     })
+  }),
+
+  // Targeting-mode dim/highlight tuning.
+  HIGHLIGHT: Object.freeze({
+    enabled: true,
+
+    // Non-eligible tokens
+    tokenDimEnabled: true,
+    tokenDimBrightness: 0.35,
+    tokenDesaturate: true,
+
+    // Scene background
+    backgroundDimEnabled: true,
+    backgroundBrightness: 0.5,
+
+    // Safety behavior
+    alwaysKeepSourceVisible: true
   }),
 
   MODES: Object.freeze({
@@ -221,6 +239,7 @@ export const {
   FLAGS,
   ACTION_KEYS,
   UI,
+  HIGHLIGHT,
   MODES,
   TARGET_CATEGORIES,
   DISPOSITIONS,
