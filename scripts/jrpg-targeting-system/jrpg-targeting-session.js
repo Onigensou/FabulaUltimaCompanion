@@ -50,6 +50,11 @@ import {
   destroyActiveJRPGTargetingUI
 } from "./jrpg-targeting-ui.js";
 
+import {
+  applyJRPGTargetingHighlight,
+  clearJRPGTargetingHighlight
+} from "./jrpg-targeting-highlight.js";
+
 const dbg = createJRPGTargetingDebugger("Session");
 
 /* -------------------------------------------- */
@@ -378,6 +383,8 @@ export class JRPGTargetingSession {
     this.rulesSummary = buildJRPGTargetRulesSummary(this.parsedTargeting);
 
     this.uiSettings = options.uiSettings ?? {};
+    this.highlightSettings = options.highlightSettings ?? {};
+
     this.uiTitleText = options.uiTitleText || this.parsedTargeting?.promptText || UI.TEXT.DEFAULT_TITLE;
 
     this.uiInstance = null;
@@ -417,7 +424,8 @@ export class JRPGTargetingSession {
       rawSkillTarget: this.rawSkillTarget,
       sourceActorUuid: this.sourceActorUuid,
       parsedTargeting: this.parsedTargeting,
-      rulesSummary: this.rulesSummary
+      rulesSummary: this.rulesSummary,
+      highlightSettings: this.highlightSettings
     });
   }
 
@@ -484,6 +492,60 @@ export class JRPGTargetingSession {
     });
   }
 
+  async applyHighlightEffect() {
+    const eligibleTargets = this.getEligibleSceneTargets();
+
+    dbg.logRun(this.runId, "HIGHLIGHT APPLY REQUEST", {
+      eligibleCount: eligibleTargets.length,
+      eligibleTargets: eligibleTargets.map(getTokenInfo),
+      sourceToken: getTokenInfo(this.sourceToken)
+    });
+
+    if (!eligibleTargets.length) {
+      await this.clearHighlightEffect("no_eligible_targets");
+      dbg.logRun(this.runId, "HIGHLIGHT SKIPPED - NO ELIGIBLE TARGETS");
+      return false;
+    }
+
+    try {
+      await applyJRPGTargetingHighlight({
+        sessionId: this.sessionId,
+        eligibleTokens: eligibleTargets,
+        sourceToken: this.sourceToken,
+        config: this.highlightSettings,
+        runId: this.runId
+      });
+
+      dbg.logRun(this.runId, "HIGHLIGHT APPLIED", {
+        eligibleCount: eligibleTargets.length,
+        eligibleNames: eligibleTargets.map(getTokenName)
+      });
+
+      return true;
+    } catch (err) {
+      dbg.errorRun(this.runId, "HIGHLIGHT APPLY FAILED", err);
+      return false;
+    }
+  }
+
+  async clearHighlightEffect(reason = "cleanup") {
+    try {
+      await clearJRPGTargetingHighlight({
+        reason,
+        runId: this.runId
+      });
+
+      dbg.logRun(this.runId, "HIGHLIGHT CLEARED", { reason });
+      return true;
+    } catch (err) {
+      dbg.errorRun(this.runId, "HIGHLIGHT CLEAR FAILED", {
+        reason,
+        err
+      });
+      return false;
+    }
+  }
+
   /* ---------------------------------------- */
   /* Startup                                  */
   /* ---------------------------------------- */
@@ -493,14 +555,14 @@ export class JRPGTargetingSession {
 
     if (!isCanvasReady()) {
       notifyError("Canvas is not ready.");
-      this.failAndResolve("Canvas is not ready.");
+      await this.failAndResolve("Canvas is not ready.");
       return this.resultPromise;
     }
 
     if (!this.isLocalUserSession()) {
       const message = "This client is not the active targeting user.";
       notifyWarn(message);
-      this.failAndResolve(message);
+      await this.failAndResolve(message);
       return this.resultPromise;
     }
 
@@ -508,7 +570,7 @@ export class JRPGTargetingSession {
     if (existing?.sessionId && existing.sessionId !== this.sessionId) {
       dbg.warnRun(this.runId, "EXISTING ACTIVE SESSION DETECTED", existing);
       notifyWarn(NOTIFICATIONS.ACTIVE_SESSION_EXISTS);
-      this.failAndResolve(NOTIFICATIONS.ACTIVE_SESSION_EXISTS);
+      await this.failAndResolve(NOTIFICATIONS.ACTIVE_SESSION_EXISTS);
       return this.resultPromise;
     }
 
@@ -523,6 +585,7 @@ export class JRPGTargetingSession {
     setJRPGTargetingSessionForUser(this.userId, this.createSessionSnapshot());
 
     await destroyActiveJRPGTargetingUI({ animate: false }).catch(() => {});
+    await this.clearHighlightEffect("pre_start_cleanup");
 
     this.uiInstance = createJRPGTargetingUI({
       instanceId: this.sessionId,
@@ -555,6 +618,7 @@ export class JRPGTargetingSession {
 
     this.installKeyboardListener();
     await this.applyAutoSelectIfNeeded();
+    await this.applyHighlightEffect();
 
     this.updateCountUI();
 
@@ -569,7 +633,11 @@ export class JRPGTargetingSession {
     return this.resultPromise;
   }
 
-  failAndResolve(message = "Targeting session failed.") {
+  async failAndResolve(message = "Targeting session failed.") {
+    this.state.active = false;
+
+    await this.clearHighlightEffect("fail_and_resolve");
+
     const result = {
       ok: false,
       confirmed: false,
@@ -988,6 +1056,8 @@ export class JRPGTargetingSession {
       this.removeCanvasListeners();
       this.removeKeyboardListener();
 
+      await this.clearHighlightEffect(reason);
+
       await this.uiInstance?.destroy?.({ animate: true });
       this.uiInstance = null;
 
@@ -1030,6 +1100,8 @@ export class JRPGTargetingSession {
       }
     } catch (err) {
       dbg.errorRun(this.runId, "EXIT CLEANUP FAILED", err);
+
+      await this.clearHighlightEffect("exit_cleanup_failed");
 
       const result = preserveResult ?? {
         ok: false,
