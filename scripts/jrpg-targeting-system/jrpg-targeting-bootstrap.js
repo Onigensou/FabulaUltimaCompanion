@@ -40,6 +40,10 @@ import {
 } from "./jrpg-targeting-ui.js";
 
 import {
+  clearJRPGTargetingHighlight
+} from "./jrpg-targeting-highlight.js";
+
+import {
   createJRPGTargetingSession
 } from "./jrpg-targeting-session.js";
 
@@ -186,7 +190,8 @@ async function runLocalTargetingSession(options = {}) {
   dbg.logRun(runId, "RUN LOCAL SESSION START", {
     sessionId: session.sessionId,
     userId: options.userId,
-    rawSkillTarget: options.skillTarget
+    rawSkillTarget: options.skillTarget,
+    hasHighlightSettings: Boolean(options.highlightSettings)
   });
 
   registerActiveLocalSession(session);
@@ -220,6 +225,7 @@ async function runRemoteTargetingRequest(options = {}) {
     action: options.action ?? null,
     sourceActorUuid: options.sourceActorUuid ?? null,
     uiSettings: options.uiSettings ?? {},
+    highlightSettings: options.highlightSettings ?? {},
     uiTitleText: options.uiTitleText ?? null
   };
 
@@ -256,6 +262,7 @@ async function onSocketStartTargeting(payload = {}) {
     parsedTargeting: payload.parsedTargeting ?? null,
     sourceActorUuid: payload.sourceActorUuid ?? null,
     uiSettings: payload.uiSettings ?? {},
+    highlightSettings: payload.highlightSettings ?? {},
     uiTitleText: payload.uiTitleText ?? null
   };
 
@@ -361,6 +368,10 @@ async function onSocketForceClose(payload = {}) {
     }
   } else {
     await destroyActiveJRPGTargetingUI({ animate: false }).catch(() => {});
+    await clearJRPGTargetingHighlight({
+      reason: "socket_force_close_fallback",
+      runId
+    }).catch(() => {});
     clearJRPGActiveTargetingSession();
   }
 }
@@ -456,6 +467,7 @@ function buildPublicAPI() {
         skillTarget,
         parsedTargeting,
         uiSettings: options.uiSettings ?? {},
+        highlightSettings: options.highlightSettings ?? {},
         uiTitleText: options.uiTitleText ?? parsedTargeting?.promptText ?? null
       };
 
