@@ -2,7 +2,7 @@
 // Exposes: FUCompanion.api.passiveModifier.evaluatePassiveModifiers({ actor, actionCtx, finalElement? })
 (function(){
   const ROOT = (globalThis.FUCompanion = globalThis.FUCompanion || {});
-  ROOT.api = ROOT.api || {};
+  ROOT.api = ROOT.api || {}; if (ROOT.api.passiveModifier) { console.log('[ONI][PassiveModifierEngine] Already installed'); return; }
   const TAG = '[ONI][PassiveModifierEngine]';
   const DEBUG = true;
 
@@ -139,7 +139,11 @@
       function readRules(it){
         const ip = it?.system?.props ?? it?.system ?? {};
         if (Array.isArray(ip.passive_rules)) return ip.passive_rules;
-        const flags = it?.flags || {};\n        if (Array.isArray(flags?.oni?.passive_rules)) return flags.oni.passive_rules;\n        if (Array.isArray(flags?.world?.passive_rules)) return flags.world.passive_rules;\n        if (Array.isArray(flags?.['fabula-ultima-companion']?.passive_rules)) return flags['fabula-ultima-companion'].passive_rules;\n        const scopes = ['world','fabula-ultima-companion'];
+        const flags = it?.flags || {};
+        if (Array.isArray(flags?.oni?.passive_rules)) return flags.oni.passive_rules;
+        if (Array.isArray(flags?.world?.passive_rules)) return flags.world.passive_rules;
+        if (Array.isArray(flags?.['fabula-ultima-companion']?.passive_rules)) return flags['fabula-ultima-companion'].passive_rules;
+        const scopes = ['world','fabula-ultima-companion'];
         for (const s of scopes){ try { const v = it.getFlag?.(s,'passive_rules'); if (Array.isArray(v)) return v; } catch {}
         }
         return [];
@@ -190,4 +194,6 @@
   ROOT.api.passiveModifier = { evaluatePassiveModifiers };
   log('Installed');
 })();
+
+
 
