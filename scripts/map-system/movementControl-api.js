@@ -318,6 +318,160 @@
     return srcMatches && nameMatches;
   }
 
+    function areCentralPartyActorPrototypeVisualsAlreadyMatched(partyActor, linkedActor) {
+    if (!partyActor || !linkedActor) return false;
+
+    const desiredSrc = cleanString(linkedActor.prototypeToken?.texture?.src || linkedActor.img || "");
+    const currentSrc = cleanString(partyActor.prototypeToken?.texture?.src || "");
+
+    return !hasText(desiredSrc) || currentSrc === desiredSrc;
+  }
+
+  async function applyControllerVisualToCentralPartyActorPrototype(
+    controllerRow,
+    snapshot = null,
+    {
+      silent = false,
+      skipIfAlreadyMatched = false
+    } = {}
+  ) {
+    const snap = snapshot ?? state.lastSnapshot ?? await resolveSnapshotUsingStoredPreference();
+    const partyActor = snap?.centralPartyActor ?? null;
+    const linkedActor = getLinkedActorForControllerRow(controllerRow);
+
+    if (!controllerRow) {
+      if (!silent) {
+        DBG.warn("API", "applyControllerVisualToCentralPartyActorPrototype aborted because controllerRow was missing");
+      }
+      return { ok: false, reason: "noControllerRow", actor: null };
+    }
+
+    if (!partyActor) {
+      if (!silent) {
+        DBG.warn("API", "applyControllerVisualToCentralPartyActorPrototype aborted because central party actor was not found", {
+          controllerUserId: controllerRow?.userId ?? null,
+          controllerUserName: controllerRow?.userName ?? null
+        });
+      } else {
+        DBG.verbose("API", "Central party actor prototype sync skipped because no central party actor was found", {
+          controllerUserId: controllerRow?.userId ?? null,
+          controllerUserName: controllerRow?.userName ?? null
+        });
+      }
+      return { ok: false, reason: "noCentralPartyActor", actor: null };
+    }
+
+    if (!linkedActor?.prototypeToken) {
+      if (!silent) {
+        DBG.warn("API", "applyControllerVisualToCentralPartyActorPrototype aborted because linked actor or prototype token was missing", {
+          controllerUserId: controllerRow?.userId ?? null,
+          controllerUserName: controllerRow?.userName ?? null,
+          linkedActorId: linkedActor?.id ?? null,
+          linkedActorName: linkedActor?.name ?? null
+        });
+      } else {
+        DBG.verbose("API", "Central party actor prototype sync skipped because linked actor prototype token was missing", {
+          controllerUserId: controllerRow?.userId ?? null,
+          controllerUserName: controllerRow?.userName ?? null,
+          linkedActorId: linkedActor?.id ?? null,
+          linkedActorName: linkedActor?.name ?? null
+        });
+      }
+      return { ok: false, reason: "noLinkedActorPrototypeToken", actor: partyActor };
+    }
+
+    if (!partyActor.isOwner) {
+      if (!silent) {
+        DBG.warn("API", "applyControllerVisualToCentralPartyActorPrototype blocked because current user is not actor owner", {
+          partyActorId: partyActor.id,
+          partyActorName: partyActor.name ?? null,
+          controllerUserId: controllerRow?.userId ?? null,
+          controllerUserName: controllerRow?.userName ?? null
+        });
+      } else {
+        DBG.verbose("API", "Central party actor prototype sync skipped because current user is not actor owner", {
+          partyActorId: partyActor.id,
+          partyActorName: partyActor.name ?? null,
+          controllerUserId: controllerRow?.userId ?? null,
+          controllerUserName: controllerRow?.userName ?? null
+        });
+      }
+      return { ok: false, reason: "notActorOwner", actor: partyActor };
+    }
+
+    const src = cleanString(linkedActor.prototypeToken.texture?.src || linkedActor.img || "");
+    if (!hasText(src)) {
+      if (!silent) {
+        DBG.warn("API", "applyControllerVisualToCentralPartyActorPrototype aborted because linked actor had no usable texture source", {
+          linkedActorId: linkedActor?.id ?? null,
+          linkedActorName: linkedActor?.name ?? null
+        });
+      }
+      return { ok: false, reason: "noLinkedActorTextureSrc", actor: partyActor };
+    }
+
+    if (skipIfAlreadyMatched && areCentralPartyActorPrototypeVisualsAlreadyMatched(partyActor, linkedActor)) {
+      DBG.verbose("API", "Central party actor prototype visual already matches effective controller", {
+        partyActorId: partyActor.id,
+        partyActorName: partyActor.name ?? null,
+        controllerUserId: controllerRow?.userId ?? null,
+        controllerUserName: controllerRow?.userName ?? null
+      });
+
+      return {
+        ok: true,
+        reason: "alreadyMatched",
+        actor: partyActor,
+        updateData: null
+      };
+    }
+
+    const previousSrc = cleanString(partyActor.prototypeToken?.texture?.src || "") || null;
+
+    const updateData = {
+      "prototypeToken.texture.src": src
+    };
+
+    try {
+      await partyActor.update(updateData);
+
+      DBG.groupCollapsed("API", "Applied controller visual to central party actor prototype token", {
+        partyActorId: partyActor.id,
+        partyActorName: partyActor.name ?? null,
+        previousTextureSrc: previousSrc,
+        nextTextureSrc: src,
+        linkedActorId: linkedActor.id,
+        linkedActorName: linkedActor.name,
+        controllerUserId: controllerRow?.userId ?? null,
+        controllerUserName: controllerRow?.userName ?? null
+      });
+
+      return {
+        ok: true,
+        reason: "updated",
+        actor: partyActor,
+        updateData
+      };
+    } catch (err) {
+      DBG.error("API", "Failed to update central party actor prototype token visual", {
+        partyActorId: partyActor.id,
+        partyActorName: partyActor.name ?? null,
+        linkedActorId: linkedActor.id,
+        linkedActorName: linkedActor.name,
+        controllerUserId: controllerRow?.userId ?? null,
+        controllerUserName: controllerRow?.userName ?? null,
+        error: err?.message ?? err
+      });
+
+      return {
+        ok: false,
+        reason: "actorPrototypeUpdateFailed",
+        actor: partyActor,
+        error: err
+      };
+    }
+  }
+
   async function applyControllerVisualToCentralPartyToken(
     controllerRow,
     snapshot = null,
@@ -469,7 +623,7 @@
     }
   }
 
-  async function syncCentralPartyTokenVisualWithEffectiveController({
+    async function syncCentralPartyTokenVisualWithEffectiveController({
     snapshot = null,
     storedState = null,
     source = "manual",
@@ -484,16 +638,43 @@
     const effectiveRow = controllerInfo?.effectiveRow ?? null;
 
     if (!effectiveRow) {
-      DBG.verbose("API", "Central party token visual sync skipped because no effective controller was resolved", {
+      DBG.verbose("API", "Central party controller visual sync skipped because no effective controller was resolved", {
         source
       });
       return { ok: false, reason: "noEffectiveController", snapshot: snap };
     }
 
-    return await applyControllerVisualToCentralPartyToken(effectiveRow, snap, {
+    const tokenVisualResult = await applyControllerVisualToCentralPartyToken(effectiveRow, snap, {
       silent,
       skipIfAlreadyMatched: true
     });
+
+    const prototypeVisualResult = await applyControllerVisualToCentralPartyActorPrototype(effectiveRow, snap, {
+      silent,
+      skipIfAlreadyMatched: true
+    });
+
+    const ok = !!(tokenVisualResult?.ok || prototypeVisualResult?.ok);
+
+    let reason = "noOp";
+    if (tokenVisualResult?.reason === "updated" || prototypeVisualResult?.reason === "updated") {
+      reason = "updated";
+    } else if (tokenVisualResult?.reason === "alreadyMatched" && prototypeVisualResult?.reason === "alreadyMatched") {
+      reason = "alreadyMatched";
+    } else {
+      reason =
+        tokenVisualResult?.reason ??
+        prototypeVisualResult?.reason ??
+        "noOp";
+    }
+
+    return {
+      ok,
+      reason,
+      snapshot: snap,
+      tokenVisualResult,
+      prototypeVisualResult
+    };
   }
 
   async function commitControllerChange(targetRow, {
@@ -515,6 +696,11 @@
     }
 
     const tokenVisualResult = await applyControllerVisualToCentralPartyToken(targetRow, snap, {
+      silent: false,
+      skipIfAlreadyMatched: false
+    });
+
+    const prototypeVisualResult = await applyControllerVisualToCentralPartyActorPrototype(targetRow, snap, {
       silent: false,
       skipIfAlreadyMatched: false
     });
@@ -562,6 +748,7 @@
       currentControllerUserId: targetRow?.userId ?? null,
       currentControllerUserName: targetRow?.userName ?? null,
       tokenVisualResult,
+      prototypeVisualResult,
       storeState: storeResult.state ?? null
     });
 
@@ -570,6 +757,7 @@
       reason: "controllerChanged",
       controller: buildControllerDescriptorFromRow(targetRow),
       tokenVisualResult,
+      prototypeVisualResult,
       storeResult
     };
   }
@@ -981,6 +1169,7 @@
     forceSetController,
 
     applyControllerVisualToCentralPartyToken,
+    applyControllerVisualToCentralPartyActorPrototype,
     syncCentralPartyTokenVisualWithEffectiveController,
     commitControllerChange,
 
