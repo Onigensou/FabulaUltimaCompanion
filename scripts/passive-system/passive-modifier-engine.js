@@ -135,19 +135,19 @@
     }
 
     for (const it of items){
-      // Prefer item.system.props.custom_logic_passive; otherwise try flags safely (world/fabula-ultima-companion)
-      function readRules(it){
-        const ip = it?.system?.props ?? it?.system ?? {};
-        if (Array.isArray(ip.custom_logic_passive)) return ip.custom_logic_passive;
-        const flags = it?.flags || {};
-        if (Array.isArray(flags?.world?.custom_logic_passive)) return flags.world.custom_logic_passive;
-        if (Array.isArray(flags?.oni?.custom_logic_passive)) return flags.oni.custom_logic_passive;
-        if (Array.isArray(flags?.['fabula-ultima-companion']?.custom_logic_passive)) return flags['fabula-ultima-companion'].custom_logic_passive;
-        const scopes = ['world','fabula-ultima-companion'];
-        for (const s of scopes){ try { const v = it.getFlag?.(s,'passive_rules'); if (Array.isArray(v)) return v; } catch {}
-        }
-        return [];
-      }
+  // Prefer item.system.props.custom_logic_passive; otherwise try flags safely (world/fabula-ultima-companion)
+  function readRules(it){
+    const ip = it?.system?.props ?? it?.system ?? {};
+    if (Array.isArray(ip.custom_logic_passive)) return ip.custom_logic_passive;
+    const flags = it?.flags || {};
+    if (Array.isArray(flags?.oni?.custom_logic_passive)) return flags.oni.custom_logic_passive;
+    if (Array.isArray(flags?.world?.custom_logic_passive)) return flags.world.custom_logic_passive;
+    if (Array.isArray(flags?.['fabula-ultima-companion']?.custom_logic_passive)) return flags['fabula-ultima-companion'].custom_logic_passive;
+    const scopes = ['world','fabula-ultima-companion'];
+    for (const s of scopes){ try { const v = it.getFlag?.(s,'custom_logic_passive'); if (Array.isArray(v)) return v; } catch {}
+    }
+    return [];
+  }
       const rules = (function(){ const r = readRules(it); return Array.isArray(r) ? r : []; })();
       if (!rules.length) continue;
       for (const rule of rules){
@@ -194,7 +194,6 @@
   ROOT.api.passiveModifier = { evaluatePassiveModifiers };
   log('Installed');
 })();
-
 
 
 
