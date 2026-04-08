@@ -1,8 +1,5 @@
-/**
- * Utility macro: seed custom_logic_passive onto sample items via item flags.
- * Run as GM once to attach rules to items in the world/actors.
- */
-(async () => {
+// Passive rules auto-setup at startup: write rules into item.system.props.custom_logic_passive (rich text JSON)
+(function(){
   const TAG='[CustomLogicPassiveSetup]';
   const wants = [
     { keys: ['Ice Mastery (Test)','Ice Mastery'], rules: [{ id:'ice-mastery-flat', label:'Ice Mastery', when:{ all:[{ action:{ elementIn:['ice'] } }] }, effects:[{ type:'flat', scope:'outgoing', element:'ice', amount:9999 }] }] },
@@ -14,22 +11,47 @@
     const lower = keys.map(k => String(k).toLowerCase());
     const exactFirst = items.find(i => lower.includes(String(i.name).toLowerCase()));
     if (exactFirst) return [exactFirst];
-    // fallback: substring match
-    const sub = items.filter(i => lower.some(k => String(i.name).toLowerCase().includes(k)));
-    return sub;
+    return items.filter(i => lower.some(k => String(i.name).toLowerCase().includes(k)));
   }
 
-  const seeded = [];
-  for (const want of wants){
-    // search in world Items
-    const worldHits = byKeysMatch(game.items ?? [], want.keys);
-   for (const it of worldHits){ await it.setFlag('world','custom_logic_passive', want.rules); console.log(TAG,'set rules on World Item', it.name); seeded.push(it.name); }
-    // search across actors' embedded items
-    for (const a of game.actors ?? []){
-      const hits = byKeysMatch(a.items ?? [], want.keys);
-      for (const it of hits){ await it.setFlag('world','custom_logic_passive', want.rules); console.log(TAG,'set rules on', it.name, 'owner', a.name); seeded.push(it.name+"@"+a.name); }
+  function parseRules(raw){
+    if (!raw) return [];
+    if (Array.isArray(raw)) return raw;
+    if (typeof raw !== 'string') return [];
+    try {
+      let s = String(raw).replace(/<[^>]*>/g,'').trim();
+      try { const p = JSON.parse(s); return Array.isArray(p)?p:[]; } catch {}
+      s = s.replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"')
+           .replace(/([\{,]\s*)([A-Za-z_][\w-]*)\s*:/g, '$1"$2":')
+           .replace(/'([^']*)'/g, '"$1"')
+           .replace(/,\s*([}\]])/g, '$1');
+      const p2 = JSON.parse(s); return Array.isArray(p2)?p2:[];
+    } catch { return []; }
+  }
+
+  async function ensurePropsRules(it, rules){
+    const ip = it?.system?.props ?? {};
+    const have = parseRules(ip.custom_logic_passive);
+    if (have.length) return false;
+    const html = `<p>${JSON.stringify(rules)}</p>`;
+    await it.update({ 'system.props.custom_logic_passive': html });
+    return true;
+  }
+
+  Hooks.once('ready', async () => {
+    try {
+      const seeded = [];
+      for (const want of wants){
+        const worldHits = byKeysMatch(game.items ?? [], want.keys);
+        for (const it of worldHits){ if (await ensurePropsRules(it, want.rules)) { console.log(TAG,'set props on World Item', it.name); seeded.push(it.name); } }
+        for (const a of game.actors ?? []){
+          const hits = byKeysMatch(a.items ?? [], want.keys);
+          for (const it of hits){ if (await ensurePropsRules(it, want.rules)) { console.log(TAG,'set props on', it.name, 'owner', a.name); seeded.push(it.name+"@"+a.name); } }
+        }
+      }
+      if (seeded.length) ui.notifications?.info(`Custom logic passive props seeded: ${seeded.length}`);
+    } catch (e) {
+      console.error(TAG,'setup failed', e);
     }
-  }
-
-  ui.notifications.info(`Custom logic passive seeding complete. Seeded: ${seeded.length}`);
+  });
 })();
