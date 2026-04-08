@@ -1,5 +1,5 @@
 /**
- * Utility macro: seed passive_rules onto sample items via item flags.
+ * Utility macro: seed custom_logic_passive onto sample items via item flags.
  * Run as GM once to attach rules to items in the world/actors.
  */
 (async () => {
@@ -23,13 +23,14 @@
   for (const want of wants){
     // search in world Items
     const worldHits = byKeysMatch(game.items ?? [], want.keys);
-    for (const it of worldHits){ await it.setFlag('world','passive_rules', want.rules); console.log(TAG,'set rules on World Item', it.name); seeded.push(it.name); }
+    for (const it of worldHits){ await it.setFlag('world','custom_logic_passive', want.rules); console.log(TAG,'set rules on World Item', it.name); seeded.push(it.name); }
     // search across actors' embedded items
     for (const a of game.actors ?? []){
       const hits = byKeysMatch(a.items ?? [], want.keys);
-      for (const it of hits){ await it.setFlag('world','passive_rules', want.rules); console.log(TAG,'set rules on', it.name, 'owner', a.name); seeded.push(it.name+"@"+a.name); }
+      for (const it of hits){ await it.setFlag('world','custom_logic_passive', want.rules); console.log(TAG,'set rules on', it.name, 'owner', a.name); seeded.push(it.name+"@"+a.name); }
     }
   }
 
   ui.notifications.info(`Passive rules seeding complete. Seeded: ${seeded.length}`);
 })();
+
