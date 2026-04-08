@@ -312,46 +312,6 @@
     } catch (_) {}
   }
 
-  
-  // Ensure central party token sprite matches the active Main Controller when a token is spawned
-  async function ensureCentralPartyTokenSpriteMatchesControllerOnCreate(doc) {
-    try {
-      const api = getAPI();
-      if (!api?.resolveSnapshotUsingStoredPreference || !api?.applyControllerVisualToCentralPartyToken) return;
-
-      const createdActorId = doc?.actor?.id ?? doc?.actorId ?? null;
-      if (!createdActorId) return;
-
-      const snap = await api.resolveSnapshotUsingStoredPreference({ onlineOnly: true, includeGM: false });
-      const partyActorId = snap?.centralPartyActorId ?? null;
-      if (!partyActorId || createdActorId !== partyActorId) return;
-
-      const controllerRow = snap?.resolvedController ?? null;
-      if (!controllerRow) return;
-
-      // Delay slightly so the new token is fully on the canvas
-      setTimeout(async () => {
-        try {
-          await api.applyControllerVisualToCentralPartyToken(controllerRow);
-          DBG.verbose("Bootstrap", "Central party token sprite synced on create", {
-            createdTokenId: doc?.id ?? null,
-            createdTokenName: doc?.name ?? null,
-            partyActorId,
-            controllerUserId: controllerRow?.userId ?? null,
-            controllerUserName: controllerRow?.userName ?? null
-          });
-        } catch (err) {
-          DBG.warn("Bootstrap", "Failed to sync central party token sprite on create", {
-            error: err?.message ?? err
-          });
-        }
-      }, 120);
-    } catch (err) {
-      DBG.warn("Bootstrap", "ensureCentralPartyTokenSpriteMatchesControllerOnCreate error", {
-        error: err?.message ?? err
-      });
-    }
-  }
   function registerHooks() {
     const register = (hook, fn) => {
       const id = Hooks.on(hook, fn);
@@ -379,9 +339,7 @@
       scheduleRefresh("updateUser", 60, { includeApiRefresh: true });
     });
 
-        register("createToken", (doc) => {
-      // Attempt to immediately sync the central party token sprite for teleports/new spawns
-      ensureCentralPartyTokenSpriteMatchesControllerOnCreate(doc);
+    register("createToken", () => {
       scheduleRefresh("createToken", 60, { includeApiRefresh: true });
     });
 
