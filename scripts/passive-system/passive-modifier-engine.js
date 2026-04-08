@@ -15,26 +15,30 @@
 
   function readActorProps(actor){ return actor?.system?.props ?? actor?.system ?? {}; }
 
+  // Safe dotted-flag reader; prefers direct actor.flags to avoid getFlag throws on unknown scopes
   function getFlagDotted(actor, ns, key){
     try {
       if (!actor || !ns || !key) return undefined;
       const flagsRoot = actor?.flags?.[ns];
-      if (flagsRoot && typeof flagsRoot === "object") {
-        const parts = key.split(".");
+      if (flagsRoot && typeof flagsRoot === 'object') {
+        const parts = String(key).split('.');
         let cur = flagsRoot[parts[0]];
-        for (let i=1;i<parts.length;i++){ if (cur == null) return undefined; cur = cur[parts[i]]; }
+        for (let i=1;i<parts.length;i++){
+          if (cur == null) return undefined;
+          cur = cur[parts[i]];
+        }
         return cur;
       }
-      // Fallback to getFlag for scopes like "world" or a real module id
-      const top = actor.getFlag?.(ns, key.split(".")[0]);
-      if (key.indexOf(".") < 0) return top;
-      const parts2 = key.split(".");
-      let cur2 = actor.getFlag?.(ns, parts2[0]);
-      for (let i=1;i<parts2.length;i++){ if (cur2 == null) return undefined; cur2 = cur2?.[parts2[i]]; }
-      return cur2;
-    } catch { return undefined; }
-  }
-      return cur;
+      // Optional fallback for safe scopes only
+      const SAFE_SCOPES = new Set(['world','core','fabula-ultima-companion']);
+      if (SAFE_SCOPES.has(ns) && typeof actor.getFlag === 'function') {
+        if (!key.includes('.')) return actor.getFlag(ns, key);
+        const [top, ...rest] = String(key).split('.');
+        let cur = actor.getFlag(ns, top);
+        for (const k of rest){ if (cur == null) return undefined; cur = cur?.[k]; }
+        return cur;
+      }
+      return undefined;
     } catch (e) { return undefined; }
   }
 
@@ -119,7 +123,6 @@
 
   async function evaluatePassiveModifiers({ actor, actionCtx, finalElement = null } = {}){
     if (!actor) return { flatByElement:{}, pctByElement:{}, critFlat:0, critMult:1, breakdown:[], usedRules:[], options:{ recalcOnConfirm:'never' } };
-    const props = readActorProps(actor);
     const items = Array.from(actor.items ?? []);
     const ctx = buildCtx(actor, actionCtx, finalElement);
 
@@ -132,15 +135,15 @@
     }
 
     for (const it of items){
-      const ip = it?.system?.props ?? it?.system ?? {};
-            // Prefer item.system.props.passive_rules; otherwise try flags safely (world/fabula-ultima-companion)
+      // Prefer item.system.props.passive_rules; otherwise try flags safely (world/fabula-ultima-companion)
       function readRules(it){
         const ip = it?.system?.props ?? it?.system ?? {};
         if (Array.isArray(ip.passive_rules)) return ip.passive_rules;
         const flags = it?.flags || {};
         if (Array.isArray(flags?.oni?.passive_rules)) return flags.oni.passive_rules; // direct read avoids getFlag throw
-        const scopes = [''world'',''fabula-ultima-companion''];
-        for (const s of scopes){ try { const v = it.getFlag?.(s,''passive_rules''); if (Array.isArray(v)) return v; } catch {} }
+        const scopes = ['world','fabula-ultima-companion'];
+        for (const s of scopes){ try { const v = it.getFlag?.(s,'passive_rules'); if (Array.isArray(v)) return v; } catch {}
+        }
         return [];
       }
       const rules = readRules(it);
@@ -189,7 +192,3 @@
   ROOT.api.passiveModifier = { evaluatePassiveModifiers };
   log('Installed');
 })();
-
-
-
-
