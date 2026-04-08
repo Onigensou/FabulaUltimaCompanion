@@ -121,7 +121,33 @@
 
   function addTo(map, key, amt){ if (!key) return; const k = normEl(key) || 'all'; map[k] = (map[k] || 0) + toNumber(amt, 0); }
 
-  async function evaluatePassiveModifiers({ actor, actionCtx, finalElement = null } = {}){
+    // Parse rules from various shapes (Array or rich-text string) safely
+  function parseRules(raw) {
+    if (!raw) return [];
+    if (Array.isArray(raw)) return raw;
+    if (typeof raw !== 'string') return [];
+    try {
+      let s = String(raw)
+        .replace(/<[^>]*>/g, '')
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'")
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .trim();
+      if (!s) return [];
+      try { const parsed = JSON.parse(s); return Array.isArray(parsed) ? parsed : []; } catch {}
+      let j = s
+        .replace(/[\u2018\u2019]/g, "'")
+        .replace(/[\u201C\u201D]/g, '"')
+        .replace(/([\{,]\s*)([A-Za-z_][\w-]*)\s*:/g, '$1"$2":')
+        .replace(/'([^']*)'/g, '"$1"')
+        .replace(/,\s*([}\]])/g, '$1');
+      try { const parsed2 = JSON.parse(j); return Array.isArray(parsed2) ? parsed2 : []; } catch {}
+      return [];
+    } catch { return []; }
+  }
+async function evaluatePassiveModifiers({ actor, actionCtx, finalElement = null } = {}){
     if (!actor) return { flatByElement:{}, pctByElement:{}, critFlat:0, critMult:1, breakdown:[], usedRules:[], options:{ recalcOnConfirm:'never' } };
     const items = Array.from(actor.items ?? []);
     const ctx = buildCtx(actor, actionCtx, finalElement);
@@ -138,14 +164,14 @@
   // Prefer item.system.props.custom_logic_passive; otherwise try flags safely (world/fabula-ultima-companion)
   function readRules(it){
     const ip = it?.system?.props ?? it?.system ?? {};
-    if (Array.isArray(ip.custom_logic_passive)) return ip.custom_logic_passive;
+    const fromProps = parseRules(ip.custom_logic_passive); if (fromProps.length) return fromProps;
     const flags = it?.flags || {};
-    if (Array.isArray(flags?.oni?.custom_logic_passive)) return flags.oni.custom_logic_passive;
-    if (Array.isArray(flags?.world?.custom_logic_passive)) return flags.world.custom_logic_passive;
-    if (Array.isArray(flags?.['fabula-ultima-companion']?.custom_logic_passive)) return flags['fabula-ultima-companion'].custom_logic_passive;
+    const fromOni = parseRules(flags?.oni?.custom_logic_passive); if (fromOni.length) return fromOni;
+    const fromWorld = parseRules(flags?.world?.custom_logic_passive); if (fromWorld.length) return fromWorld;
+    const fromMod = parseRules(flags?.['fabula-ultima-companion']?.custom_logic_passive); if (fromMod.length) return fromMod;
     const scopes = ['world','fabula-ultima-companion'];
-    for (const s of scopes){ try { const v = it.getFlag?.(s,'custom_logic_passive'); if (Array.isArray(v)) return v; } catch {}
-    }
+    for (const s of scopes){ try { const v = it.getFlag?.(s,'custom_logic_passive'); const arr = parseRules(v); if (arr.length) return arr; } catch {} }
+    
     return [];
   }
       const rules = (function(){ const r = readRules(it); return Array.isArray(r) ? r : []; })();
@@ -194,6 +220,9 @@
   ROOT.api.passiveModifier = { evaluatePassiveModifiers };
   log('Installed');
 })();
+
+
+
 
 
 
