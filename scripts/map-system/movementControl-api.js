@@ -9,6 +9,11 @@
  * - Own the controller handoff workflow
  * - Keep future UI/runtime scripts simple
  *
+ * Update:
+ * - Re-sync the Central Party Token visual during refresh()
+ * - Fix edge case where a fresh token spawned on a new map keeps default prototype art
+ *   even though Main Controller state persisted from the previous scene
+ *
  * Notes:
  * - This script does not render UI
  * - This script does not directly install camera hooks
@@ -298,43 +303,113 @@
     return row?.linkedActor ?? row?.user?.character ?? null;
   }
 
-  async function applyControllerVisualToCentralPartyToken(controllerRow, snapshot = null) {
+  function areTokenVisualsAlreadyMatched(token, linkedActor, controllerRow) {
+    if (!token?.document || !linkedActor) return false;
+
+    const desiredSrc = cleanString(linkedActor.prototypeToken?.texture?.src || linkedActor.img || "");
+    const desiredName = cleanString(linkedActor.name || controllerRow?.userName || token.name);
+
+    const currentSrc = cleanString(token.document.texture?.src || "");
+    const currentName = cleanString(token.document.name || token.name);
+
+    const srcMatches = !hasText(desiredSrc) || currentSrc === desiredSrc;
+    const nameMatches = !hasText(desiredName) || currentName === desiredName;
+
+    return srcMatches && nameMatches;
+  }
+
+  async function applyControllerVisualToCentralPartyToken(
+    controllerRow,
+    snapshot = null,
+    {
+      silent = false,
+      skipIfAlreadyMatched = false
+    } = {}
+  ) {
     const snap = snapshot ?? state.lastSnapshot ?? await resolveSnapshotUsingStoredPreference();
     const token = snap?.centralPartyToken ?? null;
     const linkedActor = getLinkedActorForControllerRow(controllerRow);
 
+    if (!controllerRow) {
+      if (!silent) {
+        DBG.warn("API", "applyControllerVisualToCentralPartyToken aborted because controllerRow was missing");
+      }
+      return { ok: false, reason: "noControllerRow", token: null };
+    }
+
     if (!token?.document) {
-      DBG.warn("API", "applyControllerVisualToCentralPartyToken aborted because central party token was not found", {
-        controllerUserId: controllerRow?.userId ?? null,
-        controllerUserName: controllerRow?.userName ?? null
-      });
+      if (!silent) {
+        DBG.warn("API", "applyControllerVisualToCentralPartyToken aborted because central party token was not found", {
+          controllerUserId: controllerRow?.userId ?? null,
+          controllerUserName: controllerRow?.userName ?? null
+        });
+      } else {
+        DBG.verbose("API", "Central party token visual sync skipped because no token was found", {
+          controllerUserId: controllerRow?.userId ?? null,
+          controllerUserName: controllerRow?.userName ?? null
+        });
+      }
       return { ok: false, reason: "noCentralPartyToken", token: null };
     }
 
     if (!linkedActor?.prototypeToken) {
-      DBG.warn("API", "applyControllerVisualToCentralPartyToken aborted because linked actor or prototype token was missing", {
-        controllerUserId: controllerRow?.userId ?? null,
-        controllerUserName: controllerRow?.userName ?? null,
-        linkedActorId: linkedActor?.id ?? null,
-        linkedActorName: linkedActor?.name ?? null
-      });
+      if (!silent) {
+        DBG.warn("API", "applyControllerVisualToCentralPartyToken aborted because linked actor or prototype token was missing", {
+          controllerUserId: controllerRow?.userId ?? null,
+          controllerUserName: controllerRow?.userName ?? null,
+          linkedActorId: linkedActor?.id ?? null,
+          linkedActorName: linkedActor?.name ?? null
+        });
+      } else {
+        DBG.verbose("API", "Central party token visual sync skipped because linked actor prototype token was missing", {
+          controllerUserId: controllerRow?.userId ?? null,
+          controllerUserName: controllerRow?.userName ?? null,
+          linkedActorId: linkedActor?.id ?? null,
+          linkedActorName: linkedActor?.name ?? null
+        });
+      }
       return { ok: false, reason: "noLinkedActorPrototypeToken", token };
     }
 
     if (!token.document.isOwner) {
-      DBG.warn("API", "applyControllerVisualToCentralPartyToken blocked because current user is not token owner", {
-        tokenId: token.id,
-        tokenName: token.name,
-        controllerUserId: controllerRow?.userId ?? null,
-        controllerUserName: controllerRow?.userName ?? null
-      });
+      if (!silent) {
+        DBG.warn("API", "applyControllerVisualToCentralPartyToken blocked because current user is not token owner", {
+          tokenId: token.id,
+          tokenName: token.name,
+          controllerUserId: controllerRow?.userId ?? null,
+          controllerUserName: controllerRow?.userName ?? null
+        });
+      } else {
+        DBG.verbose("API", "Central party token visual sync skipped because current user is not token owner", {
+          tokenId: token.id,
+          tokenName: token.name,
+          controllerUserId: controllerRow?.userId ?? null,
+          controllerUserName: controllerRow?.userName ?? null
+        });
+      }
       return { ok: false, reason: "notTokenOwner", token };
     }
 
-        const src = cleanString(linkedActor.prototypeToken.texture?.src || linkedActor.img || "");
+    const src = cleanString(linkedActor.prototypeToken.texture?.src || linkedActor.img || "");
     const centralScaleX = token.document.texture?.scaleX ?? 1;
     const centralScaleY = token.document.texture?.scaleY ?? 1;
     const newName = cleanString(linkedActor.name || controllerRow?.userName || token.name);
+
+    if (skipIfAlreadyMatched && areTokenVisualsAlreadyMatched(token, linkedActor, controllerRow)) {
+      DBG.verbose("API", "Central party token visual already matches effective controller", {
+        tokenId: token.id,
+        tokenName: token.name ?? null,
+        controllerUserId: controllerRow?.userId ?? null,
+        controllerUserName: controllerRow?.userName ?? null
+      });
+
+      return {
+        ok: true,
+        reason: "alreadyMatched",
+        token,
+        updateData: null
+      };
+    }
 
     const updateData = {
       name: newName
@@ -348,21 +423,25 @@
     updateData["texture.scaleX"] = centralScaleX;
     updateData["texture.scaleY"] = centralScaleY;
 
+    const previousTokenName = token.name ?? null;
+    const previousTextureSrc = cleanString(token.document.texture?.src || "") || null;
+
     try {
       await token.document.update(updateData);
 
-              DBG.groupCollapsed("API", "Applied controller visual to central party token", {
-          tokenId: token.id,
-          previousTokenName: token.name,
-          nextTokenName: newName,
-          textureSrc: src || null,
-          preservedScaleX: centralScaleX,
-          preservedScaleY: centralScaleY,
-          linkedActorId: linkedActor.id,
-          linkedActorName: linkedActor.name,
-          controllerUserId: controllerRow?.userId ?? null,
-          controllerUserName: controllerRow?.userName ?? null
-        });
+      DBG.groupCollapsed("API", "Applied controller visual to central party token", {
+        tokenId: token.id,
+        previousTokenName,
+        previousTextureSrc,
+        nextTokenName: newName,
+        textureSrc: src || null,
+        preservedScaleX: centralScaleX,
+        preservedScaleY: centralScaleY,
+        linkedActorId: linkedActor.id,
+        linkedActorName: linkedActor.name,
+        controllerUserId: controllerRow?.userId ?? null,
+        controllerUserName: controllerRow?.userName ?? null
+      });
 
       return {
         ok: true,
@@ -390,6 +469,33 @@
     }
   }
 
+  async function syncCentralPartyTokenVisualWithEffectiveController({
+    snapshot = null,
+    storedState = null,
+    source = "manual",
+    silent = true
+  } = {}) {
+    const snap = snapshot ?? state.lastSnapshot ?? await resolveSnapshotUsingStoredPreference();
+    if (!snap) {
+      return { ok: false, reason: "noSnapshot" };
+    }
+
+    const controllerInfo = await getEffectiveControllerInfo(snap, storedState);
+    const effectiveRow = controllerInfo?.effectiveRow ?? null;
+
+    if (!effectiveRow) {
+      DBG.verbose("API", "Central party token visual sync skipped because no effective controller was resolved", {
+        source
+      });
+      return { ok: false, reason: "noEffectiveController", snapshot: snap };
+    }
+
+    return await applyControllerVisualToCentralPartyToken(effectiveRow, snap, {
+      silent,
+      skipIfAlreadyMatched: true
+    });
+  }
+
   async function commitControllerChange(targetRow, {
     source = "unknown",
     snapshot = null,
@@ -408,7 +514,10 @@
       return { ok: false, reason: "noSnapshot" };
     }
 
-    const tokenVisualResult = await applyControllerVisualToCentralPartyToken(targetRow, snap);
+    const tokenVisualResult = await applyControllerVisualToCentralPartyToken(targetRow, snap, {
+      silent: false,
+      skipIfAlreadyMatched: false
+    });
 
     const storeResult = await store.setController(targetRow, {
       reason: `controllerChange:${source}`
@@ -500,7 +609,7 @@
         return null;
       }
 
-            const controllerInfo = await getEffectiveControllerInfo(snapshot, stored);
+      const controllerInfo = await getEffectiveControllerInfo(snapshot, stored);
       const effectiveRow = controllerInfo?.effectiveRow ?? null;
 
       const currentGameActor = store?.resolveCurrentGameActor
@@ -535,6 +644,17 @@
         });
       }
 
+      // NEW:
+      // Always attempt to re-sync the central party token visual during refresh.
+      // This fixes the edge case where a fresh token is spawned on a new map and
+      // inherits its default art/name instead of the current Main Controller's visual.
+      const tokenVisualSyncResult = await syncCentralPartyTokenVisualWithEffectiveController({
+        snapshot,
+        storedState: stored,
+        source: `refresh:${source}`,
+        silent: true
+      });
+
       setLastSnapshot(snapshot);
 
       if (broadcast && socket?.broadcastRefresh) {
@@ -552,7 +672,9 @@
         partyActorId: snapshot.centralPartyActorId ?? null,
         partyActorName: snapshot.centralPartyActorName ?? null,
         centralPartyTokenId: snapshot.centralPartyTokenData?.tokenId ?? null,
-        centralPartyTokenName: snapshot.centralPartyTokenData?.tokenName ?? null
+        centralPartyTokenName: snapshot.centralPartyTokenData?.tokenName ?? null,
+        tokenVisualSyncReason: tokenVisualSyncResult?.reason ?? null,
+        tokenVisualSyncOk: !!tokenVisualSyncResult?.ok
       });
 
       return snapshot;
@@ -859,6 +981,7 @@
     forceSetController,
 
     applyControllerVisualToCentralPartyToken,
+    syncCentralPartyTokenVisualWithEffectiveController,
     commitControllerChange,
 
     registerSocketHandlers,
