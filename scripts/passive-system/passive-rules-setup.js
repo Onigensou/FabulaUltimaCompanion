@@ -55,3 +55,22 @@
     }
   });
 })();
+
+
+  // Seed rules when new items are created mid-session (GM only)
+  Hooks.on('createItem', async (item, options, userId) => {
+    try {
+      if (!game.user?.isGM) return; // avoid multi-user duplication
+      const lower = (s)=>String(s||'').toLowerCase();
+      const name = lower(item.name);
+      const want = wants.find(w => w.keys.some(k => {
+        const key = lower(k);
+        return name === key || name.includes(key);
+      }));
+      if (!want) return;
+      const wrote = await ensurePropsRules(item, want.rules);
+      if (wrote) console.log(TAG, 'seeded on create', item.name, item.parent?.name ?? 'World');
+    } catch (e) {
+      console.error(TAG, 'createItem seed failed', e);
+    }
+  });
