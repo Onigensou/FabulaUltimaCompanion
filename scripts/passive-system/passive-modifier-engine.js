@@ -139,14 +139,12 @@
       function readRules(it){
         const ip = it?.system?.props ?? it?.system ?? {};
         if (Array.isArray(ip.passive_rules)) return ip.passive_rules;
-        const flags = it?.flags || {};
-        if (Array.isArray(flags?.oni?.passive_rules)) return flags.oni.passive_rules; // direct read avoids getFlag throw
-        const scopes = ['world','fabula-ultima-companion'];
+        const flags = it?.flags || {};\n        if (Array.isArray(flags?.oni?.passive_rules)) return flags.oni.passive_rules;\n        if (Array.isArray(flags?.world?.passive_rules)) return flags.world.passive_rules;\n        if (Array.isArray(flags?.['fabula-ultima-companion']?.passive_rules)) return flags['fabula-ultima-companion'].passive_rules;\n        const scopes = ['world','fabula-ultima-companion'];
         for (const s of scopes){ try { const v = it.getFlag?.(s,'passive_rules'); if (Array.isArray(v)) return v; } catch {}
         }
         return [];
       }
-      const rules = readRules(it);
+      const rules = (function(){ const r = readRules(it); return Array.isArray(r) ? r : []; })();
       if (!rules.length) continue;
       for (const rule of rules){
         try {
@@ -192,3 +190,4 @@
   ROOT.api.passiveModifier = { evaluatePassiveModifiers };
   log('Installed');
 })();
+
