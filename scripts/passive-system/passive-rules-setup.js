@@ -3,7 +3,7 @@
  * Run as GM once to attach rules to items in the world/actors.
  */
 (async () => {
-  const TAG='[PassiveRulesSetup]';
+  const TAG='[CustomLogicPassiveSetup]';
   const wants = [
     { keys: ['Ice Mastery (Test)','Ice Mastery'], rules: [{ id:'ice-mastery-flat', label:'Ice Mastery', when:{ all:[{ action:{ elementIn:['ice'] } }] }, effects:[{ type:'flat', scope:'outgoing', element:'ice', amount:9999 }] }] },
     { keys: ['Cognitive Focus'], rules: [{ id:'focus-outgoing-bonus', label:'Cognitive Focus', when:{ all:[{ actor:{ flagEquals:{ ns:'oni', key:'focus.active', equals:true } } }] }, effects:[{ type:'percent', scope:'outgoing', element:'all', amount:0.25 }], options:{ recalcOnConfirm:'ifElementUnknown' } }] },
@@ -23,7 +23,7 @@
   for (const want of wants){
     // search in world Items
     const worldHits = byKeysMatch(game.items ?? [], want.keys);
-    for (const it of worldHits){ await it.setFlag('world','custom_logic_passive', want.rules); console.log(TAG,'set rules on World Item', it.name); seeded.push(it.name); }
+   for (const it of worldHits){ await it.setFlag('world','custom_logic_passive', want.rules); console.log(TAG,'set rules on World Item', it.name); seeded.push(it.name); }
     // search across actors' embedded items
     for (const a of game.actors ?? []){
       const hits = byKeysMatch(a.items ?? [], want.keys);
@@ -31,6 +31,5 @@
     }
   }
 
-  ui.notifications.info(`Passive rules seeding complete. Seeded: ${seeded.length}`);
+  ui.notifications.info(`Custom logic passive seeding complete. Seeded: ${seeded.length}`);
 })();
-
