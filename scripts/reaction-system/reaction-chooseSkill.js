@@ -4,37 +4,38 @@
  * Updated for merged same-window reaction contexts.
  * ---------------------------------------------------------------------------
  */
- // ============================================================================
-  // ONI ReactionChooseSkill – Dialog + ActionDataFetch handoff (Foundry VTT v12)
-  // ---------------------------------------------------------------------------
-  // PURPOSE
-  // -------
-  // This script ONLY handles the UI/dialog part of choosing a Reaction skill,
-  // then feeds the chosen Item into your Action system (ActionDataFetch).
-  //
-  // It exposes a small API on window["oni.ReactionChooseSkill"]:
-  //
-  //   window["oni.ReactionChooseSkill"].openReactionDialog(ctx)
-  //
-  // where `ctx` is the same object ReactionManager builds:
-  //
-  //   {
-  //     combatant, actor, token,
-  //     reactions,   // array from collectReactionsForTrigger(...)
-  //     triggerKey,  // normalized trigger ("round_start", "creature_deals_damage", ...)
-  //     phasePayload // payload that came from oni:reactionPhase
-  //   }
-  //
-  // ReactionManager remains responsible for:
-  //   - Listening to oni:reactionPhase
-  //   - Finding which actors have Reactions
-  //   - Spawning the floating "Reaction" button
-  //
-  // This file is responsible for:
-  //   - UI of the "Choose Reaction" dialog
-  //   - Determining targets (from phasePayload or user targets)
-  //   - Calling the ActionDataFetch macro with the chosen skill UUID
-  // ============================================================================
+// ============================================================================
+// ONI ReactionChooseSkill – Dialog + ActionDataFetch handoff (Foundry VTT v12)
+// ---------------------------------------------------------------------------
+// PURPOSE
+// -------
+// This script ONLY handles the UI/dialog part of choosing a Reaction skill,
+// then feeds the chosen Item into your Action system (ActionDataFetch).
+//
+// It exposes a small API on window["oni.ReactionChooseSkill"]:
+//
+//   window["oni.ReactionChooseSkill"].openReactionDialog(ctx)
+//
+// where `ctx` is the same object ReactionManager builds:
+//
+//   {
+//     combatant, actor, token,
+//     reactions,   // array from collectReactionsForTrigger(...)
+//     triggerKey,  // normalized trigger ("round_start", "creature_deals_damage", ...)
+//     phasePayload // payload that came from oni:reactionPhase
+//   }
+//
+// ReactionManager remains responsible for:
+//   - Listening to oni:reactionPhase
+//   - Finding which actors have Reactions
+//   - Spawning the floating "Reaction" button
+//
+// This file is responsible for:
+//   - UI of the "Choose Reaction" dialog
+//   - Determining seed targets from reaction phase payload only
+//   - Handing off to ActionDataFetch so the Action pipeline remains the
+//     single authority for real target selection (JRPGTargeting)
+// ============================================================================
 
 Hooks.once("ready", () => {
   (() => {
@@ -309,15 +310,7 @@ Hooks.once("ready", () => {
         }
       }
 
-      let targets = toArrayUnique(collected);
-
-      if (!targets.length && game.user?.targets?.size) {
-        targets = Array.from(game.user.targets)
-          .map(t => t.document?.uuid)
-          .filter(Boolean);
-      }
-
-      return targets;
+      return toArrayUnique(collected);
     }
 
     async function openReactionDialog(ctx) {
@@ -452,14 +445,12 @@ Hooks.once("ready", () => {
       });
 
       if (!targets.length) {
-        ui.notifications.warn("[Reaction] No targets found for this Reaction. Please target something first.");
-        console.warn("[ReactionChooseSkill] openReactionDialog: no targets resolved.", {
+        console.log("[ReactionChooseSkill] No phase-derived targets found for Reaction; deferring target selection to Action pipeline/JRPGTargeting.", {
           chosenItem: chosenGroup.item,
           preferred,
           phasePayload,
           phasePayloadByTrigger
         });
-        return;
       }
 
       const payload = {
@@ -470,7 +461,12 @@ Hooks.once("ready", () => {
         reaction_trigger_key: preferred?.key ?? String(triggerKey ?? "(unknown_trigger)"),
         reaction_trigger_keys: toArrayUnique((chosenGroup.triggerKeys?.length ? chosenGroup.triggerKeys : triggerKeys).map(String)),
         reaction_phase_payload: preferred?.payload ?? {},
-        reaction_phase_payload_by_trigger: phasePayloadByTrigger
+        reaction_phase_payload_by_trigger: phasePayloadByTrigger,
+        meta: {
+          executionMode: "reaction",
+          skillTargetRaw: chosenGroup.item?.system?.skill_target ?? chosenGroup.item?.system?.system?.skill_target ?? null,
+          skillTypeRaw: chosenGroup.item?.system?.skill_type ?? chosenGroup.item?.system?.system?.skill_type ?? null
+        }
       };
 
       const ADF = game.macros.getName("ActionDataFetch");
