@@ -2,7 +2,7 @@
   "id": "fabula-ultima-companion",
   "title": "FabulaUltimaCompanion",
   "description": "Adds custom hooks and cool functionality.",
-  "version": "1.0.414",
+  "version": "1.0.415",
   "compatibility": {
     "minimum": "12",
     "verified": "12"
@@ -28,6 +28,7 @@
   "scripts/speech-bubble.js",
   "scripts/turn-ui-manager.js",
   "scripts/action-execution-core.js",
+  "scripts/active-effect-tooltip/active-effect-tooltip.js",
   "scripts/passive-system/autoPassive-targetResolver.js",
   "scripts/passive-system/autoPassive-manager.js",
   "scripts/passive-system/passive-card-ui.js",
@@ -132,5 +133,5 @@
   "styles": ["styles/style.css"],
   "packs": [],
   "manifest": "https://raw.githubusercontent.com/Onigensou/FabulaUltimaCompanion/refs/heads/main/module.json",
-  "download": "https://codeload.github.com/Onigensou/FabulaUltimaCompanion/zip/refs/tags/v1.0.414"
+  "download": "https://codeload.github.com/Onigensou/FabulaUltimaCompanion/zip/refs/tags/v1.0.415"
 }
