@@ -30,8 +30,14 @@
  * NEW (action-type debug helpers):
  *  - context.helpers.getActionTypeDebug()
  *  - context.helpers.getDetectedActionType()
+ *
+ * NEW (GM bridge):
+ *  - If current client is not GM and GMExecutor.executeSnippet(...) is available,
+ *    the snippet is executed through the generic GM executor
+ *  - Returned payload is merged back into the live PAYLOAD object
  */
 
+const MODULE_ID = "fabula-ultima-companion";
 const TAG = "[ONI][CustomLogic-Action]";
 const DEBUG = true; // set false to quiet logs
 
@@ -65,6 +71,17 @@ return (async () => {
 
   // Ensure meta exists
   PAYLOAD.meta = PAYLOAD.meta || {};
+
+  const gmExecutor =
+    game.modules?.get(MODULE_ID)?.api?.GMExecutor ??
+    globalThis.FUCompanion?.api?.GMExecutor ??
+    null;
+
+  const canUseGMExecutor = !!(
+    !game.user?.isGM &&
+    gmExecutor &&
+    typeof gmExecutor.executeSnippet === "function"
+  );
 
   // Lightweight snapshot for debug diffs
   const snap = () => ({
@@ -152,41 +169,69 @@ return (async () => {
   };
 
   const resolveDocument = async (uuid) => {
-  if (!uuid) return null;
-  if (typeof uuid !== "string") return uuid;
-  try {
-    return await fromUuid(uuid);
-  } catch (e) {
-    warn("resolveDocument failed", { uuid, error: String(e?.message ?? e) });
+    if (!uuid) return null;
+    if (typeof uuid !== "string") return uuid;
+    try {
+      return await fromUuid(uuid);
+    } catch (e) {
+      warn("resolveDocument failed", { uuid, error: String(e?.message ?? e) });
+      return null;
+    }
+  };
+
+  const coerceActorFromDoc = (doc) => {
+    if (!doc) return null;
+    if (doc?.documentName === "Actor" || doc?.constructor?.name === "Actor") return doc;
+    if (doc?.actor) return doc.actor;
+    if (doc?.object?.actor) return doc.object.actor;
+    if (doc?.token?.actor) return doc.token.actor;
+    if (doc?.parent?.actor) return doc.parent.actor;
+    if (doc?.document?.actor) return doc.document.actor;
     return null;
-  }
-};
+  };
 
-const coerceActorFromDoc = (doc) => {
-  if (!doc) return null;
-  if (doc?.documentName === "Actor" || doc?.constructor?.name === "Actor") return doc;
-  if (doc?.actor) return doc.actor;
-  if (doc?.object?.actor) return doc.object.actor;
-  if (doc?.token?.actor) return doc.token.actor;
-  if (doc?.parent?.actor) return doc.parent.actor;
-  if (doc?.document?.actor) return doc.document.actor;
-  return null;
-};
+  const resolveActor = async (uuidOrDoc) => {
+    const doc = await resolveDocument(uuidOrDoc);
+    const actor = coerceActorFromDoc(doc);
+    if (actor) return actor;
 
-const resolveActor = async (uuidOrDoc) => {
-  const doc = await resolveDocument(uuidOrDoc);
-  const actor = coerceActorFromDoc(doc);
-  if (actor) return actor;
+    if (uuidOrDoc) {
+      warn("resolveActor could not resolve an Actor", {
+        input: typeof uuidOrDoc === "string" ? uuidOrDoc : (uuidOrDoc?.uuid ?? uuidOrDoc?.id ?? null),
+        resolvedDocumentName: doc?.documentName ?? doc?.constructor?.name ?? null
+      });
+    }
 
-  if (uuidOrDoc) {
-    warn("resolveActor could not resolve an Actor", {
-      input: typeof uuidOrDoc === "string" ? uuidOrDoc : (uuidOrDoc?.uuid ?? uuidOrDoc?.id ?? null),
-      resolvedDocumentName: doc?.documentName ?? doc?.constructor?.name ?? null
-    });
-  }
+    return null;
+  };
 
-  return null;
-};
+  const mergeRemotePayloadInPlace = (target, source) => {
+    if (!source || typeof source !== "object") return target;
+
+    try {
+      foundry.utils.mergeObject(target, source, {
+        insertKeys: true,
+        insertValues: true,
+        overwrite: true,
+        recursive: true,
+        inplace: true
+      });
+    } catch (e) {
+      warn("mergeObject failed; falling back to shallow assign", e);
+      Object.assign(target, source);
+    }
+
+    // Known arrays that should replace cleanly
+    if (Array.isArray(source.targets)) {
+      target.targets = foundry.utils.deepClone(source.targets);
+    }
+
+    if (Array.isArray(source.originalTargetUUIDs)) {
+      target.originalTargetUUIDs = foundry.utils.deepClone(source.originalTargetUUIDs);
+    }
+
+    return target;
+  };
 
   const phasePayload =
     PAYLOAD?.meta?.reaction_phase_payload ??
@@ -278,13 +323,12 @@ const resolveActor = async (uuidOrDoc) => {
     passiveOrigin: PAYLOAD?.meta?.passiveOrigin ?? null,
     actionTypeDebug,
 
-    // Snippet logging helpers (so your snippet logs are consistent)
+    // Snippet logging helpers
     log:  (...a) => log("[SNIPPET]", ...a),
     warn: (...a) => warn("[SNIPPET]", ...a),
     error:(...a) => err("[SNIPPET]", ...a),
 
-    // Hard-cancel contract:
-    // Set these flags and ActionDataComputation can stop the pipeline.
+    // Hard-cancel contract
     cancelPipeline: (reason = "Cancelled", { notify = true } = {}) => {
       PAYLOAD.meta.__abortPipeline = true;
       PAYLOAD.meta.__abortReason = String(reason ?? "Cancelled");
@@ -294,7 +338,7 @@ const resolveActor = async (uuidOrDoc) => {
       return { cancelled: true, reason: PAYLOAD.meta.__abortReason };
     },
 
-    // Passive-friendly silent gate helper.
+    // Passive-friendly silent gate helper
     skipPassive: (reason = "Passive conditions not met", { notify = false } = {}) => {
       if (!context.isPassiveExecution) {
         warn("skipPassive() called on non-passive execution; falling back to cancelPipeline.", { reason, notify });
@@ -306,140 +350,130 @@ const resolveActor = async (uuidOrDoc) => {
 
     // UI helpers for choice dialogs
     ui: {
-      /**
-       * Choose via buttons.
-       * @param {Object} cfg
-       * @param {string} cfg.title
-       * @param {string} cfg.bodyHtml
-       * @param {Array<{id:string,label:string,value:any}>} cfg.choices
-       * @param {string} [cfg.cancelLabel]
-       * @param {boolean} [cfg.hardCancel] - if true, close/cancel => sets abort flag
-       * @returns {Promise<{id,label,value} | null>}
-       */
-chooseButtons: async ({
-  title = "Choose",
-  bodyHtml = "",
-  choices = [],
-  cancelLabel = "Cancel",
-  hardCancel = false,
-  userId = null,
-  timeoutMs = 120000,
-  width = 420
-} = {}) => {
-  const choiceRun = `CHOICE-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-  log("CHOICE OPEN", {
-    choiceRun,
-    title,
-    choicesCount: choices.length,
-    hardCancel,
-    userId,
-    timeoutMs,
-    width
-  });
+      chooseButtons: async ({
+        title = "Choose",
+        bodyHtml = "",
+        choices = [],
+        cancelLabel = "Cancel",
+        hardCancel = false,
+        userId = null,
+        timeoutMs = 120000,
+        width = 420
+      } = {}) => {
+        const choiceRun = `CHOICE-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+        log("CHOICE OPEN", {
+          choiceRun,
+          title,
+          choicesCount: choices.length,
+          hardCancel,
+          userId,
+          timeoutMs,
+          width
+        });
 
-  const remoteApi =
-    game.modules?.get("fabula-ultima-companion")?.api?.RemoteChoice ??
-    null;
+        const remoteApi =
+          game.modules?.get(MODULE_ID)?.api?.RemoteChoice ??
+          null;
 
-  const targetUserId = String(userId ?? "").trim();
+        const targetUserId = String(userId ?? "").trim();
 
-  // Remote path
-  if (targetUserId && targetUserId !== String(game.user?.id ?? "")) {
-    if (!remoteApi?.requestChoice) {
-      warn("RemoteChoice API missing; falling back to local dialog.", {
-        choiceRun,
-        targetUserId
-      });
-    } else {
-      const pick = await remoteApi.requestChoice({
-        userId: targetUserId,
-        title,
-        bodyHtml,
-        choices,
-        cancelLabel,
-        timeoutMs,
-        width
-      });
+        // Remote path
+        if (targetUserId && targetUserId !== String(game.user?.id ?? "")) {
+          if (!remoteApi?.requestChoice) {
+            warn("RemoteChoice API missing; falling back to local dialog.", {
+              choiceRun,
+              targetUserId
+            });
+          } else {
+            const pick = await remoteApi.requestChoice({
+              userId: targetUserId,
+              title,
+              bodyHtml,
+              choices,
+              cancelLabel,
+              timeoutMs,
+              width
+            });
 
-      log("CHOICE REMOTE RESULT", {
-        choiceRun,
-        targetUserId,
-        pickedId: pick?.id ?? null,
-        pickedValue: pick?.value ?? null
-      });
+            log("CHOICE REMOTE RESULT", {
+              choiceRun,
+              targetUserId,
+              pickedId: pick?.id ?? null,
+              pickedValue: pick?.value ?? null
+            });
 
-      if (!pick && hardCancel) {
-        PAYLOAD.meta.__abortPipeline = true;
-        PAYLOAD.meta.__abortReason = "Choice dialog closed";
-        PAYLOAD.meta.__abortNotify = true;
-        warn("PIPELINE CANCELLED (remote dialog close)", {
-          reason: PAYLOAD.meta.__abortReason
+            if (!pick && hardCancel) {
+              PAYLOAD.meta.__abortPipeline = true;
+              PAYLOAD.meta.__abortReason = "Choice dialog closed";
+              PAYLOAD.meta.__abortNotify = true;
+              warn("PIPELINE CANCELLED (remote dialog close)", {
+                reason: PAYLOAD.meta.__abortReason
+              });
+            }
+
+            return pick;
+          }
+        }
+
+        // Local fallback path
+        return await new Promise((resolve) => {
+          let done = false;
+          const safeResolve = (val) => {
+            if (done) return;
+            done = true;
+            resolve(val);
+          };
+
+          const buttons = {};
+          for (const c of choices) {
+            const id = String(c.id ?? "");
+            if (!id) continue;
+            buttons[id] = {
+              label: String(c.label ?? id),
+              callback: () => {
+                log("CHOICE CLICK", { choiceRun, id, value: c.value });
+                safeResolve({ id, label: String(c.label ?? id), value: c.value });
+              }
+            };
+          }
+
+          buttons.__cancel = {
+            label: cancelLabel,
+            callback: () => {
+              log("CHOICE CANCEL CLICK", { choiceRun });
+              safeResolve(null);
+            }
+          };
+
+          new Dialog({
+            title,
+            content: `
+              <div style="display:flex; flex-direction:column; gap:.5rem;">
+                ${bodyHtml || ""}
+                <p style="margin:0; opacity:.75; font-size:12px;">(Waiting for your choice...)</p>
+              </div>
+            `,
+            buttons,
+            default: (choices?.[0]?.id ? String(choices[0].id) : "__cancel"),
+            close: () => {
+              log("CHOICE CLOSE", { choiceRun });
+
+              if (hardCancel) {
+                PAYLOAD.meta.__abortPipeline = true;
+                PAYLOAD.meta.__abortReason = "Choice dialog closed";
+                PAYLOAD.meta.__abortNotify = true;
+                warn("PIPELINE CANCELLED (dialog close)", {
+                  reason: PAYLOAD.meta.__abortReason
+                });
+              }
+
+              safeResolve(null);
+            }
+          }, {
+            width
+          }).render(true);
         });
       }
-
-      return pick;
-    }
-  }
-
-  // Local fallback path
-  return await new Promise((resolve) => {
-    let done = false;
-    const safeResolve = (val) => {
-      if (done) return;
-      done = true;
-      resolve(val);
-    };
-
-    const buttons = {};
-    for (const c of choices) {
-      const id = String(c.id ?? "");
-      if (!id) continue;
-      buttons[id] = {
-        label: String(c.label ?? id),
-        callback: () => {
-          log("CHOICE CLICK", { choiceRun, id, value: c.value });
-          safeResolve({ id, label: String(c.label ?? id), value: c.value });
-        }
-      };
-    }
-
-    buttons.__cancel = {
-      label: cancelLabel,
-      callback: () => {
-        log("CHOICE CANCEL CLICK", { choiceRun });
-        safeResolve(null);
-      }
-    };
-
-    new Dialog({
-      title,
-      content: `
-        <div style="display:flex; flex-direction:column; gap:.5rem;">
-          ${bodyHtml || ""}
-          <p style="margin:0; opacity:.75; font-size:12px;">(Waiting for your choice...)</p>
-        </div>
-      `,
-      buttons,
-      default: (choices?.[0]?.id ? String(choices[0].id) : "__cancel"),
-      close: () => {
-        log("CHOICE CLOSE", { choiceRun });
-
-        if (hardCancel) {
-          PAYLOAD.meta.__abortPipeline = true;
-          PAYLOAD.meta.__abortReason = "Choice dialog closed";
-          PAYLOAD.meta.__abortNotify = true;
-          warn("PIPELINE CANCELLED (dialog close)", {
-            reason: PAYLOAD.meta.__abortReason
-          });
-        }
-
-        safeResolve(null);
-      }
-    }, {
-      width
-    }).render(true);
-  });
-}
     },
 
     helpers: {
@@ -508,6 +542,7 @@ chooseButtons: async ({
     actionTypeIsSpell: actionTypeDebug.isSpell,
     actionTypeCandidates: actionTypeDebug.spellCandidates,
     actionTypeRaw: actionTypeDebug.raw,
+    executionPath: canUseGMExecutor ? "gm-executor-generic" : "local",
     preview: scriptText.slice(0, 160)
   });
 
@@ -520,31 +555,103 @@ chooseButtons: async ({
     });
   }
 
-  // Expose globals (so snippet can use __PAYLOAD instantly)
-  const prevPAYLOAD = globalThis.__PAYLOAD;
-  const prevTARGETS = globalThis.__TARGETS;
-  globalThis.__PAYLOAD = PAYLOAD;
-  globalThis.__TARGETS = targets;
+  const runSnippetLocally = async () => {
+    // Expose globals (so snippet can use __PAYLOAD instantly)
+    const prevPAYLOAD = globalThis.__PAYLOAD;
+    const prevTARGETS = globalThis.__TARGETS;
+    globalThis.__PAYLOAD = PAYLOAD;
+    globalThis.__TARGETS = targets;
+
+    try {
+      const wrapped = `return (async () => {\n${scriptText}\n})();`;
+      const fn = new Function("payload", "targets", "context", wrapped);
+
+      log("EXECUTE snippet locally (wrapped async)...");
+      const result = fn(PAYLOAD, targets, context);
+
+      const isPromise = !!(result && typeof result.then === "function");
+      log("SNIPPET RETURN", { type: typeof result, isPromise, via: "local" });
+
+      if (isPromise) {
+        await result;
+      } else {
+        warn("Snippet did not return a Promise (unexpected with wrapper). Continuing.");
+      }
+
+      return { ok: true, via: "local" };
+    } finally {
+      globalThis.__PAYLOAD = prevPAYLOAD;
+      globalThis.__TARGETS = prevTARGETS;
+    }
+  };
+
+  const runSnippetViaGM = async () => {
+    if (!gmExecutor?.executeSnippet) {
+      throw new Error("GMExecutor.executeSnippet is not available");
+    }
+
+    log("EXECUTE snippet via generic GMExecutor...", {
+      callerUserId: game.user?.id ?? null,
+      attackerUuid,
+      targetsCount: targets.length
+    });
+
+    const wrappedScript = `
+const context = env.makeContext("action");
+${scriptText}
+    `.trim();
+
+    const remote = await gmExecutor.executeSnippet({
+      mode: "action",
+      scriptText: wrappedScript,
+      payload: PAYLOAD,
+      targets,
+      actorUuid: attackerUuid ?? null,
+      metadata: {
+        origin: "CustomLogic-Action",
+        runId
+      }
+    });
+
+    log("GMExecutor RETURN", {
+      ok: !!remote?.ok,
+      mode: remote?.mode ?? null,
+      hasPayload: !!remote?.payload,
+      error: remote?.error ?? null
+    });
+
+    if (remote?.payload) {
+      mergeRemotePayloadInPlace(PAYLOAD, remote.payload);
+    }
+
+    if (!remote?.ok) {
+      return {
+        ok: false,
+        via: "gm-executor-generic",
+        error: String(remote?.error ?? "GMExecutor generic action failed"),
+        stack: String(remote?.stack ?? "")
+      };
+    }
+
+    return { ok: true, via: "gm-executor-generic" };
+  };
 
   try {
-    // Always wrap the snippet inside an async IIFE
-    // so snippets can freely use `await` without needing to "return" anything.
-    const wrapped = `return (async () => {\n${scriptText}\n})();`;
+    let execResult;
 
-    const fn = new Function("payload", "targets", "context", wrapped);
-
-    log("EXECUTE snippet (wrapped async)...");
-    const result = fn(PAYLOAD, targets, context);
-
-    // Because we wrap, result SHOULD be a Promise. Still, guard anyway.
-    const isPromise = !!(result && typeof result.then === "function");
-    log("SNIPPET RETURN", { type: typeof result, isPromise });
-
-    if (isPromise) {
-      await result;
+    if (canUseGMExecutor) {
+      execResult = await runSnippetViaGM();
     } else {
-      // If something truly weird happened, still continue safely.
-      warn("Snippet did not return a Promise (unexpected with wrapper). Continuing.");
+      if (!game.user?.isGM && !gmExecutor?.executeSnippet) {
+        warn("GMExecutor generic API is unavailable on a non-GM client. Falling back to local execution; permission-gated logic may fail.");
+      }
+      execResult = await runSnippetLocally();
+    }
+
+    if (!execResult?.ok) {
+      throw Object.assign(new Error(execResult?.error ?? "Custom logic execution failed"), {
+        stack: execResult?.stack ?? ""
+      });
     }
 
     // Stamp last run info
@@ -557,13 +664,15 @@ chooseButtons: async ({
       passiveTriggerKey: context.passiveTriggerKey,
       actionTypeDetected: actionTypeDebug.detectedActionType,
       actionTypeIsSpell: actionTypeDebug.isSpell,
-      actionTypeCandidates: actionTypeDebug.spellCandidates
+      actionTypeCandidates: actionTypeDebug.spellCandidates,
+      executionPath: execResult?.via ?? (canUseGMExecutor ? "gm-executor-generic" : "local")
     };
 
     const after = snap();
 
     log("DONE", {
       dtMs: Math.round(performance.now() - t0),
+      executionPath: execResult?.via ?? (canUseGMExecutor ? "gm-executor-generic" : "local"),
       changed: {
         costRaw: `${before.costRaw} → ${after.costRaw}`,
         baseValue: `${before.baseValue} → ${after.baseValue}`,
@@ -579,6 +688,7 @@ chooseButtons: async ({
     return {
       ok: true,
       runId,
+      executionPath: execResult?.via ?? (canUseGMExecutor ? "gm-executor-generic" : "local"),
       cancelled: !!PAYLOAD.meta.__abortPipeline,
       reason: PAYLOAD.meta.__abortReason ?? null,
       passiveSkipped: !!PAYLOAD.meta.__passiveSkipped,
@@ -599,9 +709,5 @@ chooseButtons: async ({
 
     // Do NOT break pipeline by default (matches your current behavior)
     return { ok: false, runId, error: String(e?.message ?? e) };
-  } finally {
-    // Restore globals
-    globalThis.__PAYLOAD = prevPAYLOAD;
-    globalThis.__TARGETS = prevTARGETS;
   }
 })();

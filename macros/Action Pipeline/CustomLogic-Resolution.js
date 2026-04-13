@@ -24,8 +24,14 @@
  *  - context.helpers.getEquippedWeaponCategories()
  *  - context.helpers.getActionTypeDebug()
  *  - context.helpers.getDetectedActionType()
+ *
+ * NEW (GM bridge):
+ *  - If current client is not GM and GMExecutor.executeSnippet(...) is available,
+ *    the snippet is executed through the generic GM executor
+ *  - Returned payload/args are merged back into the live PAYLOAD / ARGS objects
  */
 
+const MODULE_ID = "fabula-ultima-companion";
 const TAG = "[ONI][CustomLogic-Resolution]";
 const DEBUG = true; // set false later to quiet logs
 
@@ -68,6 +74,17 @@ return (async () => {
   // Ensure meta exists
   PAYLOAD.meta = PAYLOAD.meta || {};
 
+  const gmExecutor =
+    game.modules?.get(MODULE_ID)?.api?.GMExecutor ??
+    globalThis.FUCompanion?.api?.GMExecutor ??
+    null;
+
+  const canUseGMExecutor = !!(
+    !game.user?.isGM &&
+    gmExecutor &&
+    typeof gmExecutor.executeSnippet === "function"
+  );
+
   // Snapshot for debug diffs
   const snap = () => ({
     elementType: ARGS?.elementType ?? null,
@@ -101,181 +118,205 @@ return (async () => {
 
   PAYLOAD.meta.hasCustomLogicResolution = true;
 
+  // ──────────────────────────────────────────────────────────
+  // Helper functions
+  // ──────────────────────────────────────────────────────────
+  const toLower = (v) => String(v ?? "").trim().toLowerCase();
+  const uniq = (arr) => Array.from(new Set((Array.isArray(arr) ? arr : []).filter(v => v != null && String(v).trim() !== "")));
 
-// ──────────────────────────────────────────────────────────
-// Helper functions
-// ──────────────────────────────────────────────────────────
-const toLower = (v) => String(v ?? "").trim().toLowerCase();
-const uniq = (arr) => Array.from(new Set((Array.isArray(arr) ? arr : []).filter(v => v != null && String(v).trim() !== "")));
-
-const normalizeWeaponCategory = (value) => {
-  const rawValue = String(value ?? "").trim();
-  if (!rawValue) return "";
-  const v = rawValue.toLowerCase();
-  const aliases = {
-    arcana: "arcane",
-    arcane: "arcane",
-    wand: "arcane",
-    staff: "arcane",
-    tome: "arcane",
-    dagger: "dagger",
-    knife: "dagger",
-    flail: "flail",
-    mace: "flail"
+  const normalizeWeaponCategory = (value) => {
+    const rawValue = String(value ?? "").trim();
+    if (!rawValue) return "";
+    const v = rawValue.toLowerCase();
+    const aliases = {
+      arcana: "arcane",
+      arcane: "arcane",
+      wand: "arcane",
+      staff: "arcane",
+      tome: "arcane",
+      dagger: "dagger",
+      knife: "dagger",
+      flail: "flail",
+      mace: "flail"
+    };
+    return aliases[v] ?? v;
   };
-  return aliases[v] ?? v;
-};
 
-const getItemProps = (item) => item?.system?.props ?? {};
+  const getItemProps = (item) => item?.system?.props ?? {};
 
-const isItemEquipped = (item) => {
-  const props = getItemProps(item);
-  const candidates = [
-    props?.isEquipped,
-    props?.equipped,
-    item?.system?.equipped,
-    item?.equipped,
-    item?.isEquipped
-  ];
-  return candidates.some(v => v === true || v === "true" || v === 1 || v === "1");
-};
+  const isItemEquipped = (item) => {
+    const props = getItemProps(item);
+    const candidates = [
+      props?.isEquipped,
+      props?.equipped,
+      item?.system?.equipped,
+      item?.equipped,
+      item?.isEquipped
+    ];
+    return candidates.some(v => v === true || v === "true" || v === 1 || v === "1");
+  };
 
-const getItemTypeNormalized = (item) => {
-  const props = getItemProps(item);
-  return toLower(
-    props?.item_type ??
-    item?.system?.item_type ??
-    item?.type ??
-    ""
-  );
-};
+  const getItemTypeNormalized = (item) => {
+    const props = getItemProps(item);
+    return toLower(
+      props?.item_type ??
+      item?.system?.item_type ??
+      item?.type ??
+      ""
+    );
+  };
 
-const getItemCategoryNormalized = (item) => {
-  const props = getItemProps(item);
-  return normalizeWeaponCategory(
-    props?.category ??
-    item?.system?.category ??
-    item?.category ??
-    ""
-  );
-};
+  const getItemCategoryNormalized = (item) => {
+    const props = getItemProps(item);
+    return normalizeWeaponCategory(
+      props?.category ??
+      item?.system?.category ??
+      item?.category ??
+      ""
+    );
+  };
 
-const resolveDocument = async (uuid) => {
-  if (!uuid) return null;
-  if (typeof uuid !== "string") return uuid;
-  try {
-    return await fromUuid(uuid);
-  } catch (e) {
-    warn("resolveDocument failed", { uuid, error: String(e?.message ?? e) });
+  const resolveDocument = async (uuid) => {
+    if (!uuid) return null;
+    if (typeof uuid !== "string") return uuid;
+    try {
+      return await fromUuid(uuid);
+    } catch (e) {
+      warn("resolveDocument failed", { uuid, error: String(e?.message ?? e) });
+      return null;
+    }
+  };
+
+  const coerceActorFromDoc = (doc) => {
+    if (!doc) return null;
+    if (doc?.documentName === "Actor" || doc?.constructor?.name === "Actor") return doc;
+    if (doc?.actor) return doc.actor;
+    if (doc?.object?.actor) return doc.object.actor;
+    if (doc?.token?.actor) return doc.token.actor;
+    if (doc?.parent?.actor) return doc.parent.actor;
+    if (doc?.document?.actor) return doc.document.actor;
     return null;
-  }
-};
-
-const coerceActorFromDoc = (doc) => {
-  if (!doc) return null;
-  if (doc?.documentName === "Actor" || doc?.constructor?.name === "Actor") return doc;
-  if (doc?.actor) return doc.actor;
-  if (doc?.object?.actor) return doc.object.actor;
-  if (doc?.token?.actor) return doc.token.actor;
-  if (doc?.parent?.actor) return doc.parent.actor;
-  if (doc?.document?.actor) return doc.document.actor;
-  return null;
-};
-
-const resolveActor = async (uuidOrDoc) => {
-  const doc = await resolveDocument(uuidOrDoc);
-  const actor = coerceActorFromDoc(doc);
-  if (actor) return actor;
-
-  if (uuidOrDoc) {
-    warn("resolveActor could not resolve an Actor", {
-      input: typeof uuidOrDoc === "string" ? uuidOrDoc : (uuidOrDoc?.uuid ?? uuidOrDoc?.id ?? null),
-      resolvedDocumentName: doc?.documentName ?? doc?.constructor?.name ?? null
-    });
-  }
-
-  return null;
-};
-
-const phasePayload =
-  PAYLOAD?.meta?.reaction_phase_payload ??
-  PAYLOAD?.reaction_phase_payload ??
-  null;
-
-const buildActionTypeDebug = () => {
-  const phase = phasePayload ?? {};
-  const sourceItem = phase?.actionContext?.sourceItem ?? null;
-  const candidates = {
-    payload_core_skillTypeRaw: PAYLOAD?.core?.skillTypeRaw ?? null,
-    payload_dataCore_skillTypeRaw: PAYLOAD?.dataCore?.skillTypeRaw ?? null,
-    payload_meta_skillTypeRaw: PAYLOAD?.meta?.skillTypeRaw ?? null,
-    payload_meta_sourceType: PAYLOAD?.meta?.sourceType ?? null,
-    payload_source: PAYLOAD?.source ?? null,
-
-    args_weaponType: ARGS?.weaponType ?? null,
-    args_isSpellish: ARGS?.isSpellish ?? null,
-    args_hasDamageSection: ARGS?.hasDamageSection ?? null,
-
-    phase_skillTypeRaw: phase?.skillTypeRaw ?? null,
-    phase_skill_type: phase?.skill_type ?? null,
-    phase_sourceType: phase?.sourceType ?? null,
-    phase_actionContext_core_skillTypeRaw: phase?.actionContext?.core?.skillTypeRaw ?? null,
-    phase_actionContext_sourceType: phase?.actionContext?.sourceType ?? null,
-    phase_sourceItem_skill_type: sourceItem?.system?.props?.skill_type ?? null,
-    phase_sourceItem_isOffensiveSpell: sourceItem?.system?.props?.isOffensiveSpell ?? null,
-    phase_sourceItem_name: sourceItem?.name ?? null
   };
 
-  const normalized = {
-    payloadCoreSkillType: toLower(candidates.payload_core_skillTypeRaw),
-    payloadDataCoreSkillType: toLower(candidates.payload_dataCore_skillTypeRaw),
-    payloadMetaSkillType: toLower(candidates.payload_meta_skillTypeRaw),
-    payloadMetaSourceType: toLower(candidates.payload_meta_sourceType),
-    payloadSource: toLower(candidates.payload_source),
-    argsWeaponType: toLower(candidates.args_weaponType),
-    phaseSkillTypeRaw: toLower(candidates.phase_skillTypeRaw),
-    phaseSkillType: toLower(candidates.phase_skill_type),
-    phaseSourceType: toLower(candidates.phase_sourceType),
-    phaseActionCoreSkillType: toLower(candidates.phase_actionContext_core_skillTypeRaw),
-    phaseActionSourceType: toLower(candidates.phase_actionContext_sourceType),
-    phaseSourceItemSkillType: toLower(candidates.phase_sourceItem_skill_type)
+  const resolveActor = async (uuidOrDoc) => {
+    const doc = await resolveDocument(uuidOrDoc);
+    const actor = coerceActorFromDoc(doc);
+    if (actor) return actor;
+
+    if (uuidOrDoc) {
+      warn("resolveActor could not resolve an Actor", {
+        input: typeof uuidOrDoc === "string" ? uuidOrDoc : (uuidOrDoc?.uuid ?? uuidOrDoc?.id ?? null),
+        resolvedDocumentName: doc?.documentName ?? doc?.constructor?.name ?? null
+      });
+    }
+
+    return null;
   };
 
-  const spellCandidates = [
-    normalized.payloadCoreSkillType,
-    normalized.payloadDataCoreSkillType,
-    normalized.payloadMetaSkillType,
-    normalized.phaseSkillTypeRaw,
-    normalized.phaseSkillType,
-    normalized.phaseActionCoreSkillType,
-    normalized.phaseSourceItemSkillType,
-    normalized.payloadMetaSourceType,
-    normalized.phaseSourceType,
-    normalized.phaseActionSourceType
-  ].filter(Boolean);
+  const mergeInPlace = (target, source, { arrayKeys = [] } = {}) => {
+    if (!source || typeof source !== "object") return target;
 
-  const detectedActionType =
-    spellCandidates.find(v => ["spell", "skill", "weapon"].includes(v)) ??
-    spellCandidates[0] ??
-    normalized.argsWeaponType ??
-    "";
+    try {
+      foundry.utils.mergeObject(target, source, {
+        insertKeys: true,
+        insertValues: true,
+        overwrite: true,
+        recursive: true,
+        inplace: true
+      });
+    } catch (e) {
+      warn("mergeObject failed; falling back to shallow assign", e);
+      Object.assign(target, source);
+    }
 
-  const isSpell = !!(
-    detectedActionType === "spell" ||
-    candidates.args_isSpellish === true ||
-    candidates.phase_sourceItem_isOffensiveSpell === true
-  );
+    for (const key of arrayKeys) {
+      if (Array.isArray(source?.[key])) {
+        target[key] = foundry.utils.deepClone(source[key]);
+      }
+    }
 
-  return {
-    detectedActionType,
-    isSpell,
-    spellCandidates,
-    raw: candidates,
-    normalized
+    return target;
   };
-};
 
-const actionTypeDebug = buildActionTypeDebug();
+  const phasePayload =
+    PAYLOAD?.meta?.reaction_phase_payload ??
+    PAYLOAD?.reaction_phase_payload ??
+    null;
+
+  const buildActionTypeDebug = () => {
+    const phase = phasePayload ?? {};
+    const sourceItem = phase?.actionContext?.sourceItem ?? null;
+    const candidates = {
+      payload_core_skillTypeRaw: PAYLOAD?.core?.skillTypeRaw ?? null,
+      payload_dataCore_skillTypeRaw: PAYLOAD?.dataCore?.skillTypeRaw ?? null,
+      payload_meta_skillTypeRaw: PAYLOAD?.meta?.skillTypeRaw ?? null,
+      payload_meta_sourceType: PAYLOAD?.meta?.sourceType ?? null,
+      payload_source: PAYLOAD?.source ?? null,
+
+      args_weaponType: ARGS?.weaponType ?? null,
+      args_isSpellish: ARGS?.isSpellish ?? null,
+      args_hasDamageSection: ARGS?.hasDamageSection ?? null,
+
+      phase_skillTypeRaw: phase?.skillTypeRaw ?? null,
+      phase_skill_type: phase?.skill_type ?? null,
+      phase_sourceType: phase?.sourceType ?? null,
+      phase_actionContext_core_skillTypeRaw: phase?.actionContext?.core?.skillTypeRaw ?? null,
+      phase_actionContext_sourceType: phase?.actionContext?.sourceType ?? null,
+      phase_sourceItem_skill_type: sourceItem?.system?.props?.skill_type ?? null,
+      phase_sourceItem_isOffensiveSpell: sourceItem?.system?.props?.isOffensiveSpell ?? null,
+      phase_sourceItem_name: sourceItem?.name ?? null
+    };
+
+    const normalized = {
+      payloadCoreSkillType: toLower(candidates.payload_core_skillTypeRaw),
+      payloadDataCoreSkillType: toLower(candidates.payload_dataCore_skillTypeRaw),
+      payloadMetaSkillType: toLower(candidates.payload_meta_skillTypeRaw),
+      payloadMetaSourceType: toLower(candidates.payload_meta_sourceType),
+      payloadSource: toLower(candidates.payload_source),
+      argsWeaponType: toLower(candidates.args_weaponType),
+      phaseSkillTypeRaw: toLower(candidates.phase_skillTypeRaw),
+      phaseSkillType: toLower(candidates.phase_skill_type),
+      phaseSourceType: toLower(candidates.phase_sourceType),
+      phaseActionCoreSkillType: toLower(candidates.phase_actionContext_core_skillTypeRaw),
+      phaseActionSourceType: toLower(candidates.phase_actionContext_sourceType),
+      phaseSourceItemSkillType: toLower(candidates.phase_sourceItem_skill_type)
+    };
+
+    const spellCandidates = [
+      normalized.payloadCoreSkillType,
+      normalized.payloadDataCoreSkillType,
+      normalized.payloadMetaSkillType,
+      normalized.phaseSkillTypeRaw,
+      normalized.phaseSkillType,
+      normalized.phaseActionCoreSkillType,
+      normalized.phaseSourceItemSkillType,
+      normalized.payloadMetaSourceType,
+      normalized.phaseSourceType,
+      normalized.phaseActionSourceType
+    ].filter(Boolean);
+
+    const detectedActionType =
+      spellCandidates.find(v => ["spell", "skill", "weapon"].includes(v)) ??
+      spellCandidates[0] ??
+      normalized.argsWeaponType ??
+      "";
+
+    const isSpell = !!(
+      detectedActionType === "spell" ||
+      candidates.args_isSpellish === true ||
+      candidates.phase_sourceItem_isOffensiveSpell === true
+    );
+
+    return {
+      detectedActionType,
+      isSpell,
+      spellCandidates,
+      raw: candidates,
+      normalized
+    };
+  };
+
+  const actionTypeDebug = buildActionTypeDebug();
 
   // ──────────────────────────────────────────────────────────
   // Context helpers (Choice + Cancel + Snippet logging)
@@ -333,136 +374,132 @@ const actionTypeDebug = buildActionTypeDebug();
     },
 
     ui: {
-      /**
-       * Choose via buttons (awaitable).
-       * @returns {Promise<{id,label,value} | null>}
-       */
       chooseButtons: async ({
-  title = "Choose",
-  bodyHtml = "",
-  choices = [],
-  cancelLabel = "Cancel",
-  hardCancel = false,
-  userId = null,
-  timeoutMs = 120000,
-  width = 420
-} = {}) => {
-  const choiceRun = `CHOICE-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-  log("CHOICE OPEN", {
-    choiceRun,
-    title,
-    choicesCount: choices.length,
-    hardCancel,
-    userId,
-    timeoutMs,
-    width
-  });
+        title = "Choose",
+        bodyHtml = "",
+        choices = [],
+        cancelLabel = "Cancel",
+        hardCancel = false,
+        userId = null,
+        timeoutMs = 120000,
+        width = 420
+      } = {}) => {
+        const choiceRun = `CHOICE-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+        log("CHOICE OPEN", {
+          choiceRun,
+          title,
+          choicesCount: choices.length,
+          hardCancel,
+          userId,
+          timeoutMs,
+          width
+        });
 
-  const remoteApi =
-    game.modules?.get("fabula-ultima-companion")?.api?.RemoteChoice ??
-    null;
+        const remoteApi =
+          game.modules?.get(MODULE_ID)?.api?.RemoteChoice ??
+          null;
 
-  const targetUserId = String(userId ?? "").trim();
+        const targetUserId = String(userId ?? "").trim();
 
-  // Remote path
-  if (targetUserId && targetUserId !== String(game.user?.id ?? "")) {
-    if (!remoteApi?.requestChoice) {
-      warn("RemoteChoice API missing; falling back to local dialog.", {
-        choiceRun,
-        targetUserId
-      });
-    } else {
-      const pick = await remoteApi.requestChoice({
-        userId: targetUserId,
-        title,
-        bodyHtml,
-        choices,
-        cancelLabel,
-        timeoutMs,
-        width
-      });
+        // Remote path
+        if (targetUserId && targetUserId !== String(game.user?.id ?? "")) {
+          if (!remoteApi?.requestChoice) {
+            warn("RemoteChoice API missing; falling back to local dialog.", {
+              choiceRun,
+              targetUserId
+            });
+          } else {
+            const pick = await remoteApi.requestChoice({
+              userId: targetUserId,
+              title,
+              bodyHtml,
+              choices,
+              cancelLabel,
+              timeoutMs,
+              width
+            });
 
-      log("CHOICE REMOTE RESULT", {
-        choiceRun,
-        targetUserId,
-        pickedId: pick?.id ?? null,
-        pickedValue: pick?.value ?? null
-      });
+            log("CHOICE REMOTE RESULT", {
+              choiceRun,
+              targetUserId,
+              pickedId: pick?.id ?? null,
+              pickedValue: pick?.value ?? null
+            });
 
-      if (!pick && hardCancel) {
-        ARGS.__abortConfirm = true;
-        ARGS.__abortReason = "Choice dialog closed";
-        PAYLOAD.meta.__abortResolution = true;
-        PAYLOAD.meta.__abortResolutionReason = ARGS.__abortReason;
-        warn("CONFIRM CANCELLED (remote dialog close)", {
-          reason: ARGS.__abortReason
+            if (!pick && hardCancel) {
+              ARGS.__abortConfirm = true;
+              ARGS.__abortReason = "Choice dialog closed";
+              PAYLOAD.meta.__abortResolution = true;
+              PAYLOAD.meta.__abortResolutionReason = ARGS.__abortReason;
+              warn("CONFIRM CANCELLED (remote dialog close)", {
+                reason: ARGS.__abortReason
+              });
+            }
+
+            return pick;
+          }
+        }
+
+        // Local fallback path
+        return await new Promise((resolve) => {
+          let done = false;
+          const safeResolve = (val) => {
+            if (done) return;
+            done = true;
+            resolve(val);
+          };
+
+          const buttons = {};
+          for (const c of choices) {
+            const id = String(c.id ?? "");
+            if (!id) continue;
+            buttons[id] = {
+              label: String(c.label ?? id),
+              callback: () => {
+                log("CHOICE CLICK", { choiceRun, id, value: c.value });
+                safeResolve({ id, label: String(c.label ?? id), value: c.value });
+              }
+            };
+          }
+
+          buttons.__cancel = {
+            label: cancelLabel,
+            callback: () => {
+              log("CHOICE CANCEL CLICK", { choiceRun });
+              safeResolve(null);
+            }
+          };
+
+          new Dialog({
+            title,
+            content: `
+              <div style="display:flex; flex-direction:column; gap:.5rem;">
+                ${bodyHtml || ""}
+                <p style="margin:0; opacity:.75; font-size:12px;">(Waiting for your choice...)</p>
+              </div>
+            `,
+            buttons,
+            default: (choices?.[0]?.id ? String(choices[0].id) : "__cancel"),
+            close: () => {
+              log("CHOICE CLOSE", { choiceRun });
+
+              if (hardCancel) {
+                ARGS.__abortConfirm = true;
+                ARGS.__abortReason = "Choice dialog closed";
+                PAYLOAD.meta.__abortResolution = true;
+                PAYLOAD.meta.__abortResolutionReason = ARGS.__abortReason;
+                warn("CONFIRM CANCELLED (dialog close)", {
+                  reason: ARGS.__abortReason
+                });
+              }
+
+              safeResolve(null);
+            }
+          }, {
+            width
+          }).render(true);
         });
       }
-
-      return pick;
-    }
-  }
-
-  // Local fallback path
-  return await new Promise((resolve) => {
-    let done = false;
-    const safeResolve = (val) => {
-      if (done) return;
-      done = true;
-      resolve(val);
-    };
-
-    const buttons = {};
-    for (const c of choices) {
-      const id = String(c.id ?? "");
-      if (!id) continue;
-      buttons[id] = {
-        label: String(c.label ?? id),
-        callback: () => {
-          log("CHOICE CLICK", { choiceRun, id, value: c.value });
-          safeResolve({ id, label: String(c.label ?? id), value: c.value });
-        }
-      };
-    }
-
-    buttons.__cancel = {
-      label: cancelLabel,
-      callback: () => {
-        log("CHOICE CANCEL CLICK", { choiceRun });
-        safeResolve(null);
-      }
-    };
-
-    new Dialog({
-      title,
-      content: `
-        <div style="display:flex; flex-direction:column; gap:.5rem;">
-          ${bodyHtml || ""}
-          <p style="margin:0; opacity:.75; font-size:12px;">(Waiting for your choice...)</p>
-        </div>
-      `,
-      buttons,
-      default: (choices?.[0]?.id ? String(choices[0].id) : "__cancel"),
-      close: () => {
-        log("CHOICE CLOSE", { choiceRun });
-
-        if (hardCancel) {
-          ARGS.__abortConfirm = true;
-          ARGS.__abortReason = "Choice dialog closed";
-          PAYLOAD.meta.__abortResolution = true;
-          PAYLOAD.meta.__abortResolutionReason = ARGS.__abortReason;
-          warn("CONFIRM CANCELLED (dialog close)", {
-            reason: ARGS.__abortReason
-          });
-        }
-
-        safeResolve(null);
-      }
-    }, {
-      width
-    }).render(true);
-  });
-}
     },
 
     helpers: {
@@ -531,6 +568,7 @@ const actionTypeDebug = buildActionTypeDebug();
     actionTypeIsSpell: actionTypeDebug.isSpell,
     actionTypeCandidates: actionTypeDebug.spellCandidates,
     actionTypeRaw: actionTypeDebug.raw,
+    executionPath: canUseGMExecutor ? "gm-executor-generic" : "local",
     preview: scriptText.slice(0, 160),
     chatMsgId: context.chatMsgId
   });
@@ -544,30 +582,118 @@ const actionTypeDebug = buildActionTypeDebug();
     });
   }
 
-  // Expose globals for snippet convenience
-  const prevPAYLOAD = globalThis.__PAYLOAD;
-  const prevARGS    = globalThis.__ARGS;
-  const prevTARGETS = globalThis.__TARGETS;
-  const prevCHAT    = globalThis.__CHAT_MSG;
+  const runSnippetLocally = async () => {
+    // Expose globals for snippet convenience
+    const prevPAYLOAD = globalThis.__PAYLOAD;
+    const prevARGS    = globalThis.__ARGS;
+    const prevTARGETS = globalThis.__TARGETS;
+    const prevCHAT    = globalThis.__CHAT_MSG;
 
-  globalThis.__PAYLOAD  = PAYLOAD;
-  globalThis.__ARGS     = ARGS;
-  globalThis.__TARGETS  = targets;
-  globalThis.__CHAT_MSG = CHAT_MSG;
+    globalThis.__PAYLOAD  = PAYLOAD;
+    globalThis.__ARGS     = ARGS;
+    globalThis.__TARGETS  = targets;
+    globalThis.__CHAT_MSG = CHAT_MSG;
+
+    try {
+      const wrapped = `return (async () => {\n${scriptText}\n})();`;
+      const fn = new Function("payload", "args", "targets", "context", wrapped);
+
+      log("EXECUTE snippet locally (wrapped async)...");
+      const result = fn(PAYLOAD, ARGS, targets, context);
+
+      const isPromise = !!(result && typeof result.then === "function");
+      log("SNIPPET RETURN", { type: typeof result, isPromise, via: "local" });
+
+      if (isPromise) await result;
+      else warn("Snippet did not return a Promise (unexpected with wrapper). Continuing.");
+
+      return { ok: true, via: "local" };
+    } finally {
+      globalThis.__PAYLOAD  = prevPAYLOAD;
+      globalThis.__ARGS     = prevARGS;
+      globalThis.__TARGETS  = prevTARGETS;
+      globalThis.__CHAT_MSG = prevCHAT;
+    }
+  };
+
+  const runSnippetViaGM = async () => {
+    if (!gmExecutor?.executeSnippet) {
+      throw new Error("GMExecutor.executeSnippet is not available");
+    }
+
+    log("EXECUTE snippet via generic GMExecutor...", {
+      callerUserId: game.user?.id ?? null,
+      attackerUuid,
+      targetsCount: targets.length,
+      chatMsgId: CHAT_MSG?.id ?? null
+    });
+
+    const wrappedScript = `
+const context = env.makeContext("resolution");
+${scriptText}
+    `.trim();
+
+    const remote = await gmExecutor.executeSnippet({
+      mode: "resolution",
+      scriptText: wrappedScript,
+      payload: PAYLOAD,
+      args: ARGS,
+      targets,
+      chatMsgId: CHAT_MSG?.id ?? null,
+      actorUuid: attackerUuid ?? null,
+      metadata: {
+        origin: "CustomLogic-Resolution",
+        runId
+      }
+    });
+
+    log("GMExecutor RETURN", {
+      ok: !!remote?.ok,
+      mode: remote?.mode ?? null,
+      hasPayload: !!remote?.payload,
+      hasArgs: !!remote?.args,
+      error: remote?.error ?? null
+    });
+
+    if (remote?.payload) {
+      mergeInPlace(PAYLOAD, remote.payload, {
+        arrayKeys: ["targets", "originalTargetUUIDs"]
+      });
+    }
+
+    if (remote?.args) {
+      mergeInPlace(ARGS, remote.args);
+    }
+
+    if (!remote?.ok) {
+      return {
+        ok: false,
+        via: "gm-executor-generic",
+        error: String(remote?.error ?? "GMExecutor generic resolution failed"),
+        stack: String(remote?.stack ?? "")
+      };
+    }
+
+    return { ok: true, via: "gm-executor-generic" };
+  };
 
   try {
-    // Wrap snippet so it ALWAYS returns a Promise and supports top-level await in snippet
-    const wrapped = `return (async () => {\n${scriptText}\n})();`;
-    const fn = new Function("payload", "args", "targets", "context", wrapped);
+    let execResult;
 
-    log("EXECUTE snippet (wrapped async)...");
-    const result = fn(PAYLOAD, ARGS, targets, context);
+    if (canUseGMExecutor) {
+      execResult = await runSnippetViaGM();
+    } else {
+      if (!game.user?.isGM && !gmExecutor?.executeSnippet) {
+        warn("GMExecutor generic API is unavailable on a non-GM client. Falling back to local execution; permission-gated logic may fail.");
+      }
+      execResult = await runSnippetLocally();
+    }
 
-    const isPromise = !!(result && typeof result.then === "function");
-    log("SNIPPET RETURN", { type: typeof result, isPromise });
-
-    if (isPromise) await result;
-    else warn("Snippet did not return a Promise (unexpected with wrapper). Continuing.");
+    if (!execResult?.ok) {
+      throw Object.assign(new Error(execResult?.error ?? "Custom logic resolution failed"), {
+        stack: execResult?.stack ?? ""
+      });
+    }
 
     PAYLOAD.meta.__customLogicResolution = PAYLOAD.meta.__customLogicResolution || {};
     PAYLOAD.meta.__customLogicResolution.lastRun = {
@@ -578,12 +704,14 @@ const actionTypeDebug = buildActionTypeDebug();
       passiveTriggerKey: context.passiveTriggerKey,
       actionTypeDetected: actionTypeDebug.detectedActionType,
       actionTypeIsSpell: actionTypeDebug.isSpell,
-      actionTypeCandidates: actionTypeDebug.spellCandidates
+      actionTypeCandidates: actionTypeDebug.spellCandidates,
+      executionPath: execResult?.via ?? (canUseGMExecutor ? "gm-executor-generic" : "local")
     };
 
     const after = snap();
     log("DONE", {
       dtMs: Math.round(performance.now() - t0),
+      executionPath: execResult?.via ?? (canUseGMExecutor ? "gm-executor-generic" : "local"),
       changed: {
         elementType: `${before.elementType} → ${after.elementType}`,
         weaponType: `${before.weaponType} → ${after.weaponType}`,
@@ -605,6 +733,7 @@ const actionTypeDebug = buildActionTypeDebug();
     return {
       ok: true,
       runId,
+      executionPath: execResult?.via ?? (canUseGMExecutor ? "gm-executor-generic" : "local"),
       cancelled: !!ARGS.__abortConfirm,
       reason: ARGS.__abortReason ?? null,
       passiveSkipped: !!PAYLOAD.meta.__passiveSkipped,
@@ -622,10 +751,5 @@ const actionTypeDebug = buildActionTypeDebug();
       stack: String(e?.stack ?? "")
     };
     return { ok: false, runId, error: String(e?.message ?? e) };
-  } finally {
-    globalThis.__PAYLOAD  = prevPAYLOAD;
-    globalThis.__ARGS     = prevARGS;
-    globalThis.__TARGETS  = prevTARGETS;
-    globalThis.__CHAT_MSG = prevCHAT;
   }
 })();
