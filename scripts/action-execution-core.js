@@ -253,6 +253,141 @@
     );
   }
 
+  async function resolveTokenDocFromUuidish(uuidish) {
+    try {
+      if (!uuidish) return null;
+      const doc = await fromUuid(uuidish).catch(() => null);
+      if (!doc) return null;
+
+      if (doc?.documentName === "Token" || doc?.documentName === "TokenDocument") {
+        return doc;
+      }
+
+      if (doc?.token?.document?.documentName === "Token" || doc?.token?.document?.documentName === "TokenDocument") {
+        return doc.token.document;
+      }
+
+      if (doc?.token?.documentName === "Token" || doc?.token?.documentName === "TokenDocument") {
+        return doc.token;
+      }
+
+      const actor =
+        doc?.actor ??
+        (doc?.documentName === "Actor" ? doc : null) ??
+        null;
+
+      if (actor) {
+        try {
+          const activeToken =
+            actor.getActiveTokens?.(true, true)?.[0] ??
+            actor.getActiveTokens?.()?.[0] ??
+            null;
+          if (activeToken?.document) return activeToken.document;
+        } catch (_) {}
+
+        try {
+          const protoDoc = actor.token?.document ?? actor.prototypeToken ?? null;
+          if (protoDoc?.documentName === "Token" || protoDoc?.documentName === "TokenDocument") return protoDoc;
+        } catch (_) {}
+      }
+
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function buildSourceSnapshot(actionContext, mergedArgs) {
+    const payload = actionContext ?? {};
+    const meta = payload?.meta ?? {};
+    const advPayload = payload?.advPayload ?? {};
+
+    const tokenCandidates = [
+      mergedArgs?.attackerUuid,
+      meta?.attackerTokenUuid,
+      meta?.attackerUuid,
+      advPayload?.attackerUuid,
+      payload?.attackerUuid
+    ].filter(Boolean);
+
+    let tokenDoc = null;
+    for (const c of tokenCandidates) {
+      tokenDoc = await resolveTokenDocFromUuidish(c);
+      if (tokenDoc) break;
+    }
+
+    const actorCandidates = [
+      meta?.attackerActorUuid,
+      payload?.attackerActorUuid,
+      advPayload?.attackerActorUuid,
+      meta?.attackerUuid,
+      mergedArgs?.attackerUuid
+    ].filter(Boolean);
+
+    let actor = tokenDoc?.actor ?? null;
+    if (!actor) {
+      for (const c of actorCandidates) {
+        actor = await resolveActorFromUuid(c);
+        if (actor) break;
+      }
+    }
+
+    if (!tokenDoc && actor) {
+      try {
+        const activeToken =
+          actor.getActiveTokens?.(true, true)?.[0] ??
+          actor.getActiveTokens?.()?.[0] ??
+          null;
+        tokenDoc = activeToken?.document ?? null;
+      } catch (_) {}
+    }
+
+    const disposition = Number(tokenDoc?.disposition ?? tokenDoc?.document?.disposition ?? 0);
+
+    return {
+      tokenDoc: tokenDoc ?? null,
+      tokenUuid: tokenDoc?.uuid ?? tokenDoc?.document?.uuid ?? null,
+      tokenId: tokenDoc?.id ?? tokenDoc?.document?.id ?? null,
+      actor: actor ?? null,
+      actorUuid: actor?.uuid ?? null,
+      actorName: actor?.name ?? meta?.attackerName ?? mergedArgs?.attackerName ?? "Unknown",
+      disposition
+    };
+  }
+
+  async function buildTargetSnapshots(uuidList = []) {
+    const out = [];
+
+    for (const uuid of (Array.isArray(uuidList) ? uuidList : [])) {
+      const doc = await fromUuid(uuid).catch(() => null);
+      const tokenDoc =
+        (doc?.documentName === "Token" || doc?.documentName === "TokenDocument")
+          ? doc
+          : (doc?.token?.document ?? doc?.token ?? null);
+
+      const actor =
+        tokenDoc?.actor ??
+        doc?.actor ??
+        (doc?.documentName === "Actor" ? doc : null) ??
+        null;
+
+      const disposition = Number(tokenDoc?.disposition ?? tokenDoc?.document?.disposition ?? 0);
+
+      out.push({
+        requestedUuid: uuid ?? null,
+        tokenDoc: tokenDoc ?? null,
+        tokenUuid: tokenDoc?.uuid ?? tokenDoc?.document?.uuid ?? ((doc?.documentName === "Token" || doc?.documentName === "TokenDocument") ? doc?.uuid : null),
+        tokenId: tokenDoc?.id ?? tokenDoc?.document?.id ?? doc?.id ?? null,
+        actor: actor ?? null,
+        actorUuid: actor?.uuid ?? null,
+        actorName: actor?.name ?? tokenDoc?.name ?? doc?.name ?? null,
+        disposition
+      });
+    }
+
+    return out;
+  }
+
   async function defenseForUuid(uuid, useMagic) {
     try {
       const d = await fromUuid(uuid);
@@ -740,24 +875,89 @@
         }
 
         if (missUUIDs.length && miss) {
-          const missIds = (await Promise.all(missUUIDs.map(async (u) => {
-            const d = await fromUuid(u).catch(() => null);
-            return d?.id ?? d?.document?.id ?? null;
-          }))).filter(Boolean);
+          const missTargetSnapshots = await buildTargetSnapshots(missUUIDs);
+          const missIds = missTargetSnapshots
+            .map(s => s?.tokenId ?? null)
+            .filter(Boolean);
 
           if (missIds.length) {
-            log(runId, "MISS targeting", { missIds });
+            const sourceSnapshot = await buildSourceSnapshot(payload, mergedArgs);
+            const missDefenseUsed =
+              (missUUIDs.length === 1)
+                ? await defenseForUuid(missUUIDs[0], !!mergedArgs.isSpellish)
+                : null;
+
+            const missPayload = {
+              attackerName: mergedArgs.attackerName,
+              attackerUuid: sourceSnapshot?.tokenUuid ?? mergedArgs.attackerUuid ?? "",
+              attackerActorUuid: sourceSnapshot?.actorUuid ?? payload?.meta?.attackerActorUuid ?? null,
+
+              sourceUuid: sourceSnapshot?.tokenUuid ?? mergedArgs.attackerUuid ?? "",
+              sourceTokenUuid: sourceSnapshot?.tokenUuid ?? null,
+              sourceActorUuid: sourceSnapshot?.actorUuid ?? payload?.meta?.attackerActorUuid ?? null,
+              attackerDisposition: Number(sourceSnapshot?.disposition ?? 0),
+
+              targetIds: missIds,
+              targetUUIDs: missTargetSnapshots.map(s => s.tokenUuid).filter(Boolean),
+              targetActorUUIDs: missTargetSnapshots.map(s => s.actorUuid).filter(Boolean),
+              targetDispositions: missTargetSnapshots.map(s => ({
+                tokenUuid: s.tokenUuid ?? null,
+                actorUuid: s.actorUuid ?? null,
+                disposition: Number(s.disposition ?? 0)
+              })),
+              targetNames: missTargetSnapshots.map(s => s.actorName ?? null).filter(Boolean),
+
+              elementType: elemKey,
+              isSpellish: !!mergedArgs.isSpellish,
+              weaponType: mergedArgs.weaponType,
+              attackRange: mergedArgs.attackRange,
+              accuracyTotal: accTotal,
+              defenseUsed: Number.isFinite(missDefenseUsed) ? missDefenseUsed : null,
+
+              actionContext: payload,
+              actionCardMsgId: chatMsgId ?? null,
+              originalTargetUUIDs: cloneArray(payload?.originalTargetUUIDs),
+              originalTargetActorUUIDs: cloneArray(payload?.originalTargetActorUUIDs),
+
+              // Small explicit debug packet for miss-path tracing
+              __executionDebug: {
+                runId,
+                branch: "miss",
+                savedUUIDs: [...savedUUIDs],
+                missUUIDs: [...missUUIDs],
+                hitUUIDs: [...hitUUIDs],
+                sourceSnapshot: {
+                  tokenUuid: sourceSnapshot?.tokenUuid ?? null,
+                  actorUuid: sourceSnapshot?.actorUuid ?? null,
+                  disposition: Number(sourceSnapshot?.disposition ?? 0)
+                },
+                targetSnapshots: missTargetSnapshots.map(s => ({
+                  tokenUuid: s.tokenUuid ?? null,
+                  actorUuid: s.actorUuid ?? null,
+                  disposition: Number(s.disposition ?? 0)
+                }))
+              }
+            };
+
+            log(runId, "MISS targeting", {
+              missIds,
+              missUUIDs,
+              sourceSnapshot: {
+                tokenUuid: sourceSnapshot?.tokenUuid ?? null,
+                actorUuid: sourceSnapshot?.actorUuid ?? null,
+                disposition: Number(sourceSnapshot?.disposition ?? 0)
+              },
+              targetSnapshots: missTargetSnapshots.map(s => ({
+                tokenUuid: s.tokenUuid ?? null,
+                actorUuid: s.actorUuid ?? null,
+                disposition: Number(s.disposition ?? 0)
+              }))
+            });
+
             await game.user.updateTokenTargets(missIds, { releaseOthers: true });
             await miss.execute({
               __AUTO: true,
-              __PAYLOAD: {
-                attackerName: mergedArgs.attackerName,
-                elementType: elemKey,
-                isSpellish: !!mergedArgs.isSpellish,
-                weaponType: mergedArgs.weaponType,
-                attackRange: mergedArgs.attackRange,
-                accuracyTotal: accTotal
-              }
+              __PAYLOAD: missPayload
             });
             log(runId, "MISS macro done");
           }

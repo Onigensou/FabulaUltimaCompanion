@@ -218,7 +218,7 @@ Hooks.once("ready", () => {
 
     // Resolve a "uuid-ish" string (Scene.Token UUID or plain tokenId)
     // into a token on the current canvas, if possible.
-    function findTokenByUuidish(uuidish) {
+    function findTokenByUuidish(uuidish, combat = game.combat) {
       if (!uuidish || typeof uuidish !== "string") return null;
 
       // Case 1: Foundry Scene.Token UUID, e.g.
@@ -234,12 +234,48 @@ Hooks.once("ready", () => {
       const direct = byIdOnCanvas(uuidish);
       if (direct) return direct;
 
-      // Optional fallback: if it's an Actor UUID, try to find via combatants
+      // Case 3: resolve actual document
       try {
         const doc = (typeof fromUuidSync === "function")
           ? fromUuidSync(uuidish)
           : null;
-        const tokenId2 = doc?.token?.id ?? doc?.id;
+
+        if (!doc) return null;
+
+        // Token / TokenDocument
+        if (doc.documentName === "Token" || doc.documentName === "TokenDocument") {
+          return doc.object ?? byIdOnCanvas(doc.id) ?? null;
+        }
+
+        // Actor -> prefer combat token, then active scene token
+        if (doc.documentName === "Actor") {
+          const combatToken = findTokenByActorUuidInCombat(combat, doc.uuid);
+          if (combatToken) return combatToken;
+
+          try {
+            const active = doc.getActiveTokens?.(true, true) ?? doc.getActiveTokens?.() ?? [];
+            if (active?.[0]) return active[0];
+          } catch (_err) {}
+
+          try {
+            const protoObj = doc.token?.object ?? doc.prototypeToken?.object ?? null;
+            if (protoObj) return protoObj;
+          } catch (_err) {}
+
+          return null;
+        }
+
+        // Generic best-effort embedded fallback
+        const embeddedToken =
+          doc?.token?.object ??
+          doc?.object ??
+          null;
+
+        if (embeddedToken?.document?.documentName === "Token") {
+          return embeddedToken;
+        }
+
+        const tokenId2 = doc?.token?.id ?? null;
         if (tokenId2) {
           const t = byIdOnCanvas(tokenId2);
           if (t) return t;
@@ -271,7 +307,7 @@ Hooks.once("ready", () => {
 
       const addUuidish = (uuidish) => {
         if (!uuidish) return;
-        const t = findTokenByUuidish(uuidish);
+        const t = findTokenByUuidish(uuidish, combat);
         if (t) addToken(t);
       };
 
@@ -361,7 +397,8 @@ Hooks.once("ready", () => {
         case "creature_miss_action":
         case "creature_deals_damage": {
           // These triggers point at the acting creature / source creature.
-          // Expected token-ish fields include attackerUuid or sourceUuid.
+          // Accept both token-side and actor-side source fields.
+          addUuidish(phasePayload.sourceTokenUuid);
           addUuidish(phasePayload.attackerUuid);
           addUuidish(phasePayload.sourceUuid);
           addUuidish(phasePayload.tokenUuid);
@@ -491,7 +528,7 @@ Hooks.once("ready", () => {
         if (phasePayload && combat) {
           // Prefer tokenUuid if present, then tokenId, then actorUuid.
           const turnToken =
-            findTokenByUuidish(phasePayload.tokenUuid) ||
+            findTokenByUuidish(phasePayload.tokenUuid, combat) ||
             byIdOnCanvas(phasePayload.tokenId) ||
             findTokenByActorUuidInCombat(combat, phasePayload.actorUuid);
 
