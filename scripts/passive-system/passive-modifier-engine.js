@@ -1,6 +1,13 @@
-// Passive Modifier Engine (Foundry V12)
-// Updated: .system.props.custom_logic_passive is now treated as a SCRIPT field
-// Exposes: FUCompanion.api.passiveModifier.evaluatePassiveModifiers({ actor, actionCtx, finalElement? })
+// Passive Logic Engine (Foundry V12)
+// Updated:
+// - Action phase field:      .system.props.passive_logic_action
+// - Resolution phase field:  .system.props.passive_logic_resolution
+// - No legacy fallback
+//
+// Exposes:
+//   FUCompanion.api.passiveModifier.evaluatePassiveModifiers({ actor, actionCtx, finalElement? })
+//   FUCompanion.api.passiveModifier.evaluatePassiveResolutionModifiers({ actor, payload, args, targets, chatMsg, finalElement? })
+
 (function () {
   const ROOT = (globalThis.FUCompanion = globalThis.FUCompanion || {});
   ROOT.api = ROOT.api || {};
@@ -255,7 +262,7 @@
     };
   }
 
-  function snapshotPayload(p = {}) {
+  function snapshotActionPayload(p = {}) {
     return {
       baseValue: String(p?.advPayload?.baseValue ?? "0"),
       bonus: Number(p?.advPayload?.bonus ?? 0) || 0,
@@ -268,7 +275,7 @@
     };
   }
 
-  function diffSnapshots(before, after) {
+  function diffActionSnapshots(before, after) {
     return {
       baseValue: `${before.baseValue} -> ${after.baseValue}`,
       bonus: `${before.bonus} -> ${after.bonus}`,
@@ -281,21 +288,198 @@
     };
   }
 
+  function snapshotResolutionState(payload = {}, args = {}, targets = []) {
+    return {
+      elementType:
+        args?.elementType ??
+        payload?.meta?.elementType ??
+        null,
+
+      weaponType:
+        args?.weaponType ??
+        payload?.core?.weaponType ??
+        null,
+
+      isSpellish:
+        args?.isSpellish ??
+        payload?.meta?.isSpellish ??
+        null,
+
+      hasDamageSection:
+        args?.hasDamageSection ??
+        payload?.meta?.hasDamageSection ??
+        null,
+
+      advBaseValue:
+        args?.advPayload?.baseValue ??
+        payload?.advPayload?.baseValue ??
+        null,
+
+      advBonus:
+        Number(args?.advPayload?.bonus ?? payload?.advPayload?.bonus ?? 0) || 0,
+
+      advReduction:
+        Number(args?.advPayload?.reduction ?? payload?.advPayload?.reduction ?? 0) || 0,
+
+      advMultiplier:
+        Number(args?.advPayload?.multiplier ?? payload?.advPayload?.multiplier ?? 100) || 100,
+
+      targetsCount: Array.isArray(targets) ? targets.length : 0,
+      abortConfirm: !!args?.__abortConfirm,
+      abortReason: String(args?.__abortReason ?? "")
+    };
+  }
+
+  function diffResolutionSnapshots(before, after) {
+    return {
+      elementType: `${before.elementType} -> ${after.elementType}`,
+      weaponType: `${before.weaponType} -> ${after.weaponType}`,
+      isSpellish: `${before.isSpellish} -> ${after.isSpellish}`,
+      hasDamageSection: `${before.hasDamageSection} -> ${after.hasDamageSection}`,
+      advBaseValue: `${before.advBaseValue} -> ${after.advBaseValue}`,
+      advBonus: `${before.advBonus} -> ${after.advBonus}`,
+      advReduction: `${before.advReduction} -> ${after.advReduction}`,
+      advMultiplier: `${before.advMultiplier} -> ${after.advMultiplier}`,
+      targetsCount: `${before.targetsCount} -> ${after.targetsCount}`,
+      abortConfirm: `${before.abortConfirm} -> ${after.abortConfirm}`,
+      abortReason: `${before.abortReason} -> ${after.abortReason}`
+    };
+  }
+
+  function syncResolutionAdvPayload(payload, args) {
+    payload.advPayload = payload.advPayload || {};
+    args.advPayload = args.advPayload || {};
+
+    payload.advPayload.baseValue = args.advPayload.baseValue;
+    payload.advPayload.bonus = args.advPayload.bonus;
+    payload.advPayload.reduction = args.advPayload.reduction;
+    payload.advPayload.multiplier = args.advPayload.multiplier;
+  }
+
+  function setResolutionMeta(payload, args, key, value) {
+    payload.meta = payload.meta || {};
+    args[key] = value;
+    payload.meta[key] = value;
+    return value;
+  }
+
+  function buildCommonHelpers({ actor, passiveItem, actionTypeDebug, targetUuids, getContextTargets }) {
+    return {
+      normalizeWeaponCategory,
+      isItemEquipped,
+      getItemTypeNormalized,
+      getItemCategoryNormalized,
+
+      getActionTypeDebug: () => clone(actionTypeDebug, {}),
+      getDetectedActionType: () => actionTypeDebug.detectedActionType,
+
+      getPassiveOwnerActor: async () => actor,
+      getPassiveItem: () => passiveItem,
+
+      getAttackerActor: async (payloadLike = null, argsLike = null) => {
+        const attackerUuid =
+          payloadLike?.meta?.attackerUuid ??
+          payloadLike?.attackerActorUuid ??
+          payloadLike?.attackerUuid ??
+          argsLike?.attackerUuid ??
+          null;
+        return await resolveActor(attackerUuid);
+      },
+
+      getEquippedItems: async ({ actor: actorOverride = null, itemTypes = null } = {}) => {
+        const useActor = actorOverride ? await resolveActor(actorOverride) : actor;
+        const allItems = Array.from(useActor?.items ?? []);
+        let equipped = allItems.filter(isItemEquipped);
+
+        if (Array.isArray(itemTypes) && itemTypes.length) {
+          const wanted = itemTypes.map(lower);
+          equipped = equipped.filter(it => wanted.includes(getItemTypeNormalized(it)));
+        }
+
+        return equipped;
+      },
+
+      getEquippedWeapons: async ({ actor: actorOverride = null } = {}) => {
+        return await this.getEquippedItems?.({
+          actor: actorOverride,
+          itemTypes: ["weapon"]
+        });
+      },
+
+      getTargetUuids: () => uniq(getContextTargets?.() ?? targetUuids),
+
+      getTargetDocs: async () => {
+        const docs = [];
+        for (const uuid of uniq(getContextTargets?.() ?? targetUuids)) {
+          const doc = await resolveDocument(uuid);
+          if (doc) docs.push(doc);
+        }
+        return docs;
+      },
+
+      getTargetActors: async () => {
+        const docs = [];
+        for (const uuid of uniq(getContextTargets?.() ?? targetUuids)) {
+          const doc = await resolveDocument(uuid);
+          const a = coerceActorFromDoc(doc);
+          if (a) docs.push(a);
+        }
+        return docs;
+      },
+
+      getFirstTargetDoc: async () => {
+        const uuid = uniq(getContextTargets?.() ?? targetUuids)[0] ?? null;
+        return uuid ? await resolveDocument(uuid) : null;
+      },
+
+      getFirstTargetActor: async () => {
+        const uuid = uniq(getContextTargets?.() ?? targetUuids)[0] ?? null;
+        if (!uuid) return null;
+        const doc = await resolveDocument(uuid);
+        return coerceActorFromDoc(doc);
+      },
+
+      getDisposition: async (uuidOrDoc) => {
+        const doc = await resolveDocument(uuidOrDoc);
+        const a = coerceActorFromDoc(doc);
+        return getDispositionFromResolved(doc, a);
+      },
+
+      targetHasEffect: async (uuidOrDoc, effectName) => {
+        const targetActor = await resolveActor(uuidOrDoc);
+        if (!targetActor) return false;
+        return !!targetActor.effects.find(e => String(e?.name ?? "") === String(effectName ?? ""));
+      },
+
+      findTargetEffect: async (uuidOrDoc, effectName) => {
+        const targetActor = await resolveActor(uuidOrDoc);
+        if (!targetActor) return null;
+        return targetActor.effects.find(e => String(e?.name ?? "") === String(effectName ?? "")) ?? null;
+      },
+
+      getSkillLevelOnOwner: (skillName) => {
+        const wanted = String(skillName ?? "").trim();
+        if (!wanted) return 0;
+        const owned = actor.items.find(i => String(i?.name ?? "") === wanted);
+        return Math.max(0, parseInt(owned?.system?.props?.level ?? "0", 10) || 0);
+      }
+    };
+  }
+
   async function evaluatePassiveModifiers({ actor, actionCtx, finalElement = null } = {}) {
-    const runId = `PM-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    const runId = `PMA-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 
     const out = {
       ok: true,
       runId,
 
-      // kept for compatibility with current PassiveModifierApply
+      // kept for compatibility with current passive action caller
       flatByElement: {},
       pctByElement: {},
       critFlat: 0,
       critMult: 1,
       options: { recalcOnConfirm: "never" },
 
-      // new script-oriented debug/result surface
       ranScripts: [],
       skippedScripts: [],
       errors: [],
@@ -322,7 +506,7 @@
     const targetUuids = uniq(actionCtx?.targets ?? []);
     const actionTypeDebug = buildActionTypeDebug(actionCtx);
 
-    log(runId, "START", {
+    log(runId, "START ACTION", {
       actor: actor?.name ?? null,
       actorUuid: actor?.uuid ?? null,
       skillName: actionCtx?.core?.skillName ?? actionCtx?.dataCore?.skillName ?? null,
@@ -334,27 +518,37 @@
 
     const items = Array.from(actor.items ?? []);
     for (const item of items) {
-      const rawPassive = getItemProps(item)?.custom_logic_passive ?? "";
+      const rawPassive = getItemProps(item)?.passive_logic_action ?? "";
       const scriptText = toScript(rawPassive).trim();
 
       if (!scriptText) continue;
 
       const itemRunId = `${runId}:${item.id ?? item.name ?? "item"}`;
-      const before = snapshotPayload(actionCtx);
+      const before = snapshotActionPayload(actionCtx);
 
       let itemSkipped = false;
       let itemSkipReason = "";
       let itemCancelled = false;
 
+      const baseHelpers = buildCommonHelpers({
+        actor,
+        passiveItem: item,
+        actionTypeDebug,
+        targetUuids,
+        getContextTargets: () => actionCtx?.targets ?? []
+      });
+
       const context = {
         runId: itemRunId,
-        phase: "passive",
+        phase: "passive_action",
+        passivePhase: "action",
         finalElement,
 
         actorUuid: actor?.uuid ?? null,
         actorName: actor?.name ?? null,
         passiveOwner: actor,
         passiveItem: item,
+        passiveFieldKey: "passive_logic_action",
 
         skillName: actionCtx?.core?.skillName ?? actionCtx?.dataCore?.skillName ?? null,
         listType: actionCtx?.meta?.listType ?? null,
@@ -394,127 +588,11 @@
         },
 
         helpers: {
-          normalizeWeaponCategory,
-          isItemEquipped,
-          getItemTypeNormalized,
-          getItemCategoryNormalized,
+          ...baseHelpers,
 
-          getActionTypeDebug: () => clone(actionTypeDebug, {}),
-          getDetectedActionType: () => actionTypeDebug.detectedActionType,
+          getPassiveFieldKey: () => "passive_logic_action",
 
-          getPassiveOwnerActor: async () => actor,
-          getPassiveItem: () => item,
-
-          getAttackerActor: async () => {
-            const attackerUuid =
-              actionCtx?.meta?.attackerUuid ??
-              actionCtx?.attackerActorUuid ??
-              actionCtx?.attackerUuid ??
-              null;
-            return await resolveActor(attackerUuid);
-          },
-
-          getEquippedItems: async ({ actor: actorOverride = null, itemTypes = null } = {}) => {
-            const useActor = actorOverride ? await resolveActor(actorOverride) : actor;
-            const allItems = Array.from(useActor?.items ?? []);
-            let equipped = allItems.filter(isItemEquipped);
-
-            if (Array.isArray(itemTypes) && itemTypes.length) {
-              const wanted = itemTypes.map(lower);
-              equipped = equipped.filter(it => wanted.includes(getItemTypeNormalized(it)));
-            }
-
-            return equipped;
-          },
-
-          getEquippedWeapons: async ({ actor: actorOverride = null } = {}) => {
-            return await context.helpers.getEquippedItems({
-              actor: actorOverride,
-              itemTypes: ["weapon"]
-            });
-          },
-
-          getEquippedWeaponCategories: async ({ actor: actorOverride = null } = {}) => {
-            const weapons = await context.helpers.getEquippedWeapons({ actor: actorOverride });
-            return uniq(weapons.map(getItemCategoryNormalized));
-          },
-
-          hasEquippedWeaponCategory: async (wantedCategories = [], { actor: actorOverride = null } = {}) => {
-            const wanted = uniq(wantedCategories.map(normalizeWeaponCategory));
-            if (!wanted.length) return false;
-            const equippedCats = await context.helpers.getEquippedWeaponCategories({ actor: actorOverride });
-            return equippedCats.some(cat => wanted.includes(cat));
-          },
-
-          debugEquipmentSnapshot: async ({ actor: actorOverride = null } = {}) => {
-            const useActor = actorOverride ? await resolveActor(actorOverride) : actor;
-            const equipped = await context.helpers.getEquippedItems({ actor: useActor });
-            return {
-              actorName: useActor?.name ?? null,
-              actorUuid: useActor?.uuid ?? null,
-              equipped: equipped.map(it => ({
-                name: it?.name ?? null,
-                itemType: getItemTypeNormalized(it),
-                category: getItemCategoryNormalized(it)
-              }))
-            };
-          },
-
-          getTargetUuids: () => uniq(actionCtx?.targets ?? []),
-
-          getTargetDocs: async () => {
-            const docs = [];
-            for (const uuid of uniq(actionCtx?.targets ?? [])) {
-              const doc = await resolveDocument(uuid);
-              if (doc) docs.push(doc);
-            }
-            return docs;
-          },
-
-          getTargetActors: async () => {
-            const docs = await context.helpers.getTargetDocs();
-            const actors = [];
-            for (const doc of docs) {
-              const a = coerceActorFromDoc(doc);
-              if (a) actors.push(a);
-            }
-            return actors;
-          },
-
-          getFirstTargetDoc: async () => {
-            const uuid = uniq(actionCtx?.targets ?? [])[0] ?? null;
-            return uuid ? await resolveDocument(uuid) : null;
-          },
-
-          getFirstTargetActor: async () => {
-            const doc = await context.helpers.getFirstTargetDoc();
-            return coerceActorFromDoc(doc);
-          },
-
-          getDisposition: async (uuidOrDoc) => {
-            const doc = await resolveDocument(uuidOrDoc);
-            const a = coerceActorFromDoc(doc);
-            return getDispositionFromResolved(doc, a);
-          },
-
-          targetHasEffect: async (uuidOrDoc, effectName) => {
-            const targetActor = await resolveActor(uuidOrDoc);
-            if (!targetActor) return false;
-            return !!targetActor.effects.find(e => String(e?.name ?? "") === String(effectName ?? ""));
-          },
-
-          findTargetEffect: async (uuidOrDoc, effectName) => {
-            const targetActor = await resolveActor(uuidOrDoc);
-            if (!targetActor) return null;
-            return targetActor.effects.find(e => String(e?.name ?? "") === String(effectName ?? "")) ?? null;
-          },
-
-          getSkillLevelOnOwner: (skillName) => {
-            const wanted = String(skillName ?? "").trim();
-            if (!wanted) return 0;
-            const owned = actor.items.find(i => String(i?.name ?? "") === wanted);
-            return Math.max(0, parseInt(owned?.system?.props?.level ?? "0", 10) || 0);
-          },
+          getPayload: () => actionCtx,
 
           addFlatBonus: (amount) => {
             const n = toNumber(amount, 0);
@@ -543,16 +621,21 @@
       const prevTARGETS = globalThis.__TARGETS;
       const prevPASSIVEITEM = globalThis.__PASSIVE_ITEM;
       const prevPASSIVEACTOR = globalThis.__PASSIVE_ACTOR;
+      const prevARGS = globalThis.__ARGS;
+      const prevCHAT = globalThis.__CHAT_MSG;
 
       globalThis.__PAYLOAD = actionCtx;
       globalThis.__TARGETS = [...targetUuids];
       globalThis.__PASSIVE_ITEM = item;
       globalThis.__PASSIVE_ACTOR = actor;
+      globalThis.__ARGS = undefined;
+      globalThis.__CHAT_MSG = undefined;
 
       try {
-        log(itemRunId, "RUN SCRIPT", {
+        log(itemRunId, "RUN ACTION SCRIPT", {
           item: item.name,
           itemId: item.id ?? null,
+          fieldKey: "passive_logic_action",
           scriptLen: scriptText.length,
           skillName: context.skillName,
           targetsCount: targetUuids.length,
@@ -567,19 +650,21 @@
           await result;
         }
 
-        const after = snapshotPayload(actionCtx);
-        const diff = diffSnapshots(before, after);
+        const after = snapshotActionPayload(actionCtx);
+        const diff = diffActionSnapshots(before, after);
 
         if (itemSkipped) {
           out.skippedScripts.push({
             itemId: item.id ?? null,
             itemName: item.name ?? "",
+            fieldKey: "passive_logic_action",
             reason: itemSkipReason,
             diff
           });
 
-          log(itemRunId, "SCRIPT SKIPPED", {
+          log(itemRunId, "ACTION SCRIPT SKIPPED", {
             item: item.name,
+            fieldKey: "passive_logic_action",
             reason: itemSkipReason,
             diff
           });
@@ -587,6 +672,7 @@
           out.ranScripts.push({
             itemId: item.id ?? null,
             itemName: item.name ?? "",
+            fieldKey: "passive_logic_action",
             cancelled: itemCancelled,
             diff
           });
@@ -594,18 +680,20 @@
           out.breakdown.push({
             source: item.name ?? item.id ?? "Passive Script",
             type: "script",
+            fieldKey: "passive_logic_action",
             diff
           });
 
-          log(itemRunId, "SCRIPT DONE", {
+          log(itemRunId, "ACTION SCRIPT DONE", {
             item: item.name,
+            fieldKey: "passive_logic_action",
             cancelled: itemCancelled,
             diff
           });
         }
 
         if (actionCtx?.meta?.__abortPipeline) {
-          warn(itemRunId, "ABORT FLAG DETECTED. Stopping further passive scripts.", {
+          warn(itemRunId, "ABORT FLAG DETECTED. Stopping further action passive scripts.", {
             abortReason: actionCtx?.meta?.__abortReason ?? null
           });
           break;
@@ -614,22 +702,25 @@
         const errorInfo = {
           itemId: item.id ?? null,
           itemName: item.name ?? "",
+          fieldKey: "passive_logic_action",
           message: String(e?.message ?? e),
           stack: String(e?.stack ?? "")
         };
 
         out.ok = false;
         out.errors.push(errorInfo);
-        err(itemRunId, "SCRIPT ERROR", errorInfo);
+        err(itemRunId, "ACTION SCRIPT ERROR", errorInfo);
       } finally {
         globalThis.__PAYLOAD = prevPAYLOAD;
         globalThis.__TARGETS = prevTARGETS;
         globalThis.__PASSIVE_ITEM = prevPASSIVEITEM;
         globalThis.__PASSIVE_ACTOR = prevPASSIVEACTOR;
+        globalThis.__ARGS = prevARGS;
+        globalThis.__CHAT_MSG = prevCHAT;
       }
     }
 
-    log(runId, "END", {
+    log(runId, "END ACTION", {
       actor: actor?.name ?? null,
       ranScripts: out.ranScripts.length,
       skippedScripts: out.skippedScripts.length,
@@ -641,8 +732,312 @@
     return out;
   }
 
+  async function evaluatePassiveResolutionModifiers({
+    actor,
+    payload,
+    args,
+    targets,
+    chatMsg = null,
+    finalElement = null
+  } = {}) {
+    const runId = `PMR-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+
+    const out = {
+      ok: true,
+      runId,
+
+      ranScripts: [],
+      skippedScripts: [],
+      errors: [],
+      breakdown: []
+    };
+
+    if (!actor) {
+      warn(runId, "No actor provided.");
+      out.ok = false;
+      out.errors.push({ scope: "engine", reason: "no_actor" });
+      return out;
+    }
+
+    if (!payload || typeof payload !== "object") {
+      warn(runId, "No payload provided.");
+      out.ok = false;
+      out.errors.push({ scope: "engine", reason: "no_payload" });
+      return out;
+    }
+
+    payload.meta = payload.meta || {};
+    payload.core = payload.core || {};
+    payload.advPayload = payload.advPayload || {};
+
+    args = (args && typeof args === "object") ? args : {};
+    args.advPayload = args.advPayload || clone(payload.advPayload ?? {}, {});
+
+    const targetUuids = uniq(
+      (Array.isArray(targets) && targets.length)
+        ? targets
+        : (
+            args?.originalTargetUUIDs ??
+            payload?.originalTargetUUIDs ??
+            payload?.targets ??
+            []
+          )
+    );
+
+    const actionTypeDebug = buildActionTypeDebug(payload);
+
+    log(runId, "START RESOLUTION", {
+      actor: actor?.name ?? null,
+      actorUuid: actor?.uuid ?? null,
+      skillName: payload?.core?.skillName ?? payload?.dataCore?.skillName ?? null,
+      targetsCount: targetUuids.length,
+      finalElement,
+      detectedActionType: actionTypeDebug.detectedActionType,
+      isSpell: actionTypeDebug.isSpell
+    });
+
+    const items = Array.from(actor.items ?? []);
+    for (const item of items) {
+      const rawPassive = getItemProps(item)?.passive_logic_resolution ?? "";
+      const scriptText = toScript(rawPassive).trim();
+
+      if (!scriptText) continue;
+
+      const itemRunId = `${runId}:${item.id ?? item.name ?? "item"}`;
+      const before = snapshotResolutionState(payload, args, targetUuids);
+
+      let itemSkipped = false;
+      let itemSkipReason = "";
+      let itemCancelled = false;
+
+      const baseHelpers = buildCommonHelpers({
+        actor,
+        passiveItem: item,
+        actionTypeDebug,
+        targetUuids,
+        getContextTargets: () => targetUuids
+      });
+
+      const context = {
+        runId: itemRunId,
+        phase: "passive_resolution",
+        passivePhase: "resolution",
+        finalElement,
+
+        actorUuid: actor?.uuid ?? null,
+        actorName: actor?.name ?? null,
+        passiveOwner: actor,
+        passiveItem: item,
+        passiveFieldKey: "passive_logic_resolution",
+
+        skillName: payload?.core?.skillName ?? payload?.dataCore?.skillName ?? null,
+        listType: payload?.meta?.listType ?? null,
+        executionMode: payload?.meta?.executionMode ?? null,
+        isPassiveExecution: (
+          payload?.meta?.executionMode === "autoPassive" ||
+          payload?.meta?.isPassiveExecution === true ||
+          payload?.source === "AutoPassive"
+        ),
+
+        actionTypeDebug,
+
+        log: (...a) => log(itemRunId, "[SNIPPET]", ...a),
+        warn: (...a) => warn(itemRunId, "[SNIPPET]", ...a),
+        error: (...a) => err(itemRunId, "[SNIPPET]", ...a),
+
+        skipPassive: (reason = "", { notify = false } = {}) => {
+          itemSkipped = true;
+          itemSkipReason = String(reason ?? "");
+          if (notify && itemSkipReason) ui.notifications?.warn?.(itemSkipReason);
+          log(itemRunId, "SKIP PASSIVE", { item: item.name, reason: itemSkipReason, notify });
+          return { skipped: true, reason: itemSkipReason };
+        },
+
+        cancelPipeline: (reason = "Passive resolution cancelled the confirm.", { notify = true } = {}) => {
+          itemCancelled = true;
+          args.__abortConfirm = true;
+          args.__abortReason = String(reason ?? "Passive resolution cancelled the confirm.");
+
+          payload.meta.__abortResolution = true;
+          payload.meta.__abortResolutionReason = args.__abortReason;
+
+          if (notify) ui.notifications?.warn?.(args.__abortReason);
+
+          warn(itemRunId, "CONFIRM CANCELLED", {
+            item: item.name,
+            reason: args.__abortReason,
+            notify
+          });
+
+          return { cancelled: true, reason: args.__abortReason };
+        },
+
+        helpers: {
+          ...baseHelpers,
+
+          getPassiveFieldKey: () => "passive_logic_resolution",
+
+          getPayload: () => payload,
+          getArgs: () => args,
+          getTargets: () => [...targetUuids],
+          getChatMessage: () => chatMsg,
+
+          addFlatBonus: (amount) => {
+            const n = toNumber(amount, 0);
+            args.advPayload.bonus = Number(args.advPayload.bonus ?? payload.advPayload.bonus ?? 0) + n;
+            syncResolutionAdvPayload(payload, args);
+            return args.advPayload.bonus;
+          },
+
+          addFlatReduction: (amount) => {
+            const n = toNumber(amount, 0);
+            args.advPayload.reduction = Number(args.advPayload.reduction ?? payload.advPayload.reduction ?? 0) + n;
+            syncResolutionAdvPayload(payload, args);
+            return args.advPayload.reduction;
+          },
+
+          addPercentMultiplierDec: (amount) => {
+            const n = toNumber(amount, 0);
+            const curDec = Number(args.advPayload.multiplier ?? payload.advPayload.multiplier ?? 100) / 100;
+            const nextDec = Math.max(0, curDec + n);
+            args.advPayload.multiplier = Math.round(nextDec * 100);
+            syncResolutionAdvPayload(payload, args);
+            return nextDec;
+          },
+
+          setBaseValue: (value) => {
+            args.advPayload.baseValue = value;
+            syncResolutionAdvPayload(payload, args);
+            return args.advPayload.baseValue;
+          },
+
+          setElementType: (value) => setResolutionMeta(payload, args, "elementType", String(value ?? "").trim().toLowerCase()),
+          setWeaponType: (value) => setResolutionMeta(payload, args, "weaponType", String(value ?? "").trim().toLowerCase()),
+          setIsSpellish: (value) => setResolutionMeta(payload, args, "isSpellish", !!value),
+          setHasDamageSection: (value) => setResolutionMeta(payload, args, "hasDamageSection", !!value)
+        }
+      };
+
+      const prevPAYLOAD = globalThis.__PAYLOAD;
+      const prevARGS = globalThis.__ARGS;
+      const prevTARGETS = globalThis.__TARGETS;
+      const prevCHAT = globalThis.__CHAT_MSG;
+      const prevPASSIVEITEM = globalThis.__PASSIVE_ITEM;
+      const prevPASSIVEACTOR = globalThis.__PASSIVE_ACTOR;
+
+      globalThis.__PAYLOAD = payload;
+      globalThis.__ARGS = args;
+      globalThis.__TARGETS = [...targetUuids];
+      globalThis.__CHAT_MSG = chatMsg;
+      globalThis.__PASSIVE_ITEM = item;
+      globalThis.__PASSIVE_ACTOR = actor;
+
+      try {
+        log(itemRunId, "RUN RESOLUTION SCRIPT", {
+          item: item.name,
+          itemId: item.id ?? null,
+          fieldKey: "passive_logic_resolution",
+          scriptLen: scriptText.length,
+          skillName: context.skillName,
+          targetsCount: targetUuids.length,
+          preview: scriptText.slice(0, 160)
+        });
+
+        const wrapped = `return (async () => {\n${scriptText}\n})();`;
+        const fn = new Function("payload", "args", "targets", "context", "item", "actor", "chatMsg", wrapped);
+
+        const result = fn(payload, args, [...targetUuids], context, item, actor, chatMsg);
+        if (result && typeof result.then === "function") {
+          await result;
+        }
+
+        syncResolutionAdvPayload(payload, args);
+
+        const after = snapshotResolutionState(payload, args, targetUuids);
+        const diff = diffResolutionSnapshots(before, after);
+
+        if (itemSkipped) {
+          out.skippedScripts.push({
+            itemId: item.id ?? null,
+            itemName: item.name ?? "",
+            fieldKey: "passive_logic_resolution",
+            reason: itemSkipReason,
+            diff
+          });
+
+          log(itemRunId, "RESOLUTION SCRIPT SKIPPED", {
+            item: item.name,
+            fieldKey: "passive_logic_resolution",
+            reason: itemSkipReason,
+            diff
+          });
+        } else {
+          out.ranScripts.push({
+            itemId: item.id ?? null,
+            itemName: item.name ?? "",
+            fieldKey: "passive_logic_resolution",
+            cancelled: itemCancelled,
+            diff
+          });
+
+          out.breakdown.push({
+            source: item.name ?? item.id ?? "Passive Resolution Script",
+            type: "script",
+            fieldKey: "passive_logic_resolution",
+            diff
+          });
+
+          log(itemRunId, "RESOLUTION SCRIPT DONE", {
+            item: item.name,
+            fieldKey: "passive_logic_resolution",
+            cancelled: itemCancelled,
+            diff
+          });
+        }
+
+        if (args?.__abortConfirm) {
+          warn(itemRunId, "ABORT CONFIRM FLAG DETECTED. Stopping further resolution passive scripts.", {
+            abortReason: args?.__abortReason ?? null
+          });
+          break;
+        }
+      } catch (e) {
+        const errorInfo = {
+          itemId: item.id ?? null,
+          itemName: item.name ?? "",
+          fieldKey: "passive_logic_resolution",
+          message: String(e?.message ?? e),
+          stack: String(e?.stack ?? "")
+        };
+
+        out.ok = false;
+        out.errors.push(errorInfo);
+        err(itemRunId, "RESOLUTION SCRIPT ERROR", errorInfo);
+      } finally {
+        globalThis.__PAYLOAD = prevPAYLOAD;
+        globalThis.__ARGS = prevARGS;
+        globalThis.__TARGETS = prevTARGETS;
+        globalThis.__CHAT_MSG = prevCHAT;
+        globalThis.__PASSIVE_ITEM = prevPASSIVEITEM;
+        globalThis.__PASSIVE_ACTOR = prevPASSIVEACTOR;
+      }
+    }
+
+    log(runId, "END RESOLUTION", {
+      actor: actor?.name ?? null,
+      ranScripts: out.ranScripts.length,
+      skippedScripts: out.skippedScripts.length,
+      errors: out.errors.length,
+      abortConfirm: !!args?.__abortConfirm,
+      abortReason: args?.__abortReason ?? null
+    });
+
+    return out;
+  }
+
   ROOT.api.passiveModifier = {
-    evaluatePassiveModifiers
+    evaluatePassiveModifiers,
+    evaluatePassiveResolutionModifiers
   };
 
   log("Installed/Updated");

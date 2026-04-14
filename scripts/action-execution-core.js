@@ -278,23 +278,35 @@
 
       if (actor) {
         try {
-          const activeToken =
-            actor.getActiveTokens?.(true, true)?.[0] ??
-            actor.getActiveTokens?.()?.[0] ??
-            null;
-          if (activeToken?.document) return activeToken.document;
-        } catch (_) {}
+          const active = actor.getActiveTokens?.(true, true) ?? actor.getActiveTokens?.() ?? [];
+          if (active?.[0]?.document) return active[0].document;
+          if (active?.[0]) return active[0];
+        } catch (_err) {}
 
         try {
+          const protoObj = actor.token?.object ?? actor.prototypeToken?.object ?? null;
+          if (protoObj?.document) return protoObj.document;
           const protoDoc = actor.token?.document ?? actor.prototypeToken ?? null;
           if (protoDoc?.documentName === "Token" || protoDoc?.documentName === "TokenDocument") return protoDoc;
-        } catch (_) {}
+        } catch (_err) {}
       }
 
       return null;
     } catch {
       return null;
     }
+  }
+
+  function hasMeaningfulRichText(raw) {
+    const stripped = String(raw ?? "").replace(/<[^>]*>/g, "").trim();
+    return stripped.length > 0;
+  }
+
+  function getResolutionTargetUUIDs(actionContext, args = {}) {
+    const argTargets = cloneArray(args?.originalTargetUUIDs).filter(Boolean).map(String);
+    if (argTargets.length) return argTargets;
+
+    return resolveSavedTargetUUIDs(actionContext).uuids;
   }
 
   async function buildSourceSnapshot(actionContext, mergedArgs) {
@@ -334,11 +346,8 @@
 
     if (!tokenDoc && actor) {
       try {
-        const activeToken =
-          actor.getActiveTokens?.(true, true)?.[0] ??
-          actor.getActiveTokens?.()?.[0] ??
-          null;
-        tokenDoc = activeToken?.document ?? null;
+        const active = actor.getActiveTokens?.(true, true) ?? actor.getActiveTokens?.() ?? [];
+        tokenDoc = active?.[0]?.document ?? active?.[0] ?? null;
       } catch (_) {}
     }
 
@@ -645,7 +654,7 @@
     log(runId, "VISUAL namecard broadcast done", { title, attackerUuid, actionType });
   }
 
-  async function executeCustomLogicResolution(actionContext, args, runId) {
+  async function executeCustomLogicResolution(actionContext, args, chatMsg, runId) {
     const clResMacroName = "CustomLogic-Resolution";
     const clResRaw = safeString(actionContext?.customLogicResolutionRaw ?? actionContext?.meta?.customLogicResolutionRaw);
     const hasCLRes = !!clResRaw;
@@ -664,12 +673,89 @@
       return { ok: false, skipped: true, reason: "custom_logic_macro_missing" };
     }
 
+    const targets = getResolutionTargetUUIDs(actionContext, args);
+
+    // Backward compatibility with older resolution logic that reads from payload.
     actionContext.__confirmArgs = args;
-    await cl.execute({ __AUTO: true, __PAYLOAD: actionContext });
+    actionContext.__confirmChatMsgId = chatMsg?.id ?? null;
+
+    await cl.execute({
+      __AUTO: true,
+      __PAYLOAD: actionContext,
+      __ARGS: args,
+      __TARGETS: targets,
+      __CHAT_MSG: chatMsg ?? null
+    });
 
     log(runId, "CUSTOM LOGIC (resolution) done", {
       lastRun: actionContext?.meta?.__customLogicResolution?.lastRun ?? null,
       err: actionContext?.meta?.__customLogicResolution?.error ?? null
+    });
+
+    return { ok: true };
+  }
+
+  async function executePassiveLogicResolution(actionContext, args, chatMsg, runId) {
+    const macroName = "PassiveLogic-Resolution";
+
+    const attackerUuid =
+      actionContext?.meta?.attackerActorUuid ??
+      actionContext?.attackerActorUuid ??
+      actionContext?.meta?.attackerUuid ??
+      actionContext?.attackerUuid ??
+      args?.attackerUuid ??
+      null;
+
+    if (!attackerUuid) {
+      log(runId, "PASSIVE LOGIC (resolution) skipped — no attacker uuid");
+      return { ok: true, skipped: true, reason: "no_attacker_uuid" };
+    }
+
+    const actor = await resolveActorFromUuid(attackerUuid);
+    if (!actor) {
+      warn(runId, "PASSIVE LOGIC (resolution) skipped — attacker actor not found", { attackerUuid });
+      return { ok: true, skipped: true, reason: "attacker_not_found" };
+    }
+
+    const hasPassiveResolution = Array.from(actor.items ?? []).some(it => {
+      const raw = it?.system?.props?.passive_logic_resolution ?? "";
+      return hasMeaningfulRichText(raw);
+    });
+
+    log(runId, "PASSIVE LOGIC (resolution) inspect", {
+      attackerUuid,
+      actorName: actor?.name ?? null,
+      hasPassiveResolution,
+      itemCount: Array.from(actor.items ?? []).length
+    });
+
+    if (!hasPassiveResolution) {
+      return { ok: true, skipped: true, reason: "no_passive_resolution_scripts" };
+    }
+
+    const macro = game.macros.getName(macroName);
+    if (!macro) {
+      warn(runId, "PASSIVE LOGIC (resolution) macro missing", { macroName });
+      return { ok: false, skipped: true, reason: "passive_logic_resolution_macro_missing" };
+    }
+
+    const targets = getResolutionTargetUUIDs(actionContext, args);
+
+    // Backward compatibility with older resolution logic that reads from payload.
+    actionContext.__confirmArgs = args;
+    actionContext.__confirmChatMsgId = chatMsg?.id ?? null;
+
+    await macro.execute({
+      __AUTO: true,
+      __PAYLOAD: actionContext,
+      __ARGS: args,
+      __TARGETS: targets,
+      __CHAT_MSG: chatMsg ?? null
+    });
+
+    log(runId, "PASSIVE LOGIC (resolution) done", {
+      lastRun: actionContext?.meta?.__passiveLogicResolution?.lastRun ?? null,
+      err: actionContext?.meta?.__passiveLogicResolution?.error ?? null
     });
 
     return { ok: true };
@@ -691,6 +777,7 @@
     }
 
     const payload = ensurePayloadShape(foundry.utils.deepClone(actionContext ?? {}));
+    const chatMsg = chatMsgId ? (game.messages.get(chatMsgId) ?? null) : null;
 
     if (!payload?.meta || !payload?.core) {
       ui.notifications?.error("Action execution: Missing action payload.");
@@ -768,7 +855,29 @@
     }
 
     try {
-      await executeCustomLogicResolution(payload, mergedArgs, runId);
+      await executeCustomLogicResolution(payload, mergedArgs, chatMsg, runId);
+      await executePassiveLogicResolution(payload, mergedArgs, chatMsg, runId);
+
+      if (mergedArgs.__abortConfirm) {
+        const abortReason = safeString(
+          mergedArgs.__abortReason ??
+          payload?.meta?.__abortResolutionReason ??
+          "Resolution cancelled."
+        );
+
+        warn(runId, "ABORT confirm before apply", {
+          abortReason
+        });
+
+        return {
+          ok: false,
+          reason: "confirm_aborted",
+          abortReason,
+          executionMode,
+          chatMsgId: chatMsgId ?? null,
+          confirmingUserId: confirmingUserId ?? null
+        };
+      }
 
       const spendResult = await spendNormalizedCosts(payload, runId);
       if (!spendResult.ok) return { ok: false, reason: spendResult.reason ?? "resource_spend_failed" };

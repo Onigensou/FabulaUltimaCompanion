@@ -16,7 +16,7 @@ const RESOURCE_GATE_NAME   = "ResourceGate";
 const TARGETING_MACRO_NAME = "Targeting";
 const ADC_DEBUG = true;
 const ADC_TAG   = "[ONI][ActionPassive]";
-const PASSIVE_MACRO_NAME = "PassiveModifierApply";
+const PASSIVE_ACTION_MACRO_NAME = "PassiveLogic-Action";
 
 (async () => {
   if (!canvas?.scene) {
@@ -689,7 +689,7 @@ const PASSIVE_MACRO_NAME = "PassiveModifierApply";
   // Passive script runner helper (calls PassiveModifierApply macro)
   async function applyPassiveModifiers(cardPayload) {
     try {
-      const pm = game.macros.getName(PASSIVE_MACRO_NAME);
+      const pm = game.macros.getName(PASSIVE_ACTION_MACRO_NAME);
       if (!pm) { console.warn("[ActionDataComputation] PassiveModifierApply macro not found."); return true; }
       await pm.execute({ __AUTO: true, __PAYLOAD: cardPayload });
       return true;
