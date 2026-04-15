@@ -23,6 +23,11 @@
  * - If current client is not GM and GMExecutor.executeSnippet(...) is available,
  *   passive resolution evaluation is executed through the generic GM executor
  * - Returned payload/args are merged back into the live PAYLOAD / ARGS objects
+ *
+ * NEW (passive card behavior):
+ * - Show passive card only when the ORIGINAL resolution evaluation actually ran passive scripts
+ * - Do NOT show the passive card for the later autoPassive wrapper execution
+ * - If no passive script ran, no passive card is shown
  */
 
 const MODULE_ID = "fabula-ultima-companion";
@@ -159,6 +164,72 @@ return (async () => {
     return target;
   }
 
+  const isAutoPassiveExecution =
+    PAYLOAD?.meta?.executionMode === "autoPassive" ||
+    PAYLOAD?.meta?.isPassiveExecution === true ||
+    PAYLOAD?.source === "AutoPassive";
+
+  async function broadcastAppliedPassiveCards(execResult) {
+    const ranScripts = Array.isArray(execResult?.engineResult?.ranScripts)
+      ? execResult.engineResult.ranScripts
+      : [];
+
+    if (isAutoPassiveExecution) {
+      log("PASSIVE CARD broadcast skipped (autoPassive wrapper call)");
+      return;
+    }
+
+    if (!ranScripts.length) {
+      log("PASSIVE CARD broadcast skipped (no ranScripts)");
+      return;
+    }
+
+    const cardApi =
+      globalThis.FUCompanion?.api?.passiveCard?.broadcast ??
+      game.modules?.get(MODULE_ID)?.api?.passiveCard?.broadcast ??
+      globalThis.FUCompanion?.api?.passiveCardBroadcast ??
+      null;
+
+    if (typeof cardApi !== "function") {
+      warn("PASSIVE CARD broadcast skipped (API missing)");
+      return;
+    }
+
+    const cardAttackerUuid =
+      PAYLOAD?.meta?.attackerUuid ??
+      PAYLOAD?.attackerUuid ??
+      PAYLOAD?.attackerActorUuid ??
+      ARGS?.attackerUuid ??
+      attackerUuid ??
+      null;
+
+    for (const row of ranScripts) {
+      const title = String(row?.itemName ?? "").trim() || "Passive";
+
+      try {
+        await cardApi({
+          title,
+          attackerUuid: cardAttackerUuid,
+          actionContext: PAYLOAD,
+          options: {
+            executionMode: "passive_resolution"
+          }
+        });
+
+        log("PASSIVE CARD broadcast done", {
+          title,
+          attackerUuid: cardAttackerUuid
+        });
+      } catch (e) {
+        warn("PASSIVE CARD broadcast failed", {
+          title,
+          attackerUuid: cardAttackerUuid,
+          error: String(e?.message ?? e)
+        });
+      }
+    }
+  }
+
   const runPassiveLocally = async () => {
     if (typeof passiveApi?.evaluatePassiveResolutionModifiers !== "function") {
       return {
@@ -230,7 +301,7 @@ if (!actor) {
   throw new Error(\`Could not resolve attacker actor: \${env.actorUuid ?? "null"}\`);
 }
 
-return await pmApi.evaluatePassiveResolutionModifiers({
+const engineResult = await pmApi.evaluatePassiveResolutionModifiers({
   actor,
   payload,
   args,
@@ -243,6 +314,12 @@ return await pmApi.evaluatePassiveResolutionModifiers({
     ""
   ).trim().toLowerCase() || null
 });
+
+return {
+  actorName: actor?.name ?? null,
+  actorUuid: actor?.uuid ?? null,
+  engineResult: engineResult ?? null
+};
     `.trim();
 
     const remote = await gmExecutor.executeSnippet({
@@ -277,7 +354,8 @@ return await pmApi.evaluatePassiveResolutionModifiers({
       mergeInPlace(ARGS, remote.args);
     }
 
-    const engineResult = remote?.resultValue ?? null;
+    const resultValue = remote?.resultValue ?? null;
+    const engineResult = resultValue?.engineResult ?? null;
     const finalOk = !!(remote?.ok && (engineResult?.ok ?? true));
 
     if (!finalOk) {
@@ -292,8 +370,8 @@ return await pmApi.evaluatePassiveResolutionModifiers({
     return {
       ok: true,
       via: "gm-executor-generic",
-      actorName: engineResult?.actorName ?? null,
-      actorUuid: engineResult?.actorUuid ?? null,
+      actorName: resultValue?.actorName ?? null,
+      actorUuid: resultValue?.actorUuid ?? null,
       engineResult
     };
   };
@@ -316,16 +394,14 @@ return await pmApi.evaluatePassiveResolutionModifiers({
       });
     }
 
+    await broadcastAppliedPassiveCards(execResult);
+
     PAYLOAD.meta.__passiveLogicResolution = PAYLOAD.meta.__passiveLogicResolution || {};
     PAYLOAD.meta.__passiveLogicResolution.lastRun = {
       runId,
       ranAt: new Date().toISOString(),
       skillName: PAYLOAD?.core?.skillName ?? null,
-      isPassiveExecution: (
-        PAYLOAD?.meta?.executionMode === "autoPassive" ||
-        PAYLOAD?.meta?.isPassiveExecution === true ||
-        PAYLOAD?.source === "AutoPassive"
-      ),
+      isPassiveExecution: isAutoPassiveExecution,
       passiveTriggerKey: PAYLOAD?.meta?.passiveTriggerKey ?? PAYLOAD?.meta?.triggerKey ?? null,
       executionPath: execResult?.via ?? (canUseGMExecutor ? "gm-executor-generic" : "local"),
       actorName: execResult?.actorName ?? null,

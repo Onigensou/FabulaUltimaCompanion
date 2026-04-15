@@ -597,62 +597,78 @@
   }
 
   async function runVisualFeedback({ actionContext, executionMode, skipVisualFeedback, runId }) {
-    if (skipVisualFeedback) {
-      log(runId, "VISUAL skipped by option");
-      return;
-    }
+  const core = actionContext?.core || {};
+  const meta = actionContext?.meta || {};
+  const title = safeString(core.skillName, "—");
+  const attackerUuid = meta?.attackerUuid ?? null;
 
-    const core = actionContext?.core || {};
-    const meta = actionContext?.meta || {};
-    const title = safeString(core.skillName, "—");
-    const attackerUuid = meta?.attackerUuid ?? null;
+  const hidePassiveCard =
+    meta?.hidePassiveCard === true ||
+    meta?.passiveCardHidden === true ||
+    meta?.suppressPassiveCardUI === true;
 
-    if (executionMode === "autoPassive") {
-      const passiveApi =
-        API_ROOT.api?.passiveCard?.broadcast ||
-        API_ROOT.api?.passiveCardBroadcast ||
-        null;
-
-      if (passiveApi) {
-        try {
-          await passiveApi({
-            title,
-            attackerUuid,
-            actionContext,
-            executionMode
-          });
-          log(runId, "VISUAL passive-card broadcast done", { title, attackerUuid });
-          return;
-        } catch (e) {
-          warn(runId, "VISUAL passive-card broadcast failed", e);
-        }
-      }
-
-      log(runId, "VISUAL passive-card API not available yet; skipped", { title, attackerUuid });
-      return;
-    }
-
-    if (!shouldShowDefaultNamecard(actionContext)) {
-      log(runId, "VISUAL default namecard skipped by action type", { title });
-      return;
-    }
-
-    if (!API_ROOT.api?.namecardBroadcast) {
-      log(runId, "VISUAL namecard API missing; skipped", { title });
-      return;
-    }
-
-    let actionType = "skill";
-    if (meta.isSpellish && safeString(meta.listType) === "Offensive Spell") actionType = "offensiveSpell";
-    else if (meta.isSpellish) actionType = "spell";
-    else if (safeString(core.skillTypeRaw).toLowerCase() === "passive") actionType = "passive";
-
-    const disp = await resolveDisposition(attackerUuid);
-    const options = buildDefaultNamecardOptions(disp, actionType);
-
-    await API_ROOT.api.namecardBroadcast({ title, options });
-    log(runId, "VISUAL namecard broadcast done", { title, attackerUuid, actionType });
+  if (skipVisualFeedback) {
+    log(runId, "VISUAL skipped by option");
+    return;
   }
+
+  if (executionMode === "autoPassive") {
+    if (hidePassiveCard) {
+      log(runId, "VISUAL passive-card hidden by payload flag", {
+        title,
+        attackerUuid,
+        hidePassiveCard: meta?.hidePassiveCard === true,
+        passiveCardHidden: meta?.passiveCardHidden === true,
+        suppressPassiveCardUI: meta?.suppressPassiveCardUI === true
+      });
+      return;
+    }
+
+    const passiveApi =
+      API_ROOT.api?.passiveCard?.broadcast ||
+      API_ROOT.api?.passiveCardBroadcast ||
+      null;
+
+    if (passiveApi) {
+      try {
+        await passiveApi({
+          title,
+          attackerUuid,
+          actionContext,
+          executionMode
+        });
+        log(runId, "VISUAL passive-card broadcast done", { title, attackerUuid });
+        return;
+      } catch (e) {
+        warn(runId, "VISUAL passive-card broadcast failed", e);
+      }
+    }
+
+    log(runId, "VISUAL passive-card API not available yet; skipped", { title, attackerUuid });
+    return;
+  }
+
+  if (!shouldShowDefaultNamecard(actionContext)) {
+    log(runId, "VISUAL default namecard skipped by action type", { title });
+    return;
+  }
+
+  if (!API_ROOT.api?.namecardBroadcast) {
+    log(runId, "VISUAL namecard API missing; skipped", { title });
+    return;
+  }
+
+  let actionType = "skill";
+  if (meta.isSpellish && safeString(meta.listType) === "Offensive Spell") actionType = "offensiveSpell";
+  else if (meta.isSpellish) actionType = "spell";
+  else if (safeString(core.skillTypeRaw).toLowerCase() === "passive") actionType = "passive";
+
+  const disp = await resolveDisposition(attackerUuid);
+  const options = buildDefaultNamecardOptions(disp, actionType);
+
+  await API_ROOT.api.namecardBroadcast({ title, options });
+  log(runId, "VISUAL namecard broadcast done", { title, attackerUuid, actionType });
+}
 
   async function executeCustomLogicResolution(actionContext, args, chatMsg, runId) {
     const clResMacroName = "CustomLogic-Resolution";

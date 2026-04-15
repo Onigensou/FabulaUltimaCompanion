@@ -11,6 +11,11 @@
 // - If current client is not GM and GMExecutor.executeSnippet(...) is available,
 //   passive evaluation is executed through the generic GM executor
 // - Returned payload is merged back into the live PAYLOAD object
+//
+// NEW (passive card behavior):
+// - Show passive card only when the ORIGINAL action evaluation actually ran passive scripts
+// - Do NOT show the passive card for the later autoPassive self-wrapper execution
+// - If no passive script ran, no passive card is shown
 
 return (async () => {
   const MODULE_ID = "fabula-ultima-companion";
@@ -164,15 +169,77 @@ return (async () => {
 
     const before = snapshotPayload(PAYLOAD);
 
+    const isAutoPassiveExecution =
+      PAYLOAD?.meta?.executionMode === "autoPassive" ||
+      PAYLOAD?.meta?.isPassiveExecution === true ||
+      PAYLOAD?.source === "AutoPassive";
+
+    async function broadcastAppliedPassiveCards(execResult) {
+      const ranScripts = Array.isArray(execResult?.engineResult?.ranScripts)
+        ? execResult.engineResult.ranScripts
+        : [];
+
+      if (isAutoPassiveExecution) {
+        log("PASSIVE CARD broadcast skipped (autoPassive wrapper call)");
+        return;
+      }
+
+      if (!ranScripts.length) {
+        log("PASSIVE CARD broadcast skipped (no ranScripts)");
+        return;
+      }
+
+      const passiveApi =
+        globalThis.FUCompanion?.api?.passiveCard?.broadcast ??
+        game.modules?.get(MODULE_ID)?.api?.passiveCard?.broadcast ??
+        globalThis.FUCompanion?.api?.passiveCardBroadcast ??
+        null;
+
+      if (typeof passiveApi !== "function") {
+        warn("PASSIVE CARD broadcast skipped (API missing)");
+        return;
+      }
+
+      const cardAttackerUuid =
+        PAYLOAD?.meta?.attackerUuid ??
+        PAYLOAD?.attackerUuid ??
+        PAYLOAD?.attackerActorUuid ??
+        attackerUuid ??
+        null;
+
+      for (const row of ranScripts) {
+        const title = String(row?.itemName ?? "").trim() || "Passive";
+
+        try {
+          await passiveApi({
+            title,
+            attackerUuid: cardAttackerUuid,
+            actionContext: PAYLOAD,
+            options: {
+              executionMode: "passive_action"
+            }
+          });
+
+          log("PASSIVE CARD broadcast done", {
+            title,
+            attackerUuid: cardAttackerUuid
+          });
+        } catch (e) {
+          warn("PASSIVE CARD broadcast failed", {
+            title,
+            attackerUuid: cardAttackerUuid,
+            error: String(e?.message ?? e)
+          });
+        }
+      }
+    }
+
     log("START", {
       skillName: before.skillName,
       attackerUuid: before.attackerUuid,
       elementType: before.elementType,
       targets: before.targets,
-      autoPassive:
-        PAYLOAD?.meta?.executionMode === "autoPassive" ||
-        PAYLOAD?.meta?.isPassiveExecution === true ||
-        PAYLOAD?.source === "AutoPassive",
+      autoPassive: isAutoPassiveExecution,
       executionPath: canUseGMExecutor ? "gm-executor-generic" : "local",
       autoFlag: !!AUTO
     });
@@ -304,6 +371,8 @@ return {
       }
       execResult = await runLocalPassiveEngine();
     }
+
+    await broadcastAppliedPassiveCards(execResult);
 
     PAYLOAD.meta.passiveModifier = {
       ...(PAYLOAD.meta.passiveModifier ?? {}),
