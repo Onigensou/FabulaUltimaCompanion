@@ -603,16 +603,21 @@ const PASSIVE_ACTION_MACRO_NAME = "PassiveLogic-Action";
   }
 
   function getWeaponTypeDamageBonus(props, rawWeaponType, { spellish = false } = {}) {
-    const w = normalizeWeaponTypeForBonus(rawWeaponType, { spellish });
-    if (!w) return 0;
+  const w = normalizeWeaponTypeForBonus(rawWeaponType, { spellish });
+  if (!w) return 0;
 
-    const KNOWN = new Set(["sword","spear","bow","arcane","thrown","dagger","flail","brawling","heavy","firearm"]);
-    if (!KNOWN.has(w)) return 0;
+  const KNOWN = new Set(["sword","spear","bow","arcane","thrown","dagger","flail","brawling","heavy","firearm"]);
+  if (!KNOWN.has(w)) return 0;
 
-    const key = `extra_damage_mod_${w}`;
-    const n = Number(props?.[key] ?? 0);
-    return Number.isFinite(n) ? n : 0;
-  }
+  const key = `extra_damage_mod_${w}`;
+  const n = Number(props?.[key] ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function getUniversalDamageBonus(props) {
+  const n = Number(props?.extra_damage_mod_all ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
 
   // ---------------- Accuracy / dice helpers ----------------
   function getDieSize(attr) {
@@ -888,11 +893,18 @@ if (cardPayload?.meta?.__abortPipeline) {
     const _isCritFinal   = !!(accRoll?.isCrit)   && !accRoll?.isFumble;
     const _isFumbleFinal = !!(accRoll?.isFumble);
 
-    const weaponTypeDamageBonus = (!nonDamageAction && !declaresHealing && valueType === "hp")
-      ? getWeaponTypeDamageBonus(actorProps, dataCore.weaponType, { spellish: !!dataCore.isSpell })
-      : 0;
+    const universalDamageBonus = (!nonDamageAction && !declaresHealing && valueType === "hp")
+  ? getUniversalDamageBonus(actorProps)
+  : 0;
 
-    const totalFlatBonus = Number(dataCore.flatBonus || 0) + Number(weaponTypeDamageBonus || 0);
+const weaponTypeDamageBonus = (!nonDamageAction && !declaresHealing && valueType === "hp")
+  ? getWeaponTypeDamageBonus(actorProps, dataCore.weaponType, { spellish: !!dataCore.isSpell })
+  : 0;
+
+const totalFlatBonus =
+  Number(dataCore.flatBonus || 0) +
+  Number(universalDamageBonus || 0) +
+  Number(weaponTypeDamageBonus || 0);
 
     const advPayload = {
       baseValue : baseValueStrForAdv,
@@ -1135,11 +1147,18 @@ if (cardPayload?.meta?.__abortPipeline) {
     const _isCritFinal   = !!(accRoll?.isCrit)   && !accRoll?.isFumble;
     const _isFumbleFinal = !!(accRoll?.isFumble);
 
-    const weaponTypeDamageBonus = (!nonDamageAction && !declaresHealing && valueType === "hp")
-      ? getWeaponTypeDamageBonus(actorProps, dataCore.weaponType, { spellish: !!(dataCore.isSpell || dataCore.isOffSpell) })
-      : 0;
+    const universalDamageBonus = (!nonDamageAction && !declaresHealing && valueType === "hp")
+  ? getUniversalDamageBonus(actorProps)
+  : 0;
 
-    const totalFlatBonus = Number(dataCore.flatBonus || 0) + Number(weaponTypeDamageBonus || 0);
+const weaponTypeDamageBonus = (!nonDamageAction && !declaresHealing && valueType === "hp")
+  ? getWeaponTypeDamageBonus(actorProps, dataCore.weaponType, { spellish: !!(dataCore.isSpell || dataCore.isOffSpell) })
+  : 0;
+
+const totalFlatBonus =
+  Number(dataCore.flatBonus || 0) +
+  Number(universalDamageBonus || 0) +
+  Number(weaponTypeDamageBonus || 0);
 
     const advPayload = {
       baseValue : baseValueStrForAdv,
