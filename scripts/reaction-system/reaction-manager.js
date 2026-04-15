@@ -299,9 +299,10 @@ Hooks.once("ready", () => {
     //   - Moving from Start-of-turn → Action → Resolution → End-of-turn WILL
     //     clear old reactions when the phase actually changes.
 
-    function phaseBucketForTrigger(triggerKey) {
+        function phaseBucketForTrigger(triggerKey) {
       switch (triggerKey) {
         // All the action declaration / hit result triggers live in the Action Phase
+        case "creature_performs_action":
         case "creature_performs_check":
         case "creature_targeted_by_action":
         case "creature_hit_by_action":

@@ -53,6 +53,18 @@ Hooks.once("ready", async () => {
     btn.dataset.fuLock = "0";
   }
 
+  function getPrimaryActiveGM() {
+  const activeGMs = Array.from(game.users ?? [])
+    .filter(u => u.active && u.isGM)
+    .sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  return activeGMs[0] ?? null;
+}
+
+function isPrimaryActiveGMClient() {
+  const primary = getPrimaryActiveGM();
+  return !!primary && primary.id === game.userId;
+}
+
   // ------------------------------------------------------------
   // Core resolver (GM only)
   // ------------------------------------------------------------
@@ -190,33 +202,43 @@ Hooks.once("ready", async () => {
     try {
       // GM-only: player requests confirm
       if (data?.type === "fu.actionConfirm") {
-        if (!game.user?.isGM) return;
+  if (!game.user?.isGM) return;
 
-        const chatMsg = data.messageId ? game.messages.get(data.messageId) : null;
-        if (!chatMsg) return;
+  // IMPORTANT: only one full GM client handles player confirm requests
+  if (!isPrimaryActiveGMClient()) {
+    console.log("[fu-chatbtn] Skip confirm on non-primary GM", {
+      thisUser: game.userId,
+      primaryGM: getPrimaryActiveGM()?.id ?? null,
+      messageId: data.messageId ?? null
+    });
+    return;
+  }
 
-        const already = await chatMsg.getFlag(MODULE_NS, "actionApplied");
-        if (already) return;
+  const chatMsg = data.messageId ? game.messages.get(data.messageId) : null;
+  if (!chatMsg) return;
 
-        // Validate: confirming user must own the attacker OR match ownerUserId
-        const flagged = chatMsg.getFlag(MODULE_NS, "actionCard")?.payload ?? null;
-        const ownerUserId = flagged?.meta?.ownerUserId ?? null;
+  const already = await chatMsg.getFlag(MODULE_NS, "actionApplied");
+  if (already) return;
 
-        let ok = false;
-        if (ownerUserId && ownerUserId === data.userId) ok = true;
-        else {
-          const attackerUuid = flagged?.meta?.attackerUuid ?? null;
-          if (attackerUuid) {
-            const actor = await resolveAttackerActor(attackerUuid);
-            const user = game.users.get(data.userId);
-            if (actor && user) ok = actor.testUserPermission(user, "OWNER");
-          }
-        }
-        if (!ok) return;
+  // Validate: confirming user must own the attacker OR match ownerUserId
+  const flagged = chatMsg.getFlag(MODULE_NS, "actionCard")?.payload ?? null;
+  const ownerUserId = flagged?.meta?.ownerUserId ?? null;
 
-        await runConfirm(chatMsg, data.args ?? {}, data.userId);
-        return;
-      }
+  let ok = false;
+  if (ownerUserId && ownerUserId === data.userId) ok = true;
+  else {
+    const attackerUuid = flagged?.meta?.attackerUuid ?? null;
+    if (attackerUuid) {
+      const actor = await resolveAttackerActor(attackerUuid);
+      const user = game.users.get(data.userId);
+      if (actor && user) ok = actor.testUserPermission(user, "OWNER");
+    }
+  }
+  if (!ok) return;
+
+  await runConfirm(chatMsg, data.args ?? {}, data.userId);
+  return;
+}
 
       // ALL clients: GM broadcasts that this action is confirmed
       if (data?.type === "fu.actionConfirmed") {

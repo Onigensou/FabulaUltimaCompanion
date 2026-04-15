@@ -9,6 +9,7 @@
 //  • No Dismiss button
 //  • NEW: Floating 👑 Critical! callout (no more crit badge in Accuracy row)
 //  • UPDATED: canonical saved target UUIDs are now the source of truth
+//  • NEW: display action cost in subtitle row when cost exists
 // ──────────────────────────────────────────────────────────
 const ADV_MACRO_NAME  = "AdvanceDamage";
 const MISS_MACRO_NAME = "Miss";
@@ -61,13 +62,13 @@ const MAGIC_ICON_URL  = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/F
     style.textContent = `
   /* Keep body text black, but don't touch your colored content-links */
 .chat-message .message-content .fu-effect .fu-effect-inner {
-  color: #000;              /* no !important */
-  text-shadow: none;        /* no !important */
+  color: #000;
+  text-shadow: none;
 }
 /* Allow your Custom CSS to recolor these links (Bolt, Fire, etc.) */
 .chat-message .message-content .fu-effect .fu-effect-inner a.content-link,
 .chat-message .message-content .fu-effect .fu-effect-inner a.content-link * {
-  color: inherit;           /* your external rules with !important will win */
+  color: inherit;
   text-shadow: none;
 }
 
@@ -77,7 +78,7 @@ const MAGIC_ICON_URL  = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/F
     max-height: 0;
     overflow: hidden;
     transition: max-height .28s ease, padding .28s ease;
-    position: relative;             /* anchor for the overlay */
+    position: relative;
     padding: 0 .25rem;
     margin-top: .05rem;
   }
@@ -294,7 +295,7 @@ const MAGIC_ICON_URL  = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/F
     PAYLOAD.meta.originalTargetActorUUIDs = [...originalTargetActorUUIDs];
   }
 
-  // --- ONI Reaction Phase beacons: action declared / checks / targeting ---
+    // --- ONI Reaction Phase beacons: action declared / checks / targeting ---
   try {
     if (globalThis.ONI?.emit) {
       const targetsFromPayload = [...originalTargetUUIDs];
@@ -303,24 +304,45 @@ const MAGIC_ICON_URL  = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/F
         kind: "action_declaration",
         trigger: null, // filled per-event below
         timestamp: Date.now(),
-        // Who is acting
+
+        // Who is acting (performer / source subject for SELF/ALLY/ENEMY filtering)
         attackerUuid: meta?.attackerUuid ?? advPayload?.attackerUuid ?? null,
         attackerName: attackerName ?? null,
+
+        // Helpful fallbacks / aliases for future trigger-core subject resolution
+        sourceUuid: meta?.attackerUuid ?? advPayload?.attackerUuid ?? null,
+        actorUuid: PAYLOAD?.attackerActorUuid ?? meta?.attackerActorUuid ?? advPayload?.attackerActorUuid ?? null,
+
         // What is being used
         sourceType: meta?.sourceType ?? advPayload?.sourceType ?? null,
         listType: listType ?? null,
         elementType: elementType ?? null,
         skillName: skillName ?? null,
         skillTypeRaw: skillTypeRaw ?? null,
+
         // Check info
         isCheck: !!accuracy,
         hasAccuracy: !!accuracy,
+
         // Target info
         targets: targetsFromPayload,
         attackRange: attackRange ?? null
       };
 
-      // 1) Trigger: "When a creature performs a check"
+      // 1) Trigger: "When a creature performs an action"
+      ONI.emit(
+        "oni:reactionPhase",
+        {
+          ...baseReactionPayload,
+          trigger: "creature_performs_action"
+        },
+        {
+          local: true,
+          world: false
+        }
+      );
+
+      // 2) Trigger: "When a creature performs a check"
       if (accuracy) {
         ONI.emit(
           "oni:reactionPhase",
@@ -335,7 +357,7 @@ const MAGIC_ICON_URL  = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/F
         );
       }
 
-      // 2) Trigger: "When a creature gets targeted by an action"
+      // 3) Trigger: "When a creature gets targeted by an action"
       for (const targetUuid of targetsFromPayload) {
         ONI.emit(
           "oni:reactionPhase",
@@ -375,7 +397,7 @@ const MAGIC_ICON_URL  = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/F
           actor?.flags?.["fabula-ultima-companion"]?.cut_in_critical ||
           actor?.getFlag?.("fabula-ultima-companion", "cut_in_critical");
         hasCritImage = !!(img && String(img).trim().length);
-      } catch { /* ignore */ }
+      } catch {}
     }
 
     if (isCritical && attackerUuid && window.FUCompanion?.api?.cutinBroadcast) {
@@ -417,6 +439,90 @@ const MAGIC_ICON_URL  = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/F
   const linkRangeLabel = (txt) => { const t=(txt||"").toLowerCase(); if (t.includes("melee")) return uuidLink("Melee", UUID_MAP.range.Melee); if (t.includes("ranged")||t.includes("range")) return uuidLink("Ranged", UUID_MAP.range.Ranged); return esc(txt||"—"); };
   const linkElement = (type) => uuidLink(cap((type||"physical").toLowerCase()), UUID_MAP.element[(type||"physical").toLowerCase()]);
 
+  function resolveDisplayCost(meta = {}) {
+    const rawFinal = String(
+      meta?.costRawFinal ??
+      meta?.costRawOverride ??
+      meta?.costRaw ??
+      ""
+    ).trim();
+
+    const normalized = Array.isArray(meta?.costsNormalized) ? meta.costsNormalized : [];
+
+    const isZeroish =
+      !rawFinal ||
+      rawFinal === "-" ||
+      /^\s*\+?\s*0(\s*[%]?\s*(?:x|\*)\s*T)?\s*[a-z]*\s*$/i.test(rawFinal);
+
+    if (normalized.length) {
+      const parts = normalized
+        .map(c => {
+          const req = Number(c?.req ?? 0);
+          const label = String(c?.label ?? c?.type ?? "").trim();
+          if (!Number.isFinite(req) || !label || req <= 0) return "";
+          return `${req} ${label}`;
+        })
+        .filter(Boolean);
+
+      if (parts.length) return parts.join(" + ");
+    }
+
+    if (isZeroish) return "";
+    return rawFinal;
+  }
+
+function getCostTextColor(costText = "") {
+  const s = String(costText || "").trim().toLowerCase();
+
+  // Zero Power / ZP
+  if (/\bzero\s*power\b|\bzp\b/.test(s)) return "#c94f2d";
+
+  // MP / Mind Point / Mana
+  if (/\bmp\b|\bmind\s*point\b|\bmana\b/.test(s)) return "#2f6fd6";
+
+  // HP / Hit Point / Health
+  if (/\bhp\b|\bhit\s*point(s)?\b|\bhealth\b/.test(s)) return "#c43d3d";
+
+  // IP / Inventory Point
+  if (/\bip\b|\binventory\s*point(s)?\b/.test(s)) return "#c9821f";
+
+  // Fallback = your current default brown
+  return "#8a4b22";
+}
+
+const actionCostText = resolveDisplayCost(meta);
+const actionCostTextColor = getCostTextColor(actionCostText);
+
+const actionCostEffectHTML = actionCostText
+  ? `
+    <div style="
+      position:absolute;
+      top:-10px;
+      right:.6rem;
+      z-index:3;
+      pointer-events:none;
+    ">
+      <span style="
+        display:inline-flex;
+        align-items:center;
+        font-size:12px;
+        line-height:1;
+        font-weight:500;
+        color:${actionCostTextColor};
+        opacity:.82;
+        padding:.16rem .48rem;
+        border:1px solid rgba(207,160,87,.72);
+        border-radius:999px;
+        background:rgb(247,236,217);
+        white-space:nowrap;
+        box-shadow:0 1px 2px rgba(0,0,0,.08);
+      ">
+        <span>${esc(actionCostText)}</span>
+      </span>
+    </div>
+  `
+  : "";
+
   // === defense targeting resolver (Strike vs Magic) ===
   function fuResolveDefenseTarget(meta) {
     const raw = String(
@@ -442,24 +548,53 @@ const MAGIC_ICON_URL  = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/F
   const displayTitle   = isNormalAttack ? esc(String(skillName||"").replace(/^Attack\s*—\s*/i, "").trim() || "Attack") : esc(skillName);
   const subtitleHTML = (() => {
     if (isNormalAttack) {
-      const bullets=[]; const rangeText=linkRangeLabel(attackRange || "—");
+      const bullets = [];
+      const rangeText = linkRangeLabel(attackRange || "—");
       if (rangeText && !rangeText.includes("—")) bullets.push(rangeText);
-      const wt=(weaponType || weaponTypeLabel || "").toString().trim();
+
+      const wt = (weaponType || weaponTypeLabel || "").toString().trim();
       if (wt) bullets.push(`${weaponIconHTML(wt)}${esc(cap(wt))}`);
+
       bullets.push("Normal Attack");
+
+
       return `<div style="text-align:center; font-size:12px; color:#6b3e1e; margin:.18rem 0 .25rem;">${bullets.join(" • ")}</div><div style="border-top:1px solid #cfa057; opacity:.6; margin:.2rem auto .35rem; width:96%;"></div>`;
     } else {
-      let main=isSpellish?"Spell":"Skill", sub="", subIcon="";
-      if (isSpellish && (core.isOffSpell || listType==="Offensive Spell")) { sub="Offensive"; subIcon=`<i class="fa-solid fa-bolt" style="margin-right:.25rem;"></i>`; }
-      if (!isSpellish) { const st=(skillTypeRaw||"").toLowerCase(); if (st==="active") sub="Active"; else if (st==="passive") sub="Passive"; else if (st==="other") { sub="Other"; subIcon=`<i class="fa-solid fa-circle-notch" style="margin-right:.25rem;"></i>`; } }
-      let wKey="", wLbl="";
-      if (isSpellish) { wKey="arcane"; wLbl="Arcane"; }
-      else if (weaponType && weaponType.toLowerCase()!=="none") { wKey=weaponType; wLbl=cap(weaponType); }
-      const bullets=[]; const rangeText=linkRangeLabel(attackRange || "—");
+      let main = isSpellish ? "Spell" : "Skill";
+      let sub = "", subIcon = "";
+
+      if (isSpellish && (listType === "Offensive Spell")) {
+        sub = "Offensive";
+        subIcon = `<i class="fa-solid fa-bolt" style="margin-right:.25rem;"></i>`;
+      }
+
+      if (!isSpellish) {
+        const st = (skillTypeRaw || "").toLowerCase();
+        if (st === "active") sub = "Active";
+        else if (st === "passive") sub = "Passive";
+        else if (st === "other") {
+          sub = "Other";
+          subIcon = `<i class="fa-solid fa-circle-notch" style="margin-right:.25rem;"></i>`;
+        }
+      }
+
+      let wKey = "", wLbl = "";
+      if (isSpellish) {
+        wKey = "arcane";
+        wLbl = "Arcane";
+      } else if (weaponType && weaponType.toLowerCase() !== "none") {
+        wKey = weaponType;
+        wLbl = cap(weaponType);
+      }
+
+      const bullets = [];
+      const rangeText = linkRangeLabel(attackRange || "—");
+
       if (rangeText && !rangeText.includes("—")) bullets.push(rangeText);
       if (wLbl) bullets.push(`${weaponIconHTML(wKey)}${esc(wLbl)}`);
       bullets.push(esc(main));
       if (sub) bullets.push(`${subIcon}${esc(sub)}`);
+
       return `<div style="text-align:center; font-size:12px; color:#6b3e1e; margin:.18rem 0 .25rem;">${bullets.join(" • ")}</div><div style="border-top:1px solid #cfa057; opacity:.6; margin:.2rem auto .35rem; width:96%;"></div>`;
     }
   })();
@@ -660,28 +795,39 @@ const MAGIC_ICON_URL  = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/F
 
   // ============ effect (collapsible) ============
   const hasEffect = !!String(rawEffectHTML ?? "").trim();
-  const effectHTML = !hasEffect ? "" : `
-    <fieldset class="fu-effect" data-collapsed="true"
-      style="border:1px solid #cfa057; border-radius:8px; padding:.35rem .5rem; margin-top:.45rem; cursor:pointer; user-select:none;">
-      <legend style="padding:0 .5rem; color:#8a4b22;">
-        <b>Effect</b>
-        <span class="fu-effect-hint" style="opacity:.7; font-size:12px; margin-left:.35rem;">(click to expand)</span>
-      </legend>
-      <div class="fu-effect-body"
-           style="position:relative; overflow:hidden; max-height:0; transition:max-height .25s ease, padding .25s ease; padding:0 .25rem;">
-        <div class="fu-effect-inner" style="font-size:13px; line-height:1.35; color:#000; text-shadow:none;">
-          ${rawEffectHTML}
-        </div>
+const effectHTML = !hasEffect ? "" : `
+  <fieldset class="fu-effect" data-collapsed="true"
+    style="
+      position:relative;
+      border:1px solid #cfa057;
+      border-radius:8px;
+      padding:.35rem .5rem;
+      margin-top:.45rem;
+      cursor:pointer;
+      user-select:none;
+    ">
+    <legend style="padding:0 .5rem; color:#8a4b22;">
+      <b>Effect</b>
+      <span class="fu-effect-hint" style="opacity:.7; font-size:12px; margin-left:.35rem;">(click to expand)</span>
+    </legend>
 
-        <div class="fu-fade" aria-hidden="true"
-             style="
-               position:absolute; left:0; right:0; bottom:0;
-               z-index:1; pointer-events:none; display:none;
-               height:32px;
-               background:transparent;
-             "></div>
+    ${actionCostEffectHTML}
+
+    <div class="fu-effect-body"
+         style="position:relative; overflow:hidden; max-height:0; transition:max-height .25s ease, padding .25s ease; padding:0 .25rem;">
+      <div class="fu-effect-inner" style="font-size:13px; line-height:1.35; color:#000; text-shadow:none;">
+        ${rawEffectHTML}
       </div>
-    </fieldset>`;
+
+      <div class="fu-fade" aria-hidden="true"
+           style="
+             position:absolute; left:0; right:0; bottom:0;
+             z-index:1; pointer-events:none; display:none;
+             height:32px;
+             background:transparent;
+           "></div>
+    </div>
+  </fieldset>`;
 
   // ============ buttons row ============
   const confirmBtnHTML = `
@@ -745,15 +891,23 @@ const MAGIC_ICON_URL  = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/F
   const cardHTML = `
     <div class="fu-card" style="font-family: Signika, sans-serif; letter-spacing:.2px; position:relative; overflow:hidden; border-radius:10px;">
       <div class="fu-body">
-        <h1 style="font-family: Signika, sans-serif; letter-spacing:.5px; color:#8a4b22; text-align:center; border-bottom:3px solid #cfa057; padding-bottom:.15rem; margin:.25rem 0 .1rem;">
-          <span style="display:inline-flex; align-items:center; gap:.35rem;">
-            ${editBtnHTML}
-            ${titleIconHTML}
-            <span>${displayTitle}</span>
-          </span>
-        </h1>
-        <div style="text-align:center; font-size:12px; color:#6b3e1e; margin:.18rem 0 .25rem;">${subtitleHTML ? subtitleHTML : ""}</div>
-        ${attackerBox}
+<h1 style="
+  font-family: Signika, sans-serif;
+  letter-spacing:.5px;
+  color:#8a4b22;
+  text-align:center;
+  border-bottom:3px solid #cfa057;
+  padding-bottom:.15rem;
+  margin:.25rem 0 .1rem;
+">
+  <span style="display:inline-flex; align-items:center; gap:.35rem;">
+    ${editBtnHTML}
+    ${titleIconHTML}
+    <span>${displayTitle}</span>
+  </span>
+</h1>
+<div style="text-align:center; font-size:12px; color:#6b3e1e; margin:.18rem 0 .25rem;">${subtitleHTML ? subtitleHTML : ""}</div>
+${attackerBox}
         ${accuracyHTML}
         ${damagePreviewHTML}
         ${effectHTML}

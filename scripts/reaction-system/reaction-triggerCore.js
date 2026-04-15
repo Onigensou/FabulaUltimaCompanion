@@ -69,12 +69,13 @@ Hooks.once("ready", () => {
     // ---------------------------------------------------------------------------
     // Valid trigger keys + mapping from PhaseHandler triggers
     // ---------------------------------------------------------------------------
-    const VALID_TRIGGER_KEYS = new Set([
+        const VALID_TRIGGER_KEYS = new Set([
       "conflict_start",
       "round_start",
       "round_end",
       "turn_start",
       "turn_end",
+      "creature_performs_action",
       "creature_performs_check",
       "creature_targeted_by_action",
       "creature_hit_by_action",
@@ -98,7 +99,10 @@ Hooks.once("ready", () => {
 
       // Alias: the internal phase event "creature_is_targeted" should match
       // the skill config trigger "creature_targeted_by_action".
-      creature_is_targeted: "creature_targeted_by_action"
+      creature_is_targeted: "creature_targeted_by_action",
+
+      // Backward-compat alias for old typo / old saved rows.
+      creature_perform_action: "creature_performs_action"
     };
 
     function mapIncomingTrigger(rawTrigger) {
@@ -108,7 +112,7 @@ Hooks.once("ready", () => {
 
     function isValidTriggerKey(triggerKey) {
       if (!triggerKey) return false;
-      return VALID_TRIGGER_KEYS.has(triggerKey);
+      return VALID_TRIGGER_KEYS.has(mapIncomingTrigger(triggerKey));
     }
 
     // ---------------------------------------------------------------------------
@@ -317,13 +321,16 @@ Hooks.once("ready", () => {
       };
 
       switch (triggerKey) {
+                case "creature_performs_action":
         case "creature_performs_check": {
-          // Depending on your Action pipeline, these may be actor or token uuids.
-          // We try both resolutions.
+          // These triggers point at the acting creature / performer.
+          // This is what makes reaction_source = self/ally/enemy compare
+          // against "who performed the action/check".
           addUuidish(phasePayload.tokenUuid);
           addUuidish(phasePayload.attackerUuid);
           addUuidish(phasePayload.checkTokenUuid);
           addUuidish(phasePayload.sourceUuid);
+          addUuidish(phasePayload.subjectTokenUuid);
 
           if (!subjects.length) {
             // Fallback: actor-based
@@ -331,10 +338,12 @@ Hooks.once("ready", () => {
             const t2 = findTokenByActorUuidInCombat(combat, phasePayload.checkActorUuid);
             const t3 = findTokenByActorUuidInCombat(combat, phasePayload.attackerActorUuid);
             const t4 = findTokenByActorUuidInCombat(combat, phasePayload.sourceActorUuid);
+            const t5 = findTokenByActorUuidInCombat(combat, phasePayload.subjectActorUuid);
             addToken(t1);
             addToken(t2);
             addToken(t3);
             addToken(t4);
+            addToken(t5);
           }
           break;
         }
@@ -362,37 +371,35 @@ Hooks.once("ready", () => {
           break;
         }
 
-        case "creature_takes_damage":
-        case "creature_recovers_hp":
-        case "creature_lose_mp":
-        case "creature_recovers_mp": {
-          // IMPORTANT:
-          // For these "affected creature" triggers, the subject must be the
-          // creature who actually received the damage / heal / MP change.
-          //
-          // Do NOT read tokenUuid / actorUuid here.
-          // In your Create Damage Card pipeline, those fields are source-side
-          // fields (attacker / performer), while targetUuid / targetActorUuid
-          // are the affected creature.
-          addUuidish(phasePayload.targetUuid);
-          addUuidish(phasePayload.subjectTokenUuid);
-          addManyUuidish(phasePayload.targets);
+case "creature_takes_damage":
+case "creature_recovers_hp":
+case "creature_lose_mp":
+case "creature_recovers_mp": {
+  // IMPORTANT:
+  // For these "affected creature" triggers, the subject must be ONLY the
+  // creature who actually received the damage / heal / MP change.
+  //
+  // In the damage-card emitter:
+  //   - targetUuid / targetActorUuid / targets         = affected creature
+  //   - subjectTokenUuid / subjectActorUuid / tokenUuid = source / attacker side
+  //
+  // So for "takes damage" style triggers, NEVER read subject/source aliases here.
+  addUuidish(phasePayload.targetUuid);
+  addManyUuidish(phasePayload.targets);
 
-          if (!subjects.length) {
-            const t1 = findTokenByActorUuidInCombat(combat, phasePayload.targetActorUuid);
-            const t2 = findTokenByActorUuidInCombat(combat, phasePayload.subjectActorUuid);
-            if (t1) addToken(t1);
-            if (t2) addToken(t2);
+  if (!subjects.length) {
+    const t1 = findTokenByActorUuidInCombat(combat, phasePayload.targetActorUuid);
+    if (t1) addToken(t1);
 
-            if (Array.isArray(phasePayload.targetActorUuids)) {
-              for (const aUuid of phasePayload.targetActorUuids) {
-                const t = findTokenByActorUuidInCombat(combat, aUuid);
-                if (t) addToken(t);
-              }
-            }
-          }
-          break;
-        }
+    if (Array.isArray(phasePayload.targetActorUuids)) {
+      for (const aUuid of phasePayload.targetActorUuids) {
+        const t = findTokenByActorUuidInCombat(combat, aUuid);
+        if (t) addToken(t);
+      }
+    }
+  }
+  break;
+}
 
         case "creature_miss_action":
         case "creature_deals_damage": {
@@ -611,11 +618,23 @@ Hooks.once("ready", () => {
     //  - Returns a list of "reaction contexts" WITHOUT any user/ownership info.
     // ---------------------------------------------------------------------------
 
-    function collectReactionsForTrigger(triggerKey, phasePayload) {
+        function collectReactionsForTrigger(triggerKey, phasePayload) {
+      const normalizedTriggerKey = mapIncomingTrigger(triggerKey);
+
       const combat = game.combat;
       if (!combat) {
         console.log("[ReactionTriggerCore] collectReactionsForTrigger: no active combat.", {
+          triggerKey: normalizedTriggerKey,
+          rawTriggerKey: triggerKey,
+          phasePayload
+        });
+        return [];
+      }
+
+      if (!normalizedTriggerKey || !isValidTriggerKey(normalizedTriggerKey)) {
+        console.log("[ReactionTriggerCore] collectReactionsForTrigger: invalid trigger key.", {
           triggerKey,
+          normalizedTriggerKey,
           phasePayload
         });
         return [];
@@ -625,7 +644,8 @@ Hooks.once("ready", () => {
       const combatants = combat.combatants?.contents ?? combat.combatants ?? [];
 
       console.log("[ReactionTriggerCore] collectReactionsForTrigger: scanning combatants for trigger.", {
-        triggerKey,
+        triggerKey: normalizedTriggerKey,
+        rawTriggerKey: triggerKey,
         numCombatants: combatants.length,
         phasePayload
       });
@@ -665,23 +685,23 @@ Hooks.once("ready", () => {
           const rows  = extractRows(table);
 
           // For this item, collect only the rows that:
-          //   1) Have reaction_trigger == triggerKey
+          //   1) Have reaction_trigger == normalizedTriggerKey
           //   2) Pass the reaction_source filter for THIS event + actor
           //   3) Pass the reaction_damage_type filter (if any)
           const matchingRows = [];
 
           for (const row of rows) {
-            const rowTrigger = row.reaction_trigger;
-            if (rowTrigger !== triggerKey) continue;
+            const rowTrigger = mapIncomingTrigger(row.reaction_trigger);
+            if (rowTrigger !== normalizedTriggerKey) continue;
 
             // 1) Source (Self / Ally / Enemy / Neutral / All)
             const rowSource = row.reaction_source;
-            const okSource  = reactionSourceMatchesRow(rowSource, token, triggerKey, phasePayload, combat);
+            const okSource  = reactionSourceMatchesRow(rowSource, token, normalizedTriggerKey, phasePayload, combat);
             if (!okSource) continue;
 
             // 2) Damage type (Physical / Fire / Ice / etc.)
             const rowDamageType = row.reaction_damage_type;
-            const okDamageType  = reactionDamageTypeMatchesRow(rowDamageType, triggerKey, phasePayload);
+            const okDamageType  = reactionDamageTypeMatchesRow(rowDamageType, normalizedTriggerKey, phasePayload);
             if (!okDamageType) continue;
 
             matchingRows.push(row);
@@ -692,13 +712,14 @@ Hooks.once("ready", () => {
               actorName: actor.name,
               tokenName: tokenDoc.name,
               itemName: item.name,
-              triggerKey,
+              triggerKey: normalizedTriggerKey,
+              rawTriggerKey: triggerKey,
               matchingRowCount: matchingRows.length
             });
 
             actorReactions.push({
               item,
-              triggers: matchingRows.map(r => r.reaction_trigger),
+              triggers: matchingRows.map(r => mapIncomingTrigger(r.reaction_trigger)),
               rows: matchingRows
             });
           } else {
@@ -706,7 +727,8 @@ Hooks.once("ready", () => {
               actorName: actor.name,
               tokenName: tokenDoc.name,
               itemName: item.name,
-              triggerKey
+              triggerKey: normalizedTriggerKey,
+              rawTriggerKey: triggerKey
             });
           }
         }
@@ -717,7 +739,7 @@ Hooks.once("ready", () => {
             actor,
             token,
             reactions: actorReactions,
-            triggerKey,
+            triggerKey: normalizedTriggerKey,
             phasePayload
           });
 
@@ -726,6 +748,8 @@ Hooks.once("ready", () => {
             combatantName: cmbt.name,
             actorName: actor.name,
             tokenName: tokenDoc.name,
+            triggerKey: normalizedTriggerKey,
+            rawTriggerKey: triggerKey,
             numReactionItems: actorReactions.length
           });
         } else {
@@ -734,19 +758,16 @@ Hooks.once("ready", () => {
             combatantName: cmbt.name,
             actorName: actor.name,
             tokenName: tokenDoc.name,
-            triggerKey
+            triggerKey: normalizedTriggerKey,
+            rawTriggerKey: triggerKey
           });
         }
       }
 
-      console.log("[ReactionTriggerCore] collectReactionsForTrigger: final results.", {
-        triggerKey,
-        resultCount: results.length,
-        resultSummary: results.map(r => ({
-          actorName: r.actor?.name,
-          tokenName: r.token?.name,
-          numReactionItems: r.reactions?.length ?? 0
-        }))
+      console.log("[ReactionTriggerCore] collectReactionsForTrigger: done.", {
+        triggerKey: normalizedTriggerKey,
+        rawTriggerKey: triggerKey,
+        matchCount: results.length
       });
 
       return results;
