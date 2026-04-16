@@ -6,8 +6,8 @@
 // camera FX locally (pan/zoom + temporary camera lock).
 // ============================================================================
 
-Hooks.once("ready", () => {
-  const DEBUG = false;
+(async () => {
+  const DEBUG = true;
   const tag = "[BattleEnd:FX:Listener]";
   const log = (...args) => DEBUG && console.log(tag, ...args);
 
@@ -93,20 +93,10 @@ Hooks.once("ready", () => {
     } catch (e) {}
   }
 
-    async function waitForPanOrTimeout({ x, y, scale, duration }, label = "cameraFx") {
-    const timeoutMs = Math.max(1000, Number(duration || 0) + 1500);
-
-    return await Promise.race([
-      canvas.animatePan({ x, y, scale, duration })
-        .then(() => ({ ok: true, timedOut: false })),
-      new Promise(resolve => setTimeout(() => resolve({ ok: false, timedOut: true }), timeoutMs))
-    ]);
-  }
-
   // --------------------------------------------------------------------------
   // Run the cinematic camera FX
   // --------------------------------------------------------------------------
-    async function runCameraFx(payload) {
+  async function runCameraFx(payload) {
     const lockId = String(payload?.lockId ?? "default");
     const durationMs = Number(payload?.durationMs ?? 3000);
     const target = payload?.target ?? null;
@@ -119,6 +109,7 @@ Hooks.once("ready", () => {
     installCameraLockOverlay(lockId);
 
     try {
+      // Wait a tick so overlay is definitely in place
       await new Promise(r => setTimeout(r, 0));
 
       if (!target || typeof target.x !== "number" || typeof target.y !== "number" || typeof target.scale !== "number") {
@@ -126,19 +117,17 @@ Hooks.once("ready", () => {
         return;
       }
 
-      const panRes = await waitForPanOrTimeout({
+      // Foundry built-in smooth pan/zoom
+      await canvas.animatePan({
         x: target.x,
         y: target.y,
         scale: target.scale,
         duration: durationMs
-      }, "BattleEnd FX listener");
+      });
 
-      if (panRes?.timedOut) {
-        console.warn(`${tag} camera pan timed out; removing lock overlay and continuing.`);
-      }
-
+      // Small hold at end for “JRPG beat”
       const holdMs = Number(payload?.holdMs ?? 500);
-      await new Promise(r => setTimeout(r, Math.max(0, holdMs)));
+      await new Promise(r => setTimeout(r, holdMs));
     } catch (err) {
       console.error(`${tag} Camera FX error:`, err);
     } finally {
@@ -170,5 +159,4 @@ Hooks.once("ready", () => {
 
   ui.notifications?.info?.("BattleEnd FX Listener installed on this client ✅");
   log("Installed. Listening on:", SOCKET_CHANNEL);
-});
-
+})();

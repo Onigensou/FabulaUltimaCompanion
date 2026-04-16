@@ -1,11 +1,3 @@
-/**
- * Macro: BattleInit — Entrance Animation Listener
- * Id: 2MCyxEAmVpKZhF7V
- * Folder: Battle Initialization
- * Type: script
- * Author: GM
- * Exported: 2026-01-07T12:52:45.423Z
- */
 // ============================================================================
 // BattleInit — Entrance Animation Listener • Foundry VTT v12
 // ----------------------------------------------------------------------------
@@ -26,9 +18,8 @@
 // - GM reveals real tokens after ACKs.
 // ============================================================================
 
-Hooks.once("ready", () => {
-
-  const DEBUG = false;
+(() => {
+  const DEBUG = true;
 
   const MODULE_ID = "fabula-ultima-companion";
   const SOCKET_CHANNEL = `module.${MODULE_ID}`;
@@ -263,58 +254,28 @@ Hooks.once("ready", () => {
     return 1 - Math.pow(1 - x, 3);
   }
 
-    function animateTween(obj, toProps, durationMs, easeFn = easeOutCubic) {
+  function animateTween(obj, toProps, durationMs, easeFn = easeOutCubic) {
     return new Promise(resolve => {
-      const ticker = canvas.app?.ticker ?? null;
       const startTime = performance.now();
-
-      let finished = false;
-      let fallbackTimer = null;
-
-      const finish = () => {
-        if (finished) return;
-        finished = true;
-
-        try {
-          if (ticker) ticker.remove(update);
-        } catch (_) {}
-
-        if (fallbackTimer) {
-          clearTimeout(fallbackTimer);
-          fallbackTimer = null;
-        }
-
-        // Snap to final values so we do not end halfway
-        for (const [key, [, to]] of Object.entries(toProps)) {
-          obj[key] = to;
-        }
-
-        resolve();
-      };
+      const ticker = canvas.app.ticker;
 
       const update = () => {
         const now = performance.now();
         const elapsed = now - startTime;
-        const t0 = Math.min(elapsed / Math.max(1, durationMs), 1);
+        const t0 = Math.min(elapsed / durationMs, 1);
         const t = easeFn(t0);
 
         for (const [key, [from, to]] of Object.entries(toProps)) {
           obj[key] = from + (to - from) * t;
         }
 
-        if (t0 >= 1) finish();
+        if (t0 >= 1) {
+          ticker.remove(update);
+          resolve();
+        }
       };
 
-      if (ticker) {
-        ticker.add(update);
-      }
-
-      // Safety fallback:
-      // if ticker/rendering stalls, still resolve after a little buffer
-      fallbackTimer = setTimeout(() => {
-        warn("animateTween fallback resolve", { durationMs });
-        finish();
-      }, Math.max(500, Number(durationMs || 0) + 750));
+      ticker.add(update);
     });
   }
 
@@ -915,5 +876,6 @@ Hooks.once("ready", () => {
     }
   });
 
+  ui.notifications?.info?.("BattleInit: Entrance Animation Listener installed ✅");
   log("Installed on channel:", SOCKET_CHANNEL);
-});
+})();

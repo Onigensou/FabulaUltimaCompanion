@@ -26,8 +26,8 @@
 // - Rank / Damage / Healing are left as dummy until you wire logic.
 // ============================================================================
 
-Hooks.once("ready", () => {
-  const DEBUG = false;
+(async () => {
+  const DEBUG = true;
   const tag = "[BattleEnd:SummaryUI:Listener]";
   const log = (...a) => DEBUG && console.log(tag, ...a);
 
@@ -232,7 +232,7 @@ Hooks.once("ready", () => {
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
-    const sleep = (ms) => new Promise(r => setTimeout(r, Math.max(0, Number(ms) || 0)));
+  const sleep = (ms) => new Promise(r => setTimeout(r, Math.max(0, Number(ms) || 0)));
 
   function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
 
@@ -256,95 +256,24 @@ Hooks.once("ready", () => {
     return clamp(t * 100, 0, 100);
   }
 
-  // ---------------------------------------------------------------------------
-  // Safe RAF tween helper
-  // - Uses requestAnimationFrame when available
-  // - But also force-finishes after duration + buffer
-  //   so background tabs cannot stall forever
-  // ---------------------------------------------------------------------------
-  function runSafeRafTween(durationMs, onUpdate, { onFinish = null, label = "rafTween" } = {}) {
-    const d = Math.max(1, Number(durationMs) || 0);
-
-    return new Promise((resolve) => {
-      let finished = false;
-      let rafId = null;
-      let timeoutId = null;
-      const start = performance.now();
-
-      const finish = () => {
-        if (finished) return;
-        finished = true;
-
-        try {
-          if (rafId != null) cancelAnimationFrame(rafId);
-        } catch (_) {}
-
-        try {
-          if (timeoutId != null) clearTimeout(timeoutId);
-        } catch (_) {}
-
-        try {
-          onUpdate(1);
-        } catch (_) {}
-
-        try {
-          if (typeof onFinish === "function") onFinish();
-        } catch (_) {}
-
-        resolve();
-      };
-
-      const tick = (now) => {
-        if (finished) return;
-
-        const u = clamp((now - start) / d, 0, 1);
-
-        try {
-          onUpdate(u);
-        } catch (err) {
-          console.warn(`${tag} ${label} frame failed:`, err);
-          finish();
-          return;
-        }
-
-        if (u >= 1) {
-          finish();
-          return;
-        }
-
-        rafId = requestAnimationFrame(tick);
-      };
-
-      rafId = requestAnimationFrame(tick);
-
-      // Background-tab safety:
-      // if RAF gets throttled/stalled, finish anyway
-      timeoutId = setTimeout(() => {
-        console.warn(`${tag} ${label} fallback resolve`);
-        finish();
-      }, d + 1200);
-    });
-  }
-
   function animateNumber(el, to, { from = 0, duration = 800, formatter = (n) => String(n) } = {}) {
-    if (!el) return Promise.resolve();
-
+    if (!el) return;
+    const start = performance.now();
     const a = Number(from) || 0;
     const b = Number(to) || 0;
 
-    return runSafeRafTween(duration, (u) => {
+    const tick = (now) => {
       if (!document.body.contains(el)) return;
-      const e = 1 - Math.pow(1 - u, 3); // easeOutCubic
+      const t = Math.min(1, (now - start) / Math.max(1, duration));
+      const e = 1 - Math.pow(1 - t, 3); // easeOutCubic
       const v = a + (b - a) * e;
+
       el.textContent = formatter(Math.round(v));
-    }, {
-      label: "animateNumber",
-      onFinish: () => {
-        if (document.body.contains(el)) {
-          el.textContent = formatter(Math.round(b));
-        }
-      }
-    });
+      if (t < 1) requestAnimationFrame(tick);
+      else el.textContent = formatter(Math.round(b));
+    };
+
+    requestAnimationFrame(tick);
   }
 
   // ---------------------------------------------------------------------------
@@ -1183,37 +1112,44 @@ Hooks.once("ready", () => {
   }
 
   async function animateSegment(card, pctFrom, pctTo, durationMs) {
+    const start = performance.now();
     const a = Number(pctFrom);
     const b = Number(pctTo);
     const d = Math.max(60, Number(durationMs));
 
-    return runSafeRafTween(d, (u) => {
-      const eased = u < 0.5
-        ? 2 * u * u
-        : 1 - Math.pow(-2 * u + 2, 2) / 2; // easeInOutQuad
+    return new Promise((resolve) => {
+      function tick(t) {
+        const u = clamp((t - start) / d, 0, 1);
+        const eased = u < 0.5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2; // easeInOutQuad
+        const v = a + (b - a) * eased;
+        setBar(card, v);
 
-      const v = a + (b - a) * eased;
-      setBar(card, v);
-    }, {
-      label: "animateSegment",
-      onFinish: () => setBar(card, b)
+        if (u >= 1) return resolve();
+        requestAnimationFrame(tick);
+      }
+      requestAnimationFrame(tick);
     });
   }
 
   async function animateCountUp(card, fromVal, toVal, durationMs) {
+    const start = performance.now();
     const a = Math.floor(Number(fromVal) || 0);
     const b = Math.floor(Number(toVal) || 0);
     const d = Math.max(120, Number(durationMs) || 600);
 
     setZenit(card, a);
 
-    return runSafeRafTween(d, (u) => {
-      const eased = 1 - Math.pow(1 - u, 3); // easeOutCubic
-      const v = Math.round(a + (b - a) * eased);
-      setZenit(card, v);
-    }, {
-      label: "animateCountUp",
-      onFinish: () => setZenit(card, b)
+    return new Promise((resolve) => {
+      function tick(t) {
+        const u = clamp((t - start) / d, 0, 1);
+        const eased = 1 - Math.pow(1 - u, 3); // easeOutCubic
+        const v = Math.round(a + (b - a) * eased);
+        setZenit(card, v);
+
+        if (u >= 1) return resolve();
+        requestAnimationFrame(tick);
+      }
+      requestAnimationFrame(tick);
     });
   }
 
@@ -1495,7 +1431,7 @@ const footerData = {
       console.error(`${tag} handler error:`, err);
     }
   });
-  
-  log("Installed. Listening on:", SOCKET_CHANNEL);
-});
 
+  ui.notifications?.info?.("BattleEnd SummaryUI Listener installed ✅");
+  log("Installed. Listening on:", SOCKET_CHANNEL);
+})();

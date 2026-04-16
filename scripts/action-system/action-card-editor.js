@@ -150,6 +150,47 @@
     }).join("");
   }
 
+    function getSelectedTargetsFromPickers(root) {
+    if (!root) return [];
+
+    const picked = [];
+    const pickNames = ["targetsHostile", "targetsNeutral", "targetsFriendly", "targetsOther"];
+
+    for (const nm of pickNames) {
+      const sel = root.querySelector(`select[name="${nm}"]`);
+      if (!sel) continue;
+
+      for (const opt of Array.from(sel.selectedOptions ?? [])) {
+        const v = String(opt?.value ?? "").trim();
+        if (v) picked.push(v);
+      }
+    }
+
+    return Array.from(new Set(picked));
+  }
+
+  function setSelectedTargetsOnPickers(root, targets = []) {
+    if (!root) return;
+
+    const wanted = new Set(
+      (Array.isArray(targets) ? targets : [])
+        .filter(Boolean)
+        .map(v => String(v).trim())
+    );
+
+    root.querySelectorAll?.("select.fu-ace-target option")?.forEach?.((opt) => {
+      const v = String(opt?.value ?? "").trim();
+      opt.selected = !!v && wanted.has(v);
+    });
+  }
+
+  function setTargetsTextarea(root, targets = []) {
+    if (!root) return;
+    const ta = root.querySelector('textarea[name="targetsText"]');
+    if (!ta) return;
+    ta.value = (Array.isArray(targets) ? targets : []).join("\n");
+  }
+
   // ---------------------------
   // Dialog builder
   // ---------------------------
@@ -300,7 +341,7 @@
         <details style="margin-top:.5rem;">
           <summary style="cursor:pointer; font-weight:800;">Advanced: UUID list override</summary>
           <div style="opacity:.8; font-size:12px; margin:.35rem 0;">
-            One UUID per line. If this box has any text, it will override the pickers above.
+            One UUID per line. This field live-syncs with the pickers above, but you can still type here manually for advanced overrides.
           </div>
           <textarea name="targetsText" rows="4" style="width:100%; padding:.35rem; border-radius:8px; border:1px solid #cfa057; resize:vertical;">${esc(targetsText)}</textarea>
         </details>
@@ -626,11 +667,43 @@
         // Force listboxes to behave (same approach as Study macro)
         const root = html?.[0];
         if (!root) return;
+
         const rows = Number(targetData?.rows ?? 6);
         root.querySelectorAll?.("select.fu-ace-target")?.forEach?.(sel => {
           const localRows = Number(sel.getAttribute("size") || rows);
           forceListboxSizing(sel, localRows);
         });
+
+        const textarea = root.querySelector('textarea[name="targetsText"]');
+        const selects = Array.from(root.querySelectorAll?.("select.fu-ace-target") ?? []);
+
+        // On open:
+        // 1) keep current target highlight in picker
+        // 2) normalize textarea to match the current picker selection
+        const initiallySelected = getSelectedTargetsFromPickers(root);
+        setSelectedTargetsOnPickers(root, initiallySelected);
+        setTargetsTextarea(root, initiallySelected);
+
+        // Picker -> textarea live sync
+        const syncTextareaFromPickers = () => {
+          const picked = getSelectedTargetsFromPickers(root);
+          setTargetsTextarea(root, picked);
+        };
+
+        // Textarea -> picker live sync
+        const syncPickersFromTextarea = () => {
+          if (!textarea) return;
+          const typed = normalizeTargetList(textarea.value);
+          setSelectedTargetsOnPickers(root, typed);
+        };
+
+        for (const sel of selects) {
+          sel.addEventListener("change", syncTextareaFromPickers);
+        }
+
+        if (textarea) {
+          textarea.addEventListener("input", syncPickersFromTextarea);
+        }
       }
     }, {
       width: 680,
