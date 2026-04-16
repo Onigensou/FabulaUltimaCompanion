@@ -348,18 +348,43 @@ Hooks.once("ready", () => {
           break;
         }
 
-        case "creature_targeted_by_action":
-        case "creature_hit_by_action": {
-          // These triggers should point at the affected target creature.
+        case "creature_targeted_by_action": {
+          // Targeted-by-action is emitted from CreateActionCard.
+          // There, the payload is target-oriented already, and there is no
+          // damage-card attacker/subject alias confusion yet.
           addUuidish(phasePayload.targetUuid);
-          addUuidish(phasePayload.subjectTokenUuid);
           addManyUuidish(phasePayload.targets);
 
           if (!subjects.length) {
             const t1 = findTokenByActorUuidInCombat(combat, phasePayload.targetActorUuid);
-            const t2 = findTokenByActorUuidInCombat(combat, phasePayload.subjectActorUuid);
             if (t1) addToken(t1);
-            if (t2) addToken(t2);
+
+            if (Array.isArray(phasePayload.targetActorUuids)) {
+              for (const aUuid of phasePayload.targetActorUuids) {
+                const t = findTokenByActorUuidInCombat(combat, aUuid);
+                if (t) addToken(t);
+              }
+            }
+          }
+          break;
+        }
+
+        case "creature_hit_by_action": {
+          // IMPORTANT:
+          // For successful-hit triggers emitted from Create Damage Card,
+          // the subject must be ONLY the creature that got hit.
+          //
+          // In that payload:
+          //   - targetUuid / targetActorUuid / targets = affected creature
+          //   - subjectTokenUuid / subjectActorUuid / tokenUuid = attacker/source side
+          //
+          // So NEVER read subject/source aliases here.
+          addUuidish(phasePayload.targetUuid);
+          addManyUuidish(phasePayload.targets);
+
+          if (!subjects.length) {
+            const t1 = findTokenByActorUuidInCombat(combat, phasePayload.targetActorUuid);
+            if (t1) addToken(t1);
 
             if (Array.isArray(phasePayload.targetActorUuids)) {
               for (const aUuid of phasePayload.targetActorUuids) {
