@@ -300,30 +300,29 @@ Hooks.once("ready", () => {
     //     clear old reactions when the phase actually changes.
 
         function phaseBucketForTrigger(triggerKey) {
-  switch (triggerKey) {
-    // Action declaration / pre-resolution triggers
-    case "creature_performs_action":
-    case "creature_performs_check":
-    case "creature_targeted_by_action":
-    case "creature_miss_action":
-      return "action_phase";
+      switch (triggerKey) {
+        // All the action declaration / hit result triggers live in the Action Phase
+        case "creature_performs_action":
+        case "creature_performs_check":
+        case "creature_targeted_by_action":
+        case "creature_hit_by_action":
+        case "creature_miss_action":
+          return "action_phase";
 
-    // Resolution timing triggers
-    // NOTE:
-    // creature_hit_by_action is emitted from Create Damage Card timing,
-    // so it must live in the same bucket as the other resolution results.
-    case "creature_hit_by_action":
-    case "creature_deals_damage":
-    case "creature_takes_damage":
-    case "creature_enter_crisis":
-    case "creature_exit_crisis":
-    case "creature_defeated":
-      return "resolution_phase";
+        // All the HP/damage result triggers live in the Resolution Phase
+        case "creature_deals_damage":
+        case "creature_takes_damage":
+        case "creature_enter_crisis":
+        case "creature_exit_crisis":
+        case "creature_defeated":
+          return "resolution_phase";
 
-    default:
-      return triggerKey;
-  }
-}
+        // Everything else (start_of_turn, end_of_turn, conflict/round start/end)
+        // gets its own bucket. That means switching between them WILL clear the UI.
+        default:
+          return triggerKey;
+      }
+    }
 
     function pickPassiveEventStamp(payload = {}) {
       return String(

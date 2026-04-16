@@ -28,20 +28,19 @@ const FU_EFFECT_TOOLTIP = (() => {
     return px >= x && px <= x + w && py >= y && py <= y + h;
   }
 
-  function createState() {
-    return {
-      active: true,
-      tooltipEl: null,
-      currentHoverKey: null,
-      moveHandler: null,
-      leaveHandler: null,
-      keyHandler: null,
-      raf: null,
-      lastEvent: null,
-      descCache: new Map(),
-      board: null
-    };
-  }
+function createState() {
+  return {
+    active: true,
+    tooltipEl: null,
+    currentHoverKey: null,
+    moveHandler: null,
+    leaveHandler: null,
+    raf: null,
+    lastEvent: null,
+    descCache: new Map(),
+    board: null
+  };
+}
 
   function getTooltipEl(state) {
     if (state.tooltipEl) return state.tooltipEl;
@@ -303,10 +302,6 @@ const FU_EFFECT_TOOLTIP = (() => {
       state.board.removeEventListener("mouseleave", state.leaveHandler, true);
     }
 
-    if (state.keyHandler) {
-      window.removeEventListener("keydown", state.keyHandler, true);
-    }
-
     if (state.tooltipEl) {
       state.tooltipEl.remove();
       state.tooltipEl = null;
@@ -340,32 +335,23 @@ const FU_EFFECT_TOOLTIP = (() => {
     }
 
     function onLeave() {
-      hideTooltip(state);
-    }
+  hideTooltip(state);
+}
 
-    function onKey(ev) {
-      if (ev.key === "Escape") {
-        stop();
-        ui.notifications?.info("Effect tooltip stopped.");
-      }
-    }
+state.moveHandler = onMove;
+state.leaveHandler = onLeave;
 
-    state.moveHandler = onMove;
-    state.leaveHandler = onLeave;
-    state.keyHandler = onKey;
-
-    board.addEventListener("mousemove", state.moveHandler, true);
-    board.addEventListener("mouseleave", state.leaveHandler, true);
-    window.addEventListener("keydown", state.keyHandler, true);
+board.addEventListener("mousemove", state.moveHandler, true);
+board.addEventListener("mouseleave", state.leaveHandler, true);
 
     window[KEY] = {
       stop,
       state
     };
 
-    if (notify) {
-      ui.notifications?.info("Effect tooltip installed. Hover a token effect icon. Press ESC to stop.");
-    }
+if (notify) {
+  ui.notifications?.info("Effect tooltip installed. Hover a token effect icon.");
+}
 
     return true;
   }
