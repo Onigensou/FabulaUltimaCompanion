@@ -105,15 +105,20 @@ function swallowEvent(event, label = "EVENT", runId = "") {
   }
 }
 
+const SHOW_TARGETING_NOTIFICATIONS = false;
+
 function notifyInfo(message) {
+  if (!SHOW_TARGETING_NOTIFICATIONS) return;
   ui?.notifications?.info?.(message);
 }
 
 function notifyWarn(message) {
+  if (!SHOW_TARGETING_NOTIFICATIONS) return;
   ui?.notifications?.warn?.(message);
 }
 
 function notifyError(message) {
+  if (!SHOW_TARGETING_NOTIFICATIONS) return;
   ui?.notifications?.error?.(message);
 }
 
