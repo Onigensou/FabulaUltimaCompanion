@@ -369,6 +369,62 @@ const conditionList = [
     return "icons/svg/item-bag.svg";
   };
 
+  // Resolve which UUID should be opened when player clicks the stealable item.
+// Goal:
+// - If the loot row points to an embedded Actor.Item, redirect to the matching world Item.
+// - If it already points to a world Item, keep it.
+// - Fallback safely to the original UUID.
+const resolveStealItemOpenUuid = async (actor, entry) => {
+  const rawUuid = String(entry?.uuid ?? entry?.item_uuid ?? "").trim();
+  if (!rawUuid) return "";
+
+  try {
+    const doc = await fromUuid(rawUuid);
+    if (!doc) return rawUuid;
+
+    // Not an item? just keep original
+    if (doc.documentName !== "Item") return rawUuid;
+
+    // World item already → good
+    const parentIsActor = doc.parent?.documentName === "Actor";
+    if (!parentIsActor) return doc.uuid ?? rawUuid;
+
+    // Embedded actor item → redirect to source/base world item if possible
+    const compendiumSource = String(doc?._stats?.compendiumSource ?? "").trim();
+    if (compendiumSource.startsWith("Item.")) {
+      return compendiumSource;
+    }
+
+    // Your data also keeps the base item id in system.uniqueId
+    const uniqueId = String(doc?.system?.uniqueId ?? doc?.uniqueId ?? "").trim();
+    if (uniqueId) {
+      const exactWorldItem = game.items?.get(uniqueId);
+      if (exactWorldItem?.uuid) return exactWorldItem.uuid;
+
+      const matchByUniqueId = game.items?.find(i =>
+        String(i?.system?.uniqueId ?? i?.uniqueId ?? "").trim() === uniqueId
+      );
+      if (matchByUniqueId?.uuid) return matchByUniqueId.uuid;
+
+      // Best-effort fallback if world item exists by id
+      return `Item.${uniqueId}`;
+    }
+
+    // Last fallback: name match
+    const itemName = String(doc?.name ?? entry?.name ?? "").trim().toLowerCase();
+    if (itemName) {
+      const worldByName = game.items?.find(i =>
+        String(i?.name ?? "").trim().toLowerCase() === itemName
+      );
+      if (worldByName?.uuid) return worldByName.uuid;
+    }
+
+    return rawUuid;
+  } catch {
+    return rawUuid;
+  }
+};
+
   // v12-safe token portrait resolver
   const getTokenPortraitSrc = (token) => {
     return token?.document?.texture?.src
@@ -460,9 +516,11 @@ const conditionList = [
     const rows = steal.map((it) => {
       const iconSrc = it.img || FALLBACK_ICON;
 
-      const nameHtml = it.uuid
-        ? `<a class="content-link" data-uuid="${esc(it.uuid)}" draggable="true"><strong>${esc(it.name)}</strong></a>`
-        : `<strong>${esc(it.name)}</strong>`;
+     const linkUuid = String(it.openUuid ?? it.uuid ?? "").trim();
+
+     const nameHtml = linkUuid
+       ? `<a class="content-link" data-uuid="${esc(linkUuid)}" data-doc-uuid="${esc(linkUuid)}" draggable="true"><strong>${esc(it.name)}</strong></a>`
+       : `<strong>${esc(it.name)}</strong>`;
 
       return `
         <div class="oni-itemPill">
@@ -545,7 +603,8 @@ for (const cond of conditionList) {
     // ✅ Stealable items ALWAYS visible + real item icons
     const stealItems = readStealListFromActor(targetTok.actor);
     await Promise.all(stealItems.map(async (it) => {
-      it.img = await resolveStealItemIcon(targetTok.actor, it);
+    it.img = await resolveStealItemIcon(targetTok.actor, it);
+    it.openUuid = await resolveStealItemOpenUuid(targetTok.actor, it);
     }));
 
     const stealBlock = `
