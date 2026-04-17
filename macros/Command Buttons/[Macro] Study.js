@@ -18,13 +18,45 @@
 
   /* ───────────────────── CONSTANT MAPS ───────────────────── */
   const affinityMap  = { 1:"Physical",2:"Air",3:"Bolt",4:"Dark",5:"Earth",6:"Fire",7:"Ice",8:"Light",9:"Poison" };
-  const conditionMap = {
-    1:"Slow",2:"Dazed",3:"Weak",4:"Shaken",5:"Poisoned",6:"Enraged",7:"Silence",8:"Stagger",9:"Frightened",
-    10:"Paralyzed",11:"Confused",12:"Panic",13:"Grappled",14:"Envenomed",15:"Burn",16:"Blind",17:"Zombie",
-    18:"Wither",19:"Bleed",20:"Obscure",21:"Fatigue",22:"Charm",23:"Berserk",24:"Despair",25:"Doom",
-    26:"Bane",27:"Curse",28:"Wet",29:"Oil",30:"Petrify",31:"Hypothermia",32:"Turbulence",33:"Delayed",
-    34:"Isolate",35:"Suppress",36:"Disarmed"
-  };
+const conditionList = [
+  { key: "condition_slow",        label: "Slow" },
+  { key: "condition_dazed",       label: "Dazed" },
+  { key: "condition_weak",        label: "Weak" },
+  { key: "condition_shaken",      label: "Shaken" },
+  { key: "condition_poisoned",    label: "Poisoned" },
+  { key: "condition_enraged",     label: "Enraged" },
+  { key: "condition_silence",     label: "Silence" },
+  { key: "condition_stagger",     label: "Stagger" },
+  { key: "condition_frightened",  label: "Frightened" },
+  { key: "condition_paralyze",    label: "Paralyze" },
+  { key: "condition_confused",    label: "Confused" },
+  { key: "condition_panic",       label: "Panic" },
+  { key: "condition_grappled",    label: "Grappled" },
+  { key: "condition_envenomed",   label: "Envenomed" },
+  { key: "condition_burn",        label: "Burn" },
+  { key: "condition_blind",       label: "Blind" },
+  { key: "condition_zombie",      label: "Zombie" },
+  { key: "condition_wither",      label: "Wither" },
+  { key: "condition_bleed",       label: "Bleed" },
+  { key: "condition_obscure",     label: "Obscure" },
+  { key: "condition_fatigue",     label: "Fatigue" },
+  { key: "condition_charm",       label: "Charm" },
+  { key: "condition_berserk",     label: "Berserk" },
+  { key: "condition_despair",     label: "Despair" },
+  { key: "condition_doom",        label: "Doom" },
+  { key: "condition_bane",        label: "Bane" },
+  { key: "condition_curse",       label: "Curse" },
+  { key: "condition_wet",         label: "Wet" },
+  { key: "condition_oil",         label: "Oil" },
+  { key: "condition_petrify",     label: "Petrify" },
+  { key: "condition_hypothermia", label: "Hypothermia" },
+  { key: "condition_turbulence",  label: "Turbulence" },
+  { key: "condition_delayed",     label: "Delayed" },
+  { key: "condition_isolate",     label: "Isolate" },
+  { key: "condition_suppress",    label: "Suppress" },
+  { key: "condition_disarmed",    label: "Disarmed" },
+  { key: "condition_anomaly",     label: "Anomaly" }
+];
   const symbolMap   = { RS:"🛡️", VU:"💥", AB:"♻️", IM:"🚫" };
   const weaponTypes = ["arcane","bow","brawling","dagger","firearm","flail","heavy","spear","sword","thrown"];
   const weaponIcons = {
@@ -404,18 +436,21 @@
     return rows.length ? `<div class="oni-inlineGrid2">${rows.join("")}</div>` : `<div class="oni-muted">None</div>`;
   };
 
-  const renderConditionBadges = (conditionCodesByIdx) => {
-    const list = [];
-    for (let i = 1; i <= 36; i++) {
-      const code = conditionCodesByIdx?.[i];
-      if (!["RS","VU","AB","IM"].includes(code)) continue;
+  const renderConditionBadges = (conditionCodesByKey) => {
+  const list = [];
 
-      const name = conditionMap[i] ?? `Condition ${i}`;
-      const sym  = symbolMap[code] ?? code;
-      list.push(`<span class="oni-badge">${esc(sym)} ${esc(name)}</span>`);
-    }
-    return list.length ? `<div class="oni-badgeWrap">${list.join("")}</div>` : `<div class="oni-muted">None</div>`;
-  };
+  for (const cond of conditionList) {
+    const code = conditionCodesByKey?.[cond.key];
+    if (!["RS", "VU", "AB", "IM"].includes(code)) continue;
+
+    const sym = symbolMap[code] ?? code;
+    list.push(`<span class="oni-badge">${esc(sym)} ${esc(cond.label)}</span>`);
+  }
+
+  return list.length
+    ? `<div class="oni-badgeWrap">${list.join("")}</div>`
+    : `<div class="oni-muted">None</div>`;
+};
 
   const renderStealList = (steal) => {
     if (!steal?.length) return `<div class="oni-muted">None</div>`;
@@ -485,8 +520,10 @@
     const weaponEff = {};
     for (const wt of weaponTypes) weaponEff[wt] = p[`${wt}_ef`];
 
-    const conditionCodes = {};
-    for (let i = 1; i <= 36; i++) conditionCodes[i] = p[`condition_${i}`];
+const conditionCodes = {};
+for (const cond of conditionList) {
+  conditionCodes[cond.key] = p[cond.key];
+}
 
     const typeBox = showDetails
       ? sectionBox("Type Affinity", renderTypeAffinity(affinities))
