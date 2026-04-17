@@ -61,6 +61,66 @@
     }
   }
 
+  function isTokenUuid(v) {
+    return typeof v === "string" && /\.Token\./.test(v);
+  }
+
+  function isActorUuid(v) {
+    return typeof v === "string" && /^Actor\./.test(v);
+  }
+
+  async function resolveTokenDocFromAny(ref, actorRef = null) {
+    const directDoc = await resolveUuidDoc(ref);
+
+    if (directDoc?.documentName === "Token" || directDoc?.documentName === "TokenDocument") {
+      return directDoc;
+    }
+
+    if (directDoc?.documentName === "Actor") {
+      try {
+        const activeToken =
+          directDoc.getActiveTokens?.(true, true)?.[0] ??
+          directDoc.getActiveTokens?.()?.[0] ??
+          null;
+        if (activeToken?.document) return activeToken.document;
+      } catch (_) {}
+
+      try {
+        const protoDoc = directDoc.token?.document ?? directDoc.prototypeToken ?? null;
+        if (protoDoc?.documentName === "Token" || protoDoc?.documentName === "TokenDocument") return protoDoc;
+      } catch (_) {}
+
+      return null;
+    }
+
+    if (directDoc?.token?.document) return directDoc.token.document;
+    if (directDoc?.token?.documentName === "Token" || directDoc?.token?.documentName === "TokenDocument") return directDoc.token;
+    if (directDoc?.document?.documentName === "Token" || directDoc?.documentName === "Token") return directDoc.document ?? directDoc;
+
+    const actorDoc = actorRef ? await resolveUuidDoc(actorRef) : null;
+    const actor =
+      actorDoc?.documentName === "Actor"
+        ? actorDoc
+        : actorDoc?.actor ?? null;
+
+    if (actor) {
+      try {
+        const activeToken =
+          actor.getActiveTokens?.(true, true)?.[0] ??
+          actor.getActiveTokens?.()?.[0] ??
+          null;
+        if (activeToken?.document) return activeToken.document;
+      } catch (_) {}
+
+      try {
+        const protoDoc = actor.token?.document ?? actor.prototypeToken ?? null;
+        if (protoDoc?.documentName === "Token" || protoDoc?.documentName === "TokenDocument") return protoDoc;
+      } catch (_) {}
+    }
+
+    return null;
+  }
+
   async function emitReactionPhaseLocalOnGM(payload, traceId = TRACE_ID) {
     dbg("emitReactionPhaseLocalOnGM:begin", {
       traceId,
@@ -261,22 +321,50 @@
         (attackerDoc?.documentName === "Actor" ? attackerDoc : null) ??
         null;
 
+      const attackerTokenDoc = await resolveTokenDocFromAny(
+        attackerUuid ?? sourceUuid ?? null,
+        attackerActorUuid ?? sourceActorUuid ?? actorUuid ?? attackerActor?.uuid ?? null
+      );
+
       const targetDoc = await resolveUuidDoc(targetUuid ?? null);
       const targetActor =
         targetDoc?.actor ??
         (targetDoc?.documentName === "Actor" ? targetDoc : null) ??
         null;
 
-      const subjectTokenUuid = attackerUuid ?? sourceUuid ?? null;
+      const targetTokenDoc = await resolveTokenDocFromAny(
+        targetUuid ?? null,
+        targetActor?.uuid ?? null
+      );
+
+      const subjectTokenUuid =
+        attackerTokenDoc?.uuid ??
+        attackerTokenDoc?.document?.uuid ??
+        (isTokenUuid(attackerUuid) ? attackerUuid : null) ??
+        (isTokenUuid(sourceUuid) ? sourceUuid : null) ??
+        null;
+
       const subjectActorUuid =
         attackerActorUuid ??
         sourceActorUuid ??
         actorUuid ??
+        (isActorUuid(attackerUuid) ? attackerUuid : null) ??
+        (isActorUuid(sourceUuid) ? sourceUuid : null) ??
         attackerActor?.uuid ??
         null;
 
-      const targetTokenUuid = targetUuid ?? null;
-      const targetActorUuid = targetActor?.uuid ?? null;
+      const sourceTokenUuid = subjectTokenUuid;
+
+      const targetTokenUuid =
+        targetTokenDoc?.uuid ??
+        targetTokenDoc?.document?.uuid ??
+        (isTokenUuid(targetUuid) ? targetUuid : null) ??
+        null;
+
+      const targetActorUuid =
+        targetActor?.uuid ??
+        (targetDoc?.documentName === "Actor" ? targetDoc.uuid : null) ??
+        null;
 
       dbg("reaction-branch:resolved-context", {
         TRACE_ID,
@@ -290,6 +378,11 @@
           uuid: attackerActor.uuid ?? null,
           name: attackerActor.name ?? null
         } : null,
+        attackerTokenDoc: attackerTokenDoc ? {
+          documentName: attackerTokenDoc.documentName ?? null,
+          uuid: attackerTokenDoc.uuid ?? null,
+          name: attackerTokenDoc.name ?? null
+        } : null,
         targetDoc: targetDoc ? {
           documentName: targetDoc.documentName ?? null,
           uuid: targetDoc.uuid ?? null,
@@ -300,8 +393,14 @@
           uuid: targetActor.uuid ?? null,
           name: targetActor.name ?? null
         } : null,
+        targetTokenDoc: targetTokenDoc ? {
+          documentName: targetTokenDoc.documentName ?? null,
+          uuid: targetTokenDoc.uuid ?? null,
+          name: targetTokenDoc.name ?? null
+        } : null,
         subjectTokenUuid,
         subjectActorUuid,
+        sourceTokenUuid,
         targetTokenUuid,
         targetActorUuid
       });
@@ -314,15 +413,25 @@
         // Subject / source creature
         attackerUuid: subjectTokenUuid,
         attackerActorUuid: attackerActorUuid ?? attackerActor?.uuid ?? null,
-        sourceUuid: sourceUuid ?? subjectTokenUuid,
+
+        sourceUuid: sourceTokenUuid ?? subjectTokenUuid,
+        sourceTokenUuid: sourceTokenUuid ?? subjectTokenUuid,
         sourceActorUuid: sourceActorUuid ?? attackerActor?.uuid ?? null,
+
         tokenUuid: subjectTokenUuid,
         actorUuid: subjectActorUuid,
 
+        // Explicit subject aliases
+        subjectTokenUuid: subjectTokenUuid ?? null,
+        subjectActorUuid: subjectActorUuid ?? null,
+
         // Target context
         targetUuid: targetTokenUuid,
+        targetTokenUuid: targetTokenUuid,
         targetActorUuid,
         targets: targetTokenUuid ? [targetTokenUuid] : [],
+        targetTokenUuids: targetTokenUuid ? [targetTokenUuid] : [],
+        targetActorUuids: targetActorUuid ? [targetActorUuid] : [],
 
         // Helpful labels / metadata
         attackerName: attackerName ?? attackerActor?.name ?? null,
@@ -364,7 +473,13 @@
           ...commonPayload,
           kind: "miss_resolution",
           trigger: "creature_miss_action",
-          result: "miss"
+          result: "miss",
+
+          // Extra explicit miss semantics
+          missSourceTokenUuid: commonPayload.sourceTokenUuid ?? null,
+          missSourceActorUuid: commonPayload.sourceActorUuid ?? null,
+          missTargetTokenUuid: commonPayload.targetTokenUuid ?? null,
+          missTargetActorUuid: commonPayload.targetActorUuid ?? null
         };
 
         dbg("reaction-branch:emit-miss:payload", {
@@ -372,12 +487,43 @@
           missPayload
         });
 
-        const emitted = await emitReactionPhaseLocalOnGM(missPayload, TRACE_ID);
+        const emitted = await emitReactionPhaseLocalOnGM(missPayload, `${TRACE_ID}-miss`);
         dbg("reaction-branch:emit-miss:result", {
           TRACE_ID,
           emitted
         });
-      } else {
+            } else {
+        // Successful hit branch:
+        // this card only exists for a resolved non-miss target result,
+        // so emit the generic "got hit by an action" trigger once here.
+        if (targetTokenUuid) {
+          const hitPayload = {
+            ...commonPayload,
+            kind: "hit_resolution",
+            trigger: "creature_hit_by_action",
+            result: "hit"
+          };
+
+          dbg("reaction-branch:emit-hit:payload", {
+            TRACE_ID,
+            hitPayload
+          });
+
+          const hitEmitted = await emitReactionPhaseLocalOnGM(
+            hitPayload,
+            `${TRACE_ID}-hit`
+          );
+
+          dbg("reaction-branch:emit-hit:result", {
+            TRACE_ID,
+            hitEmitted
+          });
+        } else {
+          dbg("reaction-branch:emit-hit:skip:no-target", {
+            TRACE_ID
+          });
+        }
+
         const normalizedChangeKey = String(changeKey ?? "").trim();
         const normalizedValueType = String(valueType ?? "").trim().toLowerCase();
 
