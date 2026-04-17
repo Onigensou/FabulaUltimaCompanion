@@ -287,10 +287,10 @@ Hooks.once("ready", () => {
     //
     //   • "turn_start", "conflict_start", "round_start"  → each their own bucket
     //   • "creature_performs_check", "creature_targeted_by_action",
-    //     "creature_hit_by_action", "creature_miss_action"  → "action_phase"
-    //   • "creature_deals_damage", "creature_takes_damage",
-    //     "creature_enter_crisis", "creature_exit_crisis",
-    //     "creature_defeated"                                → "resolution_phase"
+    //     "creature_miss_action"                             → "action_phase"
+    //   • "creature_hit_by_action", "creature_deals_damage",
+    //     "creature_takes_damage", "creature_enter_crisis",
+    //     "creature_exit_crisis", "creature_defeated"       → "resolution_phase"
     //   • "turn_end", "round_end"                          → each their own bucket
     //
     // This way:
@@ -299,30 +299,28 @@ Hooks.once("ready", () => {
     //   - Moving from Start-of-turn → Action → Resolution → End-of-turn WILL
     //     clear old reactions when the phase actually changes.
 
-        function phaseBucketForTrigger(triggerKey) {
-      switch (triggerKey) {
-        // All the action declaration / hit result triggers live in the Action Phase
-        case "creature_performs_action":
-        case "creature_performs_check":
-        case "creature_targeted_by_action":
-        case "creature_hit_by_action":
-        case "creature_miss_action":
-          return "action_phase";
+       function phaseBucketForTrigger(triggerKey) {
+  switch (triggerKey) {
+    // Pure declaration / pre-resolution triggers
+    case "creature_performs_action":
+    case "creature_performs_check":
+    case "creature_targeted_by_action":
+    case "creature_miss_action":
+      return "action_phase";
 
-        // All the HP/damage result triggers live in the Resolution Phase
-        case "creature_deals_damage":
-        case "creature_takes_damage":
-        case "creature_enter_crisis":
-        case "creature_exit_crisis":
-        case "creature_defeated":
-          return "resolution_phase";
+    // Hit + damage result triggers should share the same resolution window
+    case "creature_hit_by_action":
+    case "creature_deals_damage":
+    case "creature_takes_damage":
+    case "creature_enter_crisis":
+    case "creature_exit_crisis":
+    case "creature_defeated":
+      return "resolution_phase";
 
-        // Everything else (start_of_turn, end_of_turn, conflict/round start/end)
-        // gets its own bucket. That means switching between them WILL clear the UI.
-        default:
-          return triggerKey;
-      }
-    }
+    default:
+      return triggerKey;
+  }
+}
 
     function pickPassiveEventStamp(payload = {}) {
       return String(
