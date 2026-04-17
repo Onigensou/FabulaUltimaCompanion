@@ -21,6 +21,8 @@
   if (globalThis[GLOBAL_KEY]?.installed) return;
 
   const CFG = {
+    DEBUG: false,
+
     SIZE_PX: 30,
     GAP_PX: 6,
     BASE_RIGHT_PX: 6,
@@ -41,13 +43,33 @@
   const state = {
     installed: true,
     ready: false,
+    destroyed: false,
+
     timer: null,
     chatObserver: null,
     bodyObserver: null,
-    observedChatForm: null
+    observedChatForm: null,
+    resizeHandler: null,
+
+    layoutRunCount: 0,
+    lastSchedule: null,
+    lastApply: null,
+    lastSnapshot: null
   };
 
-  const log = (...args) => console.log("[ONI ChatBtnFinalLayout]", ...args);
+  const LOG_TAG = "[ONI ChatBtnFinalLayout]";
+  const DBG_TAG = "[ONI ChatBtnFinalLayout][DBG]";
+
+  const log = (...args) => console.log(LOG_TAG, ...args);
+  const debugLog = (...args) => {
+    if (!CFG.DEBUG) return;
+    console.log(DBG_TAG, ...args);
+  };
+  const debugWarn = (...args) => {
+    if (!CFG.DEBUG) return;
+    console.warn(DBG_TAG, ...args);
+  };
+  const errorLog = (...args) => console.error(LOG_TAG, ...args);
 
   function getChatForm() {
     return document.querySelector("#chat-form");
@@ -80,6 +102,18 @@
     };
   }
 
+  function rectToPlain(rect) {
+    if (!rect) return null;
+    return {
+      left: Math.round(rect.left),
+      top: Math.round(rect.top),
+      right: Math.round(rect.right),
+      bottom: Math.round(rect.bottom),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height)
+    };
+  }
+
   function isElementVisible(el) {
     if (!(el instanceof HTMLElement)) return false;
     const cs = getComputedStyle(el);
@@ -88,6 +122,40 @@
     if (el.hidden) return false;
     return true;
   }
+
+  function nodeMatchesChatLayoutWatch(node) {
+  if (!(node instanceof HTMLElement)) return false;
+
+  if (node.id === "chat-form") return true;
+  if (node.id === "chat-message") return true;
+
+  if (getManagedIds().has(node.id)) return true;
+
+  if (node.querySelector?.("#chat-form")) return true;
+  if (node.querySelector?.("#chat-message")) return true;
+
+  for (const id of getManagedIds()) {
+    if (node.querySelector?.(`#${CSS.escape(id)}`)) return true;
+  }
+
+  return false;
+}
+
+function mutationsCouldAffectChatLayout(mutations = []) {
+  for (const m of mutations) {
+    if (nodeMatchesChatLayoutWatch(m.target)) return true;
+
+    for (const node of Array.from(m.addedNodes ?? [])) {
+      if (nodeMatchesChatLayoutWatch(node)) return true;
+    }
+
+    for (const node of Array.from(m.removedNodes ?? [])) {
+      if (nodeMatchesChatLayoutWatch(node)) return true;
+    }
+  }
+
+  return false;
+}
 
   function getManagedIds() {
     return new Set(CFG.BUTTONS.map(b => b.id));
@@ -145,18 +213,141 @@
       });
   }
 
-  function applyFinalLayout() {
+  function findPlacedOverlaps(placedRects) {
+    const overlaps = [];
+
+    for (let i = 0; i < placedRects.length; i++) {
+      for (let j = i + 1; j < placedRects.length; j++) {
+        const a = placedRects[i];
+        const b = placedRects[j];
+
+        if (!a?.rect || !b?.rect) continue;
+        if (!rectsOverlap(a.rect, b.rect)) continue;
+
+        overlaps.push({
+          a: {
+            id: a.id,
+            row: a.row,
+            col: a.col
+          },
+          b: {
+            id: b.id,
+            row: b.row,
+            col: b.col
+          }
+        });
+      }
+    }
+
+    return overlaps;
+  }
+
+  function buildSnapshot(extra = {}) {
     const chatForm = getChatForm();
     const chatMessage = getChatMessage();
-    if (!chatForm || !chatMessage) return false;
+    const activeManagedButtons = getActiveManagedButtons();
+
+    return {
+      installed: true,
+      ready: state.ready,
+      destroyed: state.destroyed,
+
+      chatFormPresent: !!chatForm,
+      chatFormId: chatForm?.id ?? null,
+      chatMessagePresent: !!chatMessage,
+      chatMessageId: chatMessage?.id ?? null,
+
+      observedChatFormId: state.observedChatForm?.id ?? null,
+      hasChatObserver: !!state.chatObserver,
+      hasBodyObserver: !!state.bodyObserver,
+      hasResizeHandler: !!state.resizeHandler,
+      timerPending: !!state.timer,
+
+      layoutRunCount: state.layoutRunCount,
+      lastSchedule: state.lastSchedule ? { ...state.lastSchedule } : null,
+      lastApply: state.lastApply ? { ...state.lastApply } : null,
+
+      activeManagedButtons: activeManagedButtons.map(entry => ({
+        id: entry.id,
+        order: entry.order,
+        gmOnly: !!entry.gmOnly,
+        present: !!entry.el,
+        right: entry.el?.style?.right ?? null,
+        bottom: entry.el?.style?.bottom ?? null
+      })),
+
+      userId: game.user?.id ?? null,
+      userName: game.user?.name ?? null,
+      isGM: !!game.user?.isGM,
+
+      ...extra
+    };
+  }
+
+  function updateSnapshot(extra = {}) {
+    state.lastSnapshot = buildSnapshot(extra);
+    return state.lastSnapshot;
+  }
+
+  function getSnapshot() {
+    return state.lastSnapshot ?? updateSnapshot();
+  }
+
+  function applyFinalLayout(meta = {}) {
+    const runId = state.layoutRunCount + 1;
+    state.layoutRunCount = runId;
+
+    const reason = String(meta.reason ?? "directApply");
+    const startedAt = Date.now();
+
+    const chatForm = getChatForm();
+    const chatMessage = getChatMessage();
+
+    if (!chatForm || !chatMessage) {
+      state.lastApply = {
+        runId,
+        reason,
+        ok: false,
+        why: "missingChatFormOrMessage",
+        startedAt,
+        finishedAt: Date.now()
+      };
+
+      const snapshot = updateSnapshot();
+      debugWarn("Layout skipped because chat form or chat message was missing.", snapshot);
+      return false;
+    }
 
     const managedButtons = getActiveManagedButtons();
-    if (!managedButtons.length) return false;
+    if (!managedButtons.length) {
+      state.lastApply = {
+        runId,
+        reason,
+        ok: false,
+        why: "noManagedButtons",
+        startedAt,
+        finishedAt: Date.now()
+      };
+
+      const snapshot = updateSnapshot();
+      debugWarn("Layout skipped because no active managed buttons were found.", snapshot);
+      return false;
+    }
 
     const chatFormRect = chatForm.getBoundingClientRect();
 
     // Reserve space for non-managed absolute UI that may also live in chat-form
     const externalObstacles = getExternalObstacles(chatForm, getManagedIds()).map(o => o.rect);
+
+    debugLog("Layout run starting.", {
+      runId,
+      reason,
+      managedButtons: managedButtons.map(entry => ({
+        id: entry.id,
+        order: entry.order
+      })),
+      externalObstacleCount: externalObstacles.length
+    });
 
     const takenRects = [...externalObstacles];
     const placedRects = [];
@@ -188,6 +379,17 @@
           col: 0,
           rect: candidateRect(chatFormRect, rightPx, bottomPx, CFG.SIZE_PX)
         };
+
+        debugWarn("No free slot found. Using fallback slot.", {
+          runId,
+          buttonId: entry.id,
+          fallback: {
+            rightPx,
+            bottomPx,
+            row: 1,
+            col: 0
+          }
+        });
       }
 
       btn.style.right = `${chosen.rightPx}px`;
@@ -221,32 +423,106 @@
       if (inset > neededInset) neededInset = inset;
     }
 
-    if (neededInset > 0) {
+    const paddingRightPx = neededInset > 0 ? Math.ceil(neededInset + 8) : 0;
+
+    if (paddingRightPx > 0) {
       chatMessage.style.setProperty(
         "padding-right",
-        `${Math.ceil(neededInset + 8)}px`,
+        `${paddingRightPx}px`,
         "important"
       );
     }
 
-    log("Final layout applied.", placedRects);
+    const overlapsAfterLayout = findPlacedOverlaps(placedRects);
+
+    state.lastApply = {
+      runId,
+      reason,
+      ok: true,
+      startedAt,
+      finishedAt: Date.now(),
+      managedButtonCount: managedButtons.length,
+      externalObstacleCount: externalObstacles.length,
+      paddingRightPx,
+      overlapsAfterLayout,
+      placedRects: placedRects.map(r => ({
+        id: r.id,
+        order: r.order,
+        row: r.row,
+        col: r.col,
+        rightPx: r.rightPx,
+        bottomPx: r.bottomPx,
+        rect: rectToPlain(r.rect)
+      }))
+    };
+
+    const snapshot = updateSnapshot();
+
+    if (overlapsAfterLayout.length > 0) {
+      debugWarn("Overlap detected after final layout.", {
+        runId,
+        reason,
+        overlapsAfterLayout
+      });
+    }
+
+    debugLog("Final layout applied.", snapshot);
     return true;
   }
 
-  function scheduleLayout(delay = 0) {
-    if (state.timer) clearTimeout(state.timer);
+  function scheduleLayout(delay = 0, meta = {}) {
+    if (state.destroyed) {
+      debugWarn("scheduleLayout ignored because manager is destroyed.", {
+        delay,
+        meta
+      });
+      return false;
+    }
+
+    const cleanDelay = Math.max(0, Number(delay) || 0);
+    const reason = String(meta.reason ?? "scheduled");
+
+    if (state.timer) {
+      clearTimeout(state.timer);
+      state.timer = null;
+
+      debugLog("Cleared previous pending layout timer before rescheduling.", {
+        reason,
+        delay: cleanDelay
+      });
+    }
+
+    state.lastSchedule = {
+      reason,
+      delay: cleanDelay,
+      scheduledAt: Date.now()
+    };
+    updateSnapshot();
+
+    debugLog("Layout scheduled.", state.lastSchedule);
 
     state.timer = setTimeout(() => {
       state.timer = null;
-      applyFinalLayout();
-    }, Math.max(0, Number(delay) || 0));
+      applyFinalLayout({ reason });
+    }, cleanDelay);
+
+    return true;
+  }
+
+  function requestLayout(reason = "manual", delay = 0) {
+    return scheduleLayout(delay, { reason });
   }
 
   function observeChatForm() {
     const chatForm = getChatForm();
-    if (!chatForm) return false;
+    if (!chatForm) {
+      debugWarn("observeChatForm could not find #chat-form.");
+      return false;
+    }
 
-    if (state.observedChatForm === chatForm && state.chatObserver) return true;
+    if (state.observedChatForm === chatForm && state.chatObserver) {
+      return true;
+    }
 
     if (state.chatObserver) {
       try {
@@ -257,8 +533,11 @@
 
     state.observedChatForm = chatForm;
 
-    state.chatObserver = new MutationObserver(() => {
-      scheduleLayout(20);
+    state.chatObserver = new MutationObserver((mutations) => {
+      debugLog("Chat form mutation observed.", {
+        mutationCount: mutations?.length ?? 0
+      });
+      requestLayout("chatFormMutation", 20);
     });
 
     state.chatObserver.observe(chatForm, {
@@ -268,24 +547,81 @@
       attributeFilter: ["style", "class", "hidden"]
     });
 
+    debugLog("Attached chat form observer.", {
+      chatFormId: chatForm.id ?? null
+    });
+
+    updateSnapshot();
     return true;
   }
 
   function observeBodyForChatReplacement() {
-    if (state.bodyObserver) return;
+    if (state.bodyObserver) return true;
 
-    state.bodyObserver = new MutationObserver(() => {
-      observeChatForm();
-      scheduleLayout(20);
+    state.bodyObserver = new MutationObserver((mutations) => {
+  const currentChatForm = getChatForm();
+  const observedStillValid =
+    !!state.observedChatForm &&
+    state.observedChatForm.isConnected &&
+    currentChatForm === state.observedChatForm;
+
+  // Normal case: chat-form is still the same live element.
+  // Ignore unrelated body churn from other modules/apps.
+  if (observedStillValid) {
+    const relevant = mutationsCouldAffectChatLayout(mutations);
+    if (!relevant) return;
+
+    debugLog("Relevant body mutation observed for chat layout.", {
+      mutationCount: mutations?.length ?? 0
     });
+
+    requestLayout("bodyRelevantMutation", 40);
+    return;
+  }
+
+  // Only when chat-form is missing/replaced do we use body observer
+  // as a recovery path.
+  debugLog("Body observer detected possible chat-form replacement.", {
+    mutationCount: mutations?.length ?? 0,
+    hadObservedChatForm: !!state.observedChatForm,
+    observedConnected: !!state.observedChatForm?.isConnected,
+    currentChatFormId: currentChatForm?.id ?? null
+  });
+
+  const attached = observeChatForm();
+  if (attached) {
+    requestLayout("bodyChatFormRecovered", 40);
+  }
+});
 
     state.bodyObserver.observe(document.body, {
       childList: true,
       subtree: true
     });
+
+    debugLog("Attached body observer for chat replacement.");
+    updateSnapshot();
+    return true;
+  }
+
+  function installResizeListener() {
+    if (state.resizeHandler) return true;
+
+    state.resizeHandler = () => {
+      debugLog("Window resize observed.");
+      requestLayout("windowResize", 30);
+    };
+
+    window.addEventListener("resize", state.resizeHandler, { passive: true });
+
+    debugLog("Attached window resize listener.");
+    updateSnapshot();
+    return true;
   }
 
   function destroy() {
+    state.destroyed = true;
+
     if (state.timer) {
       clearTimeout(state.timer);
       state.timer = null;
@@ -294,19 +630,38 @@
     try {
       state.chatObserver?.disconnect();
     } catch (_) {}
+
     try {
       state.bodyObserver?.disconnect();
     } catch (_) {}
 
+    if (state.resizeHandler) {
+      try {
+        window.removeEventListener("resize", state.resizeHandler);
+      } catch (_) {}
+    }
+
     state.chatObserver = null;
     state.bodyObserver = null;
+    state.resizeHandler = null;
     state.observedChatForm = null;
+
+    updateSnapshot();
+    debugLog("Final layout manager destroyed.");
   }
 
   const api = {
     installed: true,
+    CFG,
+
     applyFinalLayout,
     scheduleLayout,
+    requestLayout,
+
+    observeChatForm,
+    observeBodyForChatReplacement,
+
+    getSnapshot,
     destroy
   };
 
@@ -315,24 +670,28 @@
   Hooks.once("ready", () => {
     observeChatForm();
     observeBodyForChatReplacement();
+    installResizeListener();
 
-    scheduleLayout(0);
-    scheduleLayout(100);
-    scheduleLayout(300);
+    requestLayout("readyImmediate", 0);
+    requestLayout("readyWarmup100", 100);
+    requestLayout("readyWarmup300", 300);
 
     state.ready = true;
+    updateSnapshot();
+
     log("Ready.");
+    debugLog("Ready snapshot.", getSnapshot());
   });
 
-  Hooks.on("renderSidebarTab", () => {
+  Hooks.on("renderSidebarTab", (app) => {
+    debugLog("renderSidebarTab observed.", {
+      appId: app?.id ?? app?.options?.id ?? null
+    });
+
     observeChatForm();
-    scheduleLayout(30);
-    scheduleLayout(120);
+    requestLayout("renderSidebarTab30", 30);
+    requestLayout("renderSidebarTab120", 120);
   });
-
-  window.addEventListener("resize", () => {
-    scheduleLayout(30);
-  }, { passive: true });
 
   Hooks.once("shutdown", () => {
     destroy();

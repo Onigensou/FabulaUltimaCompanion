@@ -4,60 +4,98 @@
 // Adds a GM-only icon button to the bottom-right of the chat input bar.
 // Click => opens "Scene Network Switcher" dialog (reads current scene links).
 //
-// NEW: Auto-dock placement to avoid overlapping other chat-bar buttons.
-// - Scans existing absolute-position UI in #chat-form
-// - Places the door button in the first free "slot" (col/row grid)
-// - Adjusts #chat-message padding-right ONLY if needed (and only for GM)
-//
-// Data source (current scene):
-// flags.fabula-ultima-companion.oniFabula.sceneNetwork  (JSON string)
-// Example: [{"name":"Overworld","id":"Scene.xxxxxx"}, ...]
-//
-// Switch behavior:
-// - Preload scene first: await game.scenes.preload(targetScene.id)
-// - Activate scene:      await targetScene.activate()   (switches all clients)
-// - View on GM:          await targetScene.view()
+// Refactor note:
+// - This file NO LONGER performs self-layout
+// - Shared positioning is handled only by chat-button-final-layout.js
 // ============================================================================
 
 (() => {
+  const GLOBAL_KEY = "__ONI_CHAT_SCENE_NETWORK_BUTTON__";
+  if (globalThis[GLOBAL_KEY]?.installed) return;
+
   const CFG = {
+    DEBUG: false,
+
     MODULE_ID: "fabula-ultima-companion",
 
     BUTTON_ID: "oni-chat-scene-network-btn",
     STYLE_ID: "oni-chat-scene-network-btn-style",
 
-    // Door icon requested by Oni
     IMG_URL: "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Item%20Icon/door.png",
 
-    // Chat bar button size/spacing
     SIZE_PX: 30,
-    GAP_PX: 6,
-
-    // Anchor (bottom-right base point)
     BASE_RIGHT_PX: 6,
     BASE_BOTTOM_PX: 6,
 
-    // How many "slots" we try before giving up
-    MAX_COLS: 10,
-    MAX_ROWS: 4,
-
-    // Preload + switch settings
     USE_PRELOAD: true,
     PRELOAD_NOTIFY: false,
     PRELOAD_PAUSE_MS: 150,
 
-    // Dialog sizing
     DIALOG_WIDTH: 980,
     GRID_MAX_HEIGHT: 680
   };
 
-  const log = (...args) => console.log("[ONI SceneNetBtn]", ...args);
+  const state = {
+    installed: true,
+    ready: false
+  };
+
+  const LOG_TAG = "[ONI SceneNetBtn]";
+  const DBG_TAG = "[ONI SceneNetBtn][DBG]";
+
+  const log = (...args) => console.log(LOG_TAG, ...args);
+  const debugLog = (...args) => {
+    if (!CFG.DEBUG) return;
+    console.log(DBG_TAG, ...args);
+  };
+  const debugWarn = (...args) => {
+    if (!CFG.DEBUG) return;
+    console.warn(DBG_TAG, ...args);
+  };
+
+  function getChatForm() {
+    return document.querySelector("#chat-form");
+  }
+
+  function getLayoutManager() {
+    return globalThis.__ONI_CHAT_BUTTON_FINAL_LAYOUT__ ?? null;
+  }
+
+  function requestSharedLayout(reason = "manual", delay = 0) {
+    const manager = getLayoutManager();
+
+    if (!manager) {
+      debugWarn("Shared layout manager not found.", { reason, delay });
+      return false;
+    }
+
+    if (typeof manager.requestLayout === "function") {
+      debugLog("Requesting shared layout via requestLayout().", { reason, delay });
+      return manager.requestLayout(reason, delay);
+    }
+
+    if (typeof manager.scheduleLayout === "function") {
+      debugLog("Requesting shared layout via scheduleLayout().", { reason, delay });
+      return manager.scheduleLayout(delay, { reason });
+    }
+
+    debugWarn("Shared layout manager found, but no request API was available.", {
+      reason,
+      delay,
+      managerKeys: Object.keys(manager)
+    });
+
+    return false;
+  }
 
   // ---------------------------------------------------------------------------
   // CSS
   // ---------------------------------------------------------------------------
   function injectCss() {
-    if (document.getElementById(CFG.STYLE_ID)) return;
+    if (document.getElementById(CFG.STYLE_ID)) {
+      debugLog("CSS already present.");
+      return;
+    }
 
     const style = document.createElement("style");
     style.id = CFG.STYLE_ID;
@@ -66,12 +104,14 @@
 #chat-form { position: relative; }
 
 #${CFG.BUTTON_ID} {
-  width: ${CFG.SIZE_PX}px; height: ${CFG.SIZE_PX}px;
-  min-width: ${CFG.SIZE_PX}px; min-height: ${CFG.SIZE_PX}px;
+  width: ${CFG.SIZE_PX}px;
+  height: ${CFG.SIZE_PX}px;
+  min-width: ${CFG.SIZE_PX}px;
+  min-height: ${CFG.SIZE_PX}px;
 
   position: absolute;
-  right: ${CFG.BASE_RIGHT_PX}px;   /* will be overridden by JS auto-dock */
-  bottom: ${CFG.BASE_BOTTOM_PX}px; /* will be overridden by JS auto-dock */
+  right: ${CFG.BASE_RIGHT_PX}px;
+  bottom: ${CFG.BASE_BOTTOM_PX}px;
   z-index: 20;
 
   display: inline-flex;
@@ -93,7 +133,9 @@
   background: rgba(0,0,0,0.48);
 }
 
-#${CFG.BUTTON_ID}:active { transform: translateY(1px); }
+#${CFG.BUTTON_ID}:active {
+  transform: translateY(1px);
+}
 
 #${CFG.BUTTON_ID} img {
   width: 22px;
@@ -103,146 +145,29 @@
 }
 `;
     document.head.appendChild(style);
-  }
-
-  // ---------------------------------------------------------------------------
-  // Auto-dock logic (avoid overlap)
-  // ---------------------------------------------------------------------------
-  function rectsOverlap(a, b) {
-    return !(a.right <= b.left || a.left >= b.right || a.bottom <= b.top || a.top >= b.bottom);
-  }
-
-  function getAbsoluteObstacles(chatForm, ignoreIds = new Set()) {
-    const obstacles = [];
-    const formRect = chatForm.getBoundingClientRect();
-
-    // Find elements inside chatForm that are "button-like" and absolute-positioned
-    const all = Array.from(chatForm.querySelectorAll("*"));
-
-    for (const el of all) {
-      if (!(el instanceof HTMLElement)) continue;
-
-      if (ignoreIds.has(el.id)) continue;
-
-      // Skip the input itself
-      if (el.id === "chat-message") continue;
-
-      const cs = getComputedStyle(el);
-      if (cs.display === "none" || cs.visibility === "hidden") continue;
-      if (cs.position !== "absolute") continue;
-
-      const r = el.getBoundingClientRect();
-
-      // Ignore tiny stuff / weird elements
-      const w = r.width;
-      const h = r.height;
-      if (w < 18 || h < 18) continue;
-      if (w > 80 || h > 80) continue;
-
-      // Must be near the bottom-right area of chat-form (so we don't treat random abs elements elsewhere)
-      const nearRight = (formRect.right - r.right) < 220;
-      const nearBottom = (formRect.bottom - r.bottom) < 220;
-      if (!nearRight || !nearBottom) continue;
-
-      obstacles.push({ el, rect: r });
-    }
-
-    return obstacles;
-  }
-
-  function candidateRect(chatFormRect, rightPx, bottomPx, sizePx) {
-    const left = chatFormRect.right - rightPx - sizePx;
-    const top = chatFormRect.bottom - bottomPx - sizePx;
-    return {
-      left,
-      top,
-      right: left + sizePx,
-      bottom: top + sizePx,
-      width: sizePx,
-      height: sizePx
-    };
-  }
-
-  function autoDockButton() {
-    if (!game.user?.isGM) return;
-
-    const chatForm = document.querySelector("#chat-form");
-    const btn = document.getElementById(CFG.BUTTON_ID);
-    const chatMessage = document.querySelector("#chat-message");
-    if (!chatForm || !btn || !chatMessage) return;
-
-    // Ensure the button is measurable (must be in DOM first)
-    const chatFormRect = chatForm.getBoundingClientRect();
-
-    // Collect obstacles (including other custom buttons)
-    const ignore = new Set([CFG.BUTTON_ID]);
-    const obstacles = getAbsoluteObstacles(chatForm, ignore).map(o => o.rect);
-
-    // Try parking slots from bottom-right going left, then up
-    let chosen = null;
-
-    for (let row = 0; row < CFG.MAX_ROWS && !chosen; row++) {
-      for (let col = 0; col < CFG.MAX_COLS && !chosen; col++) {
-        const rightPx = CFG.BASE_RIGHT_PX + col * (CFG.SIZE_PX + CFG.GAP_PX);
-        const bottomPx = CFG.BASE_BOTTOM_PX + row * (CFG.SIZE_PX + CFG.GAP_PX);
-        const cand = candidateRect(chatFormRect, rightPx, bottomPx, CFG.SIZE_PX);
-
-        const overlaps = obstacles.some(o => rectsOverlap(cand, o));
-        if (!overlaps) {
-          chosen = { rightPx, bottomPx, rect: cand, row, col };
-        }
-      }
-    }
-
-    // Fallback if somehow everything is packed
-    if (!chosen) {
-      chosen = {
-        rightPx: CFG.BASE_RIGHT_PX,
-        bottomPx: CFG.BASE_BOTTOM_PX + (CFG.SIZE_PX + CFG.GAP_PX),
-        rect: candidateRect(chatFormRect, CFG.BASE_RIGHT_PX, CFG.BASE_BOTTOM_PX + (CFG.SIZE_PX + CFG.GAP_PX), CFG.SIZE_PX),
-        row: 1,
-        col: 0
-      };
-    }
-
-    // Apply position
-    btn.style.right = `${chosen.rightPx}px`;
-    btn.style.bottom = `${chosen.bottomPx}px`;
-
-    // Now adjust typing padding ONLY if any obstacle overlaps the input vertically
-    // (including our button if it sits over the input)
-    const inputRect = chatMessage.getBoundingClientRect();
-    const updatedObstacles = getAbsoluteObstacles(chatForm, new Set()).map(o => o.rect);
-
-    const relevant = updatedObstacles.filter(r => {
-      const verticalOverlap = !(r.bottom <= inputRect.top || r.top >= inputRect.bottom);
-      return verticalOverlap;
-    });
-
-    let neededInset = 0;
-    for (const r of relevant) {
-      // How far from the right edge is the left side of this obstacle
-      const inset = chatFormRect.right - r.left;
-      if (inset > neededInset) neededInset = inset;
-    }
-
-    if (neededInset > 0) {
-      // Add a little breathing room
-      const finalPad = Math.ceil(neededInset + 8);
-      chatMessage.style.setProperty("padding-right", `${finalPad}px`, "important");
-    }
+    debugLog("Injected CSS.");
   }
 
   // ---------------------------------------------------------------------------
   // Button injection (GM only)
   // ---------------------------------------------------------------------------
   function ensureButton() {
-    if (!game.user?.isGM) return false;
+    if (!game.user?.isGM) {
+      debugWarn("ensureButton() ignored because current user is not GM.");
+      return false;
+    }
 
-    if (document.getElementById(CFG.BUTTON_ID)) return true;
+    const existing = document.getElementById(CFG.BUTTON_ID);
+    if (existing) {
+      debugLog("Button already exists.");
+      return true;
+    }
 
-    const chatForm = document.querySelector("#chat-form");
-    if (!chatForm) return false;
+    const chatForm = getChatForm();
+    if (!chatForm) {
+      debugWarn("ensureButton() failed because #chat-form was not found.");
+      return false;
+    }
 
     const btn = document.createElement("button");
     btn.type = "button";
@@ -259,21 +184,31 @@
 
     chatForm.appendChild(btn);
 
-    // After it exists, dock it
-    autoDockButton();
+    debugLog("Button created and appended.", {
+      buttonId: CFG.BUTTON_ID,
+      chatFormId: chatForm.id ?? null
+    });
+
     return true;
   }
 
   function installOrReattach() {
-    if (!game.user?.isGM) return;
+    if (!game.user?.isGM) return false;
+
     injectCss();
+
     const ok = ensureButton();
-    if (ok) {
-      // Re-dock after a tick in case other modules inject after us
-      setTimeout(() => autoDockButton(), 50);
-      setTimeout(() => autoDockButton(), 250);
-      log("Button ready (auto-docked).");
+    if (!ok) {
+      debugWarn("installOrReattach() aborted because button could not be ensured.");
+      return false;
     }
+
+    requestSharedLayout("sceneNetworkButtonInstallImmediate", 0);
+    requestSharedLayout("sceneNetworkButtonInstallWarm50", 50);
+    requestSharedLayout("sceneNetworkButtonInstallWarm150", 150);
+
+    log("Button ready (shared-layout mode).");
+    return true;
   }
 
   // ---------------------------------------------------------------------------
@@ -285,6 +220,7 @@
     const currentScene = canvas?.scene;
     if (!currentScene) {
       ui.notifications?.error?.("Scene Network: No active scene found.");
+      debugWarn("Open failed because there is no active scene.");
       return;
     }
 
@@ -306,6 +242,10 @@
 
     if (!links.length) {
       ui.notifications?.info?.("Scene Network: No linked scenes found on this scene.");
+      debugLog("No linked scenes found for current scene.", {
+        currentSceneId: currentScene.id ?? null,
+        currentSceneName: currentScene.name ?? null
+      });
       return;
     }
 
@@ -318,7 +258,7 @@
           const doc = await fromUuid(id);
           if (doc?.documentName === "Scene") return doc;
         }
-      } catch (e) {}
+      } catch (_) {}
 
       const byId = game.scenes?.get(id);
       if (byId) return byId;
@@ -355,6 +295,13 @@
         ok: !!target
       });
     }
+
+    debugLog("Resolved scene network entries.", {
+      currentSceneId: currentScene.id ?? null,
+      currentSceneName: currentScene.name ?? null,
+      totalLinks: links.length,
+      resolvedCount: resolved.filter(r => r.ok).length
+    });
 
     if (!resolved.some(r => r.ok)) {
       ui.notifications?.error?.("Scene Network: None of the linked IDs match any Scene.");
@@ -492,6 +439,13 @@
 
             const targetScene = entry.scene;
 
+            debugLog("Scene switch requested.", {
+              fromSceneId: currentScene.id ?? null,
+              fromSceneName: currentScene.name ?? null,
+              targetSceneId: targetScene.id ?? null,
+              targetSceneName: targetScene.name ?? null
+            });
+
             if (CFG.USE_PRELOAD) {
               try {
                 if (CFG.PRELOAD_NOTIFY) ui.notifications?.info?.(`Preloading: ${targetScene.name}…`);
@@ -507,6 +461,11 @@
               await targetScene.activate();
               await targetScene.view();
               ui.notifications?.info?.(`Switched to: ${targetScene.name}`);
+
+              debugLog("Scene switch completed.", {
+                targetSceneId: targetScene.id ?? null,
+                targetSceneName: targetScene.name ?? null
+              });
             } catch (e) {
               console.error("[SceneNetworkSwitcher] Activate/View failed:", e);
               ui.notifications?.error?.("Failed to switch scenes. Check console.");
@@ -540,27 +499,63 @@
     dlg.render(true);
   }
 
+  function destroy() {
+    try {
+      document.getElementById(CFG.BUTTON_ID)?.remove();
+    } catch (_) {}
+
+    debugLog("Button destroyed.");
+  }
+
+  function getSnapshot() {
+    const btn = document.getElementById(CFG.BUTTON_ID);
+
+    return {
+      installed: true,
+      ready: state.ready,
+      isGM: !!game.user?.isGM,
+      buttonPresent: !!btn,
+      buttonId: CFG.BUTTON_ID,
+      buttonRight: btn?.style?.right ?? null,
+      buttonBottom: btn?.style?.bottom ?? null,
+      hasLayoutManager: !!getLayoutManager()
+    };
+  }
+
+  const api = {
+    installed: true,
+    CFG,
+
+    installOrReattach,
+    requestSharedLayout,
+    openSceneNetworkSwitcher,
+    destroy,
+    getSnapshot
+  };
+
+  globalThis[GLOBAL_KEY] = api;
+
   // ---------------------------------------------------------------------------
   // Hooks
   // ---------------------------------------------------------------------------
   Hooks.once("ready", () => {
     if (!game.user?.isGM) return;
-    installOrReattach();
 
-    // expose for debug / other scripts
+    installOrReattach();
+    state.ready = true;
+
     window.oni = window.oni || {};
     window.oni.SceneNetworkSwitcher = { open: openSceneNetworkSwitcher };
+
+    debugLog("Ready snapshot.", getSnapshot());
   });
 
   Hooks.on("renderSidebarTab", () => {
-    // Re-attach on chat re-render
     if (!game.user?.isGM) return;
     installOrReattach();
   });
 
-  // Also re-dock when the sidebar is resized (this prevents new overlaps)
-  window.addEventListener("resize", () => {
-    if (!game.user?.isGM) return;
-    setTimeout(() => autoDockButton(), 50);
+  Hooks.once("shutdown", () => {
+    destroy();
   });
 })();

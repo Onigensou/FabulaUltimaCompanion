@@ -3,176 +3,88 @@
 // ----------------------------------------------------------------------------
 // Adds an icon button to the bottom-right of the chat input bar.
 // Click => calls window["oni.TradeStartTrade"].startTrade()
-// (This is the same entrypoint described in your Item Trading docs.)
+//
+// Refactor note:
+// - This file NO LONGER performs self-layout
+// - Shared positioning is handled only by chat-button-final-layout.js
 // ============================================================================
 
 (() => {
+  const GLOBAL_KEY = "__ONI_CHAT_TRADE_BUTTON__";
+  if (globalThis[GLOBAL_KEY]?.installed) return;
+
   const CFG = {
-  BUTTON_ID: "oni-chat-open-trade-btn",
-  STYLE_ID: "oni-chat-open-trade-btn-style",
+    DEBUG: false,
 
-  IMG_URL:
-    "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Skill%20Icon/Elsword/Lithia/GemblissPassive1.png",
+    BUTTON_ID: "oni-chat-open-trade-btn",
+    STYLE_ID: "oni-chat-open-trade-btn-style",
 
-  // Auto-dock layout
-  SIZE_PX: 30,
-  GAP_PX: 6,
-  BASE_RIGHT_PX: 6,
-  BASE_BOTTOM_PX: 6,
-  MAX_COLS: 12,
-  MAX_ROWS: 4,
-};
+    IMG_URL:
+      "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Skill%20Icon/Elsword/Lithia/GemblissPassive1.png",
 
-  const log = (...args) => console.log("[ONI ChatTradeBtn]", ...args);
+    SIZE_PX: 30,
+    BASE_RIGHT_PX: 6,
+    BASE_BOTTOM_PX: 6
+  };
 
   const state = {
-  resizeHandler: null,
-  redockTimer: null
-};
-
-function getChatForm() {
-  return document.querySelector("#chat-form");
-}
-
-function rectsOverlap(a, b) {
-  return !(
-    a.right <= b.left ||
-    a.left >= b.right ||
-    a.bottom <= b.top ||
-    a.top >= b.bottom
-  );
-}
-
-function candidateRect(chatFormRect, rightPx, bottomPx, sizePx) {
-  const left = chatFormRect.right - rightPx - sizePx;
-  const top = chatFormRect.bottom - bottomPx - sizePx;
-
-  return {
-    left,
-    top,
-    right: left + sizePx,
-    bottom: top + sizePx,
-    width: sizePx,
-    height: sizePx
+    installed: true,
+    ready: false
   };
-}
 
-function getAbsoluteObstacles(chatForm, ignoreIds = new Set()) {
-  const obstacles = [];
-  const formRect = chatForm.getBoundingClientRect();
-  const all = Array.from(chatForm.querySelectorAll("*"));
+  const LOG_TAG = "[ONI ChatTradeBtn]";
+  const DBG_TAG = "[ONI ChatTradeBtn][DBG]";
 
-  for (const el of all) {
-    if (!(el instanceof HTMLElement)) continue;
-    if (ignoreIds.has(el.id)) continue;
-    if (el.id === "chat-message") continue;
+  const log = (...args) => console.log(LOG_TAG, ...args);
+  const debugLog = (...args) => {
+    if (!CFG.DEBUG) return;
+    console.log(DBG_TAG, ...args);
+  };
+  const debugWarn = (...args) => {
+    if (!CFG.DEBUG) return;
+    console.warn(DBG_TAG, ...args);
+  };
 
-    const cs = getComputedStyle(el);
-    if (cs.display === "none" || cs.visibility === "hidden") continue;
-    if (cs.position !== "absolute") continue;
-
-    const r = el.getBoundingClientRect();
-    const w = r.width;
-    const h = r.height;
-
-    if (w < 18 || h < 18) continue;
-    if (w > 90 || h > 90) continue;
-
-    const nearRight = (formRect.right - r.right) < 260;
-    const nearBottom = (formRect.bottom - r.bottom) < 220;
-    if (!nearRight || !nearBottom) continue;
-
-    obstacles.push({ el, rect: r });
+  function getChatForm() {
+    return document.querySelector("#chat-form");
   }
 
-  return obstacles;
-}
+  function getLayoutManager() {
+    return globalThis.__ONI_CHAT_BUTTON_FINAL_LAYOUT__ ?? null;
+  }
 
-function autoDockButton() {
-  const chatForm = getChatForm();
-  const btn = document.getElementById(CFG.BUTTON_ID);
-  const chatMessage = document.querySelector("#chat-message");
+  function requestSharedLayout(reason = "manual", delay = 0) {
+    const manager = getLayoutManager();
 
-  if (!chatForm || !btn || !chatMessage) return false;
-
-  const chatFormRect = chatForm.getBoundingClientRect();
-  const ignore = new Set([CFG.BUTTON_ID]);
-  const obstacles = getAbsoluteObstacles(chatForm, ignore).map(o => o.rect);
-
-  let chosen = null;
-
-  for (let row = 0; row < CFG.MAX_ROWS && !chosen; row++) {
-    for (let col = 0; col < CFG.MAX_COLS && !chosen; col++) {
-      const rightPx = CFG.BASE_RIGHT_PX + col * (CFG.SIZE_PX + CFG.GAP_PX);
-      const bottomPx = CFG.BASE_BOTTOM_PX + row * (CFG.SIZE_PX + CFG.GAP_PX);
-      const cand = candidateRect(chatFormRect, rightPx, bottomPx, CFG.SIZE_PX);
-
-      const overlaps = obstacles.some(o => rectsOverlap(cand, o));
-      if (!overlaps) {
-        chosen = { rightPx, bottomPx, row, col };
-      }
+    if (!manager) {
+      debugWarn("Shared layout manager not found.", { reason, delay });
+      return false;
     }
+
+    if (typeof manager.requestLayout === "function") {
+      debugLog("Requesting shared layout via requestLayout().", { reason, delay });
+      return manager.requestLayout(reason, delay);
+    }
+
+    if (typeof manager.scheduleLayout === "function") {
+      debugLog("Requesting shared layout via scheduleLayout().", { reason, delay });
+      return manager.scheduleLayout(delay, { reason });
+    }
+
+    debugWarn("Shared layout manager found, but no request API was available.", {
+      reason,
+      delay,
+      managerKeys: Object.keys(manager)
+    });
+
+    return false;
   }
-
-  if (!chosen) {
-    chosen = {
-      rightPx: CFG.BASE_RIGHT_PX,
-      bottomPx: CFG.BASE_BOTTOM_PX + (CFG.SIZE_PX + CFG.GAP_PX),
-      row: 1,
-      col: 0
-    };
-  }
-
-  btn.style.right = `${chosen.rightPx}px`;
-  btn.style.bottom = `${chosen.bottomPx}px`;
-
-  const inputRect = chatMessage.getBoundingClientRect();
-  const updatedObstacles = getAbsoluteObstacles(chatForm, new Set()).map(o => o.rect);
-
-  const relevant = updatedObstacles.filter(r => {
-    const verticalOverlap = !(
-      r.bottom <= inputRect.top ||
-      r.top >= inputRect.bottom
-    );
-    return verticalOverlap;
-  });
-
-  let neededInset = 0;
-  for (const r of relevant) {
-    const inset = chatFormRect.right - r.left;
-    if (inset > neededInset) neededInset = inset;
-  }
-
-  if (neededInset > 0) {
-    const finalPad = Math.ceil(neededInset + 8);
-    chatMessage.style.setProperty("padding-right", `${finalPad}px`, "important");
-  }
-
-  log("Auto-docked.", chosen);
-  return true;
-}
-
-function scheduleRedock(delay = 0) {
-  if (state.redockTimer) clearTimeout(state.redockTimer);
-
-  state.redockTimer = setTimeout(() => {
-    state.redockTimer = null;
-    autoDockButton();
-  }, Math.max(0, Number(delay) || 0));
-}
-
-function installResizeListener() {
-  if (state.resizeHandler) return;
-
-  state.resizeHandler = () => {
-    scheduleRedock(0);
-  };
-
-  window.addEventListener("resize", state.resizeHandler, { passive: true });
-}
 
   function injectCss() {
-    if (document.getElementById(CFG.STYLE_ID)) return;
+    if (document.getElementById(CFG.STYLE_ID)) {
+      debugLog("CSS already present.");
+      return;
+    }
 
     const style = document.createElement("style");
     style.id = CFG.STYLE_ID;
@@ -181,8 +93,10 @@ function installResizeListener() {
 #chat-form { position: relative; }
 
 #${CFG.BUTTON_ID} {
-  width: ${CFG.SIZE_PX}px; height: ${CFG.SIZE_PX}px;
-  min-width: ${CFG.SIZE_PX}px; min-height: ${CFG.SIZE_PX}px;
+  width: ${CFG.SIZE_PX}px;
+  height: ${CFG.SIZE_PX}px;
+  min-width: ${CFG.SIZE_PX}px;
+  min-height: ${CFG.SIZE_PX}px;
 
   position: absolute;
   right: ${CFG.BASE_RIGHT_PX}px;
@@ -208,7 +122,9 @@ function installResizeListener() {
   background: rgba(0,0,0,0.48);
 }
 
-#${CFG.BUTTON_ID}:active { transform: translateY(1px); }
+#${CFG.BUTTON_ID}:active {
+  transform: translateY(1px);
+}
 
 #${CFG.BUTTON_ID} img {
   width: 22px;
@@ -216,10 +132,9 @@ function installResizeListener() {
   display: block;
   pointer-events: none;
 }
-
-/* Prevent overlap with typing (3 buttons) */
 `;
     document.head.appendChild(style);
+    debugLog("Injected CSS.");
   }
 
   async function onClickTrade() {
@@ -230,16 +145,16 @@ function installResizeListener() {
         "OniTrade: StartTrade API not found. Is the module enabled / scripts loaded?"
       );
       console.error("[ONI ChatTradeBtn] Missing window['oni.TradeStartTrade'].");
+      debugWarn("Trade click failed because startTrade API was missing.");
       return;
     }
 
-    // Extra helpful debug: the docs recommend Trade_ModuleListener be installed before trading
-    // (so the socket handler exists). :contentReference[oaicite:1]{index=1}
     const listenerInstalled = !!window.__OniTradeModule__?.installed;
-    log("Click: startTrade()", { listenerInstalled });
+    debugLog("Click: startTrade()", { listenerInstalled });
 
     try {
-      await api.startTrade(); // entrypoint described in docs :contentReference[oaicite:2]{index=2}
+      await api.startTrade();
+      debugLog("Trade UI opened successfully.");
     } catch (err) {
       console.error("[ONI ChatTradeBtn] startTrade failed:", err);
       ui.notifications?.error?.("OniTrade: startTrade failed. Check console.");
@@ -247,10 +162,17 @@ function installResizeListener() {
   }
 
   function ensureButton() {
-    if (document.getElementById(CFG.BUTTON_ID)) return true;
+    const existing = document.getElementById(CFG.BUTTON_ID);
+    if (existing) {
+      debugLog("Button already exists.");
+      return true;
+    }
 
     const chatForm = getChatForm();
-    if (!chatForm) return false;
+    if (!chatForm) {
+      debugWarn("ensureButton() failed because #chat-form was not found.");
+      return false;
+    }
 
     const btn = document.createElement("button");
     btn.type = "button";
@@ -266,30 +188,81 @@ function installResizeListener() {
     btn.addEventListener("click", onClickTrade);
 
     chatForm.appendChild(btn);
+
+    debugLog("Button created and appended.", {
+      buttonId: CFG.BUTTON_ID,
+      chatFormId: chatForm.id ?? null
+    });
+
     return true;
   }
 
-function installOrReattach() {
-  injectCss();
-  const ok = ensureButton();
-  if (!ok) return false;
+  function installOrReattach() {
+    injectCss();
 
-  installResizeListener();
+    const ok = ensureButton();
+    if (!ok) {
+      debugWarn("installOrReattach() aborted because button could not be ensured.");
+      return false;
+    }
 
-  scheduleRedock(0);
-  scheduleRedock(50);
-  scheduleRedock(250);
+    requestSharedLayout("tradeButtonInstallImmediate", 0);
+    requestSharedLayout("tradeButtonInstallWarm50", 50);
+    requestSharedLayout("tradeButtonInstallWarm150", 150);
 
-  log("Button ready (auto-docked).");
-  return true;
-}
+    log("Button ready (shared-layout mode).");
+    return true;
+  }
+
+  function destroy() {
+    try {
+      document.getElementById(CFG.BUTTON_ID)?.remove();
+    } catch (_) {}
+
+    debugLog("Button destroyed.");
+  }
+
+  function getSnapshot() {
+    const btn = document.getElementById(CFG.BUTTON_ID);
+
+    return {
+      installed: true,
+      ready: state.ready,
+      buttonPresent: !!btn,
+      buttonId: CFG.BUTTON_ID,
+      userId: game.user?.id ?? null,
+      userName: game.user?.name ?? null,
+      buttonRight: btn?.style?.right ?? null,
+      buttonBottom: btn?.style?.bottom ?? null,
+      hasLayoutManager: !!getLayoutManager()
+    };
+  }
+
+  const api = {
+    installed: true,
+    CFG,
+
+    installOrReattach,
+    requestSharedLayout,
+    destroy,
+    getSnapshot
+  };
+
+  globalThis[GLOBAL_KEY] = api;
 
   Hooks.once("ready", () => {
     log("Module script loaded on ready.");
     installOrReattach();
+    state.ready = true;
+
+    debugLog("Ready snapshot.", getSnapshot());
   });
 
   Hooks.on("renderSidebarTab", () => {
     installOrReattach();
+  });
+
+  Hooks.once("shutdown", () => {
+    destroy();
   });
 })();
