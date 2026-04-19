@@ -37,8 +37,19 @@ Hooks.once("ready", () => {
   const MSG_TR_PLAY_UI = "ONI_TR_PLAY_UI";
   const MSG_TR_UI_FINISHED = "ONI_TR_UI_FINISHED";
 
-  // Only GM should actually award (players can still "install" harmlessly)
+  // Only one elected GM client should actually award.
+  // Players can still install the listener harmlessly.
   const isGM = () => !!game.user?.isGM;
+
+  function getPrimaryActiveGM() {
+    const gms = (game.users?.contents ?? []).filter((u) => u?.isGM && u?.active);
+    return gms[0] ?? null;
+  }
+
+  function isPrimaryActiveGM() {
+    const gm = getPrimaryActiveGM();
+    return !!gm && game.user?.id === gm.id;
+  }
 
   // requestId -> record
   const _records = new Map();
@@ -49,7 +60,7 @@ Hooks.once("ready", () => {
     return Number.isFinite(n) ? Math.floor(n) : fallback;
   };
 
-    const esc = (v) =>
+  const esc = (v) =>
     String(v ?? "")
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
@@ -121,9 +132,8 @@ Hooks.once("ready", () => {
     const expected = new Set(getExpectedAcks(packet));
     const finished = new Set();
 
-   const spinMs = getSpinMs(packet);
-   const timeoutMs = clamp(spinMs + 2000, 2500, 650000); // spin + buffer
-
+    const spinMs = getSpinMs(packet);
+    const timeoutMs = clamp(spinMs + 2000, 2500, 650000); // spin + buffer
 
     const rec = {
       requestId: id,
@@ -301,124 +311,135 @@ Hooks.once("ready", () => {
   }
 
   async function postAwardChatZenit({ recipientActorUuid, isPartyInventory, amount, display }) {
-  try {
-    ensureSilentAwardChatHookInstalled();
+    try {
+      ensureSilentAwardChatHookInstalled();
 
-    const amt = safeInt(amount ?? 0, 0);
-    if (amt <= 0) return;
+      const amt = safeInt(amount ?? 0, 0);
+      if (amt <= 0) return;
 
-    const zenitName = String(display?.name ?? "Zenit");
-    const zenitImg = String(display?.img ?? "icons/svg/coins.svg");
+      const zenitName = String(display?.name ?? "Zenit");
+      const zenitImg = String(display?.img ?? "icons/svg/coins.svg");
 
-    // Use the same icon styling as items (no border/outline/black square).
-    const iconHtml = buildItemIconHtml(zenitImg, zenitName);
+      // Use the same icon styling as items (no border/outline/black square).
+      const iconHtml = buildItemIconHtml(zenitImg, zenitName);
 
-    let content = "";
+      let content = "";
 
-    if (isPartyInventory) {
-      // "Obtained <icon>X Zenit" + fading line (same as item fallback)
-      content = `
-        <div style="display:flex;flex-direction:column;gap:4px;">
+      if (isPartyInventory) {
+        // "Obtained <icon>X Zenit" + fading line (same as item fallback)
+        content = `
+          <div style="display:flex;flex-direction:column;gap:4px;">
+            <span style="display:inline-flex;align-items:center;gap:6px;">
+              <b>Obtained</b> ${iconHtml} <b>${esc(amt)}</b> Zenit
+            </span>
+            <span style="opacity:0.55;font-size:12px;"><i>Moving to Party Inventory</i></span>
+          </div>
+        `.trim();
+      } else {
+        let recipientName = "";
+        try {
+          const a = recipientActorUuid ? await fromUuid(recipientActorUuid) : null;
+          recipientName = a?.name ? a.name : "";
+        } catch {}
+
+        // "<Actor name> received <zenit icon> X Zenit"
+        content = `
           <span style="display:inline-flex;align-items:center;gap:6px;">
-            <b>Obtained</b> ${iconHtml} <b>${esc(amt)}</b> Zenit
+            <b>${esc(recipientName)}</b> received ${iconHtml} <b>${esc(amt)}</b> Zenit
           </span>
-          <span style="opacity:0.55;font-size:12px;"><i>Moving to Party Inventory</i></span>
-        </div>
-      `.trim();
-    } else {
-      let recipientName = "";
-      try {
-        const a = recipientActorUuid ? await fromUuid(recipientActorUuid) : null;
-        recipientName = a?.name ? a.name : "";
-      } catch {}
-
-      // "<Actor name> received <zenit icon> X Zenit"
-      content = `
-        <span style="display:inline-flex;align-items:center;gap:6px;">
-          <b>${esc(recipientName)}</b> received ${iconHtml} <b>${esc(amt)}</b> Zenit
-        </span>
-      `.trim();
-    }
-
-    await ChatMessage.create({
-      speaker: { alias: "" },
-      content,
-      flags: {
-        [MODULE_ID]: {
-          oniTreasureAward: true
-        }
+        `.trim();
       }
-    });
+
+      await ChatMessage.create({
+        speaker: { alias: "" },
+        content,
+        flags: {
+          [MODULE_ID]: {
+            oniTreasureAward: true
+          }
+        }
+      });
     } catch (e) {
-    console.warn("[TreasureRoulette][AwardDispatcher] postAwardChatZenit failed:", e);
+      console.warn("[TreasureRoulette][AwardDispatcher] postAwardChatZenit failed:", e);
+    }
   }
-}
 
-async function postAwardChatIP({ recipientActorUuid, hasRecipient, ipDelta, display, warnNoRecipient }) {
-  try {
-    ensureSilentAwardChatHookInstalled();
+  async function postAwardChatIP({ recipientActorUuid, hasRecipient, ipDelta, display, warnNoRecipient }) {
+    try {
+      ensureSilentAwardChatHookInstalled();
 
-    const delta = safeInt(ipDelta ?? 0, 0);
+      const delta = safeInt(ipDelta ?? 0, 0);
 
-    const rowName = String(display?.name ?? "Inventory Points");
-    const rowImg = String(display?.img ?? "icons/svg/daze.svg");
+      const rowName = String(display?.name ?? "Inventory Points");
+      const rowImg = String(display?.img ?? "icons/svg/daze.svg");
 
-    const iconHtml = buildItemIconHtml(rowImg, rowName);
+      const iconHtml = buildItemIconHtml(rowImg, rowName);
 
-    let recipientName = "";
-    if (hasRecipient) {
-      try {
-        const a = recipientActorUuid ? await fromUuid(recipientActorUuid) : null;
-        recipientName = a?.name ? a.name : "";
-      } catch {}
-    }
-
-    let content = "";
-
-    if (!hasRecipient) {
-      content = `
-        <div style="display:flex;flex-direction:column;gap:4px;">
-          <span style="display:inline-flex;align-items:center;gap:6px;">
-            <b>Obtained</b> ${iconHtml} <b>+${esc(delta)}</b> IP
-          </span>
-          <span style="opacity:0.55;font-size:12px;"><i>${esc(warnNoRecipient ? "No Recipient" : "")}</i></span>
-          <span style="opacity:0.7;font-size:12px;"><i>${esc(rowName)}</i></span>
-        </div>
-      `.trim();
-    } else {
-      content = `
-        <div style="display:flex;flex-direction:column;gap:4px;">
-          <span style="display:inline-flex;align-items:center;gap:6px;">
-            <b>${esc(recipientName)}</b> received ${iconHtml} <b>+${esc(delta)}</b> IP
-          </span>
-          <span style="opacity:0.7;font-size:12px;"><i>${esc(rowName)}</i></span>
-        </div>
-      `.trim();
-    }
-
-    await ChatMessage.create({
-      speaker: { alias: "" },
-      content,
-      flags: {
-        [MODULE_ID]: {
-          oniTreasureAward: true
-        }
+      let recipientName = "";
+      if (hasRecipient) {
+        try {
+          const a = recipientActorUuid ? await fromUuid(recipientActorUuid) : null;
+          recipientName = a?.name ? a.name : "";
+        } catch {}
       }
-    });
-  } catch (e) {
-    console.warn("[TreasureRoulette][AwardDispatcher] postAwardChatIP failed:", e);
+
+      let content = "";
+
+      if (!hasRecipient) {
+        content = `
+          <div style="display:flex;flex-direction:column;gap:4px;">
+            <span style="display:inline-flex;align-items:center;gap:6px;">
+              <b>Obtained</b> ${iconHtml} <b>+${esc(delta)}</b> IP
+            </span>
+            <span style="opacity:0.55;font-size:12px;"><i>${esc(warnNoRecipient ? "No Recipient" : "")}</i></span>
+            <span style="opacity:0.7;font-size:12px;"><i>${esc(rowName)}</i></span>
+          </div>
+        `.trim();
+      } else {
+        content = `
+          <div style="display:flex;flex-direction:column;gap:4px;">
+            <span style="display:inline-flex;align-items:center;gap:6px;">
+              <b>${esc(recipientName)}</b> received ${iconHtml} <b>+${esc(delta)}</b> IP
+            </span>
+            <span style="opacity:0.7;font-size:12px;"><i>${esc(rowName)}</i></span>
+          </div>
+        `.trim();
+      }
+
+      await ChatMessage.create({
+        speaker: { alias: "" },
+        content,
+        flags: {
+          [MODULE_ID]: {
+            oniTreasureAward: true
+          }
+        }
+      });
+    } catch (e) {
+      console.warn("[TreasureRoulette][AwardDispatcher] postAwardChatIP failed:", e);
+    }
   }
-}
+
   async function doAward(rec, reason) {
     const packet = rec.packet;
 
-   if (!isGM()) {
-  console.warn("[TreasureRoulette][AwardDispatcher] Non-GM client reached award stage; skipping.", {
-    requestId: rec.requestId,
-    reason
-  });
-  return;
-}
+    if (!isGM()) {
+      console.warn("[TreasureRoulette][AwardDispatcher] Non-GM client reached award stage; skipping.", {
+        requestId: rec.requestId,
+        reason
+      });
+      return;
+    }
+
+    if (!isPrimaryActiveGM()) {
+      console.warn("[TreasureRoulette][AwardDispatcher] Secondary GM reached award stage; skipping.", {
+        requestId: rec.requestId,
+        reason,
+        localUserId: game.user?.id ?? null,
+        primaryGmUserId: getPrimaryActiveGM()?.id ?? null
+      });
+      return;
+    }
 
     // Guard: ItemTransferCore must exist
     const itc = window["oni.ItemTransferCore"];
@@ -524,40 +545,40 @@ async function postAwardChatIP({ recipientActorUuid, hasRecipient, ipDelta, disp
       return;
     }
 
-   if (kind === "zenit") {
-  const amount = safeInt(reward.amount ?? reward.quantity ?? 0, 0);
-  if (amount <= 0) {
-    console.warn("[TreasureRoulette][AwardDispatcher] Zenit reward amount <= 0; skipping.", { reward });
-    return;
-  }
+    if (kind === "zenit") {
+      const amount = safeInt(reward.amount ?? reward.quantity ?? 0, 0);
+      if (amount <= 0) {
+        console.warn("[TreasureRoulette][AwardDispatcher] Zenit reward amount <= 0; skipping.", { reward });
+        return;
+      }
 
-  // Uses your ItemTransferCore Zenit API
-  await itc.adjustZenit({
-    actorUuid: recipientActorUuid,
-    delta: amount,
-    requestedByUserId: packet?.roller?.userId ?? game.user?.id
-  });
+      // Uses your ItemTransferCore Zenit API
+      await itc.adjustZenit({
+        actorUuid: recipientActorUuid,
+        delta: amount,
+        requestedByUserId: packet?.roller?.userId ?? game.user?.id
+      });
 
-  // Mirror Item chat-card timing/formatting, but for Zenit:
-  // - Normal: "<Actor> received <icon> X Zenit"
-  // - Party Inventory (DB Actor): "Obtained <icon> X Zenit" + "Moving to Party Inventory"
-  // Icon source: same as the rolltable winner row (packet.winner.img)
-  const display = {
-    name: packet?.winner?.name ?? "Zenit",
-    img: packet?.winner?.img ?? "icons/svg/coins.svg"
-  };
+      // Mirror Item chat-card timing/formatting, but for Zenit:
+      // - Normal: "<Actor> received <icon> X Zenit"
+      // - Party Inventory (DB Actor): "Obtained <icon> X Zenit" + "Moving to Party Inventory"
+      // Icon source: same as the rolltable winner row (packet.winner.img)
+      const display = {
+        name: packet?.winner?.name ?? "Zenit",
+        img: packet?.winner?.img ?? "icons/svg/coins.svg"
+      };
 
-  await postAwardChatZenit({
-    recipientActorUuid,
-    isPartyInventory,
-    amount,
-    display
-  });
+      await postAwardChatZenit({
+        recipientActorUuid,
+        isPartyInventory,
+        amount,
+        display
+      });
 
-  return;
-}
+      return;
+    }
 
-      if (kind === "itempoint") {
+    if (kind === "itempoint") {
       // "ItemPoint" in your system = Inventory Points (IP)
       // Data lives at:
       // - current: actor.system.actor.props.current_ip
@@ -609,7 +630,7 @@ async function postAwardChatIP({ recipientActorUuid, hasRecipient, ipDelta, disp
         return;
       }
 
-            // Read current/max using resolved paths (supports different sheet templates)
+      // Read current/max using resolved paths (supports different sheet templates)
       const { cur: curRef, max: maxRef } = resolveIpPaths(actor);
 
       const cur = safeInt(curRef.value ?? 0, 0);
@@ -739,7 +760,6 @@ async function postAwardChatIP({ recipientActorUuid, hasRecipient, ipDelta, disp
     }
   }
 
-
   // ----------------------------
   // Socket listeners
   // ----------------------------
@@ -807,5 +827,8 @@ async function postAwardChatIP({ recipientActorUuid, hasRecipient, ipDelta, disp
 
   installSocketListener();
 
-console.log(`[TreasureRoulette][AwardDispatcher] Installed as window["${KEY}"]. GM=${isGM()}`);
+  console.log(
+    `[TreasureRoulette][AwardDispatcher] Installed as window["${KEY}"]. ` +
+    `GM=${isGM()} primaryGM=${isPrimaryActiveGM()} primaryGMUserId=${getPrimaryActiveGM()?.id ?? "none"}`
+  );
 });

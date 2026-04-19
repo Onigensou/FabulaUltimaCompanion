@@ -1,6 +1,8 @@
-// scripts/fabula-initiative/end-of-round.js
-// Fabula Ultima Companion — End of Round announcer (Lancer Initiative compatible)
-// Single-file install: includes Hooks.once("ready") inside this file (no main.js edits needed).
+/**
+ * scripts/fabula-initiative/end-of-round.js
+ * Fabula Ultima Companion — End of Round announcer (Lancer Initiative compatible)
+ * Single-file install: includes Hooks.once("ready") inside this file (no main.js edits needed).
+ */
 
 (() => {
   const MODULE_ID = "fabula-ultima-companion";
@@ -16,6 +18,19 @@
   const tag = (op) => `%c[${MODULE_ID}][LI-EOR][${op}]`;
   const style = "color:#7fd7ff;font-weight:700;";
   const dlog = (op, ...args) => DEBUG && console.log(tag(op), style, ...args);
+
+  // =========================================================
+  // Multi-GM authority helpers
+  // =========================================================
+  function getPrimaryActiveGM() {
+    const gms = (game.users?.contents ?? []).filter((u) => u?.isGM && u?.active);
+    return gms[0] ?? null;
+  }
+
+  function isPrimaryActiveGM() {
+    const gm = getPrimaryActiveGM();
+    return !!gm && game.user?.id === gm.id;
+  }
 
   // =========================================================
   // Summon filter helpers
@@ -68,14 +83,14 @@
   }
 
   function getGMUserIds() {
-    return game.users?.filter(u => u.isGM)?.map(u => u.id) ?? [];
+    return game.users?.filter((u) => u.isGM)?.map((u) => u.id) ?? [];
   }
 
   function getPendingActivationsTotal(combat) {
     // Lancer Initiative tracks remaining activations here:
     // flags.lancer-initiative.activations.value
     return combat.combatants.reduce((sum, c) => {
-      // NEW: Ignore Summons entirely
+      // Ignore Summons entirely
       if (isSummonCombatant(c)) return sum;
 
       const v = c.getFlag(LI, "activations.value") ?? 0;
@@ -134,8 +149,9 @@
     dlog("CHECK", "pendingTotal", pendingTotal);
     if (pendingTotal > 0) return;
 
-    // Only GM creates messages (avoid duplicates)
+    // Only the primary active GM creates messages
     if (!game.user?.isGM) return;
+    if (!isPrimaryActiveGM()) return;
 
     // Dedupe per round (world flags are always valid)
     const announced = combat.getFlag(FLAG_SCOPE, FLAG_KEY_ANNOUNCED);
@@ -224,7 +240,9 @@
 
     // Reset dedupe on new round
     Hooks.on("combatRound", async (combat) => {
-      if (!game.user?.isGM) return
+      if (!game.user?.isGM) return;
+      if (!isPrimaryActiveGM()) return;
+
       try {
         await combat.unsetFlag(FLAG_SCOPE, FLAG_KEY_ANNOUNCED);
       } catch (e) {
@@ -233,10 +251,15 @@
     });
 
     ui.notifications?.info("[FabulaUltimaCompanion] End of Round announcer installed.");
-    dlog("INSTALL", "Installed hooks");
+    dlog("INSTALL", "Installed hooks", {
+      localUserId: game.user?.id ?? null,
+      isGM: !!game.user?.isGM,
+      primaryGmUserId: getPrimaryActiveGM()?.id ?? null,
+      isPrimaryActiveGM: isPrimaryActiveGM()
+    });
   }
 
-  // ✅ Single-file module install point
+  // Single-file module install point
   Hooks.once("ready", () => {
     try {
       install();

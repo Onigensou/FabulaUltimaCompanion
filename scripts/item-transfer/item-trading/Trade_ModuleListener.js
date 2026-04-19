@@ -59,6 +59,16 @@
 
     const isGM = () => game.user?.isGM;
 
+    function getPrimaryActiveGM() {
+      const gms = (game.users?.contents ?? []).filter((u) => u?.isGM && u?.active);
+      return gms[0] ?? null;
+    }
+
+    function isPrimaryActiveGM() {
+      const gm = getPrimaryActiveGM();
+      return !!gm && game.user?.id === gm.id;
+    }
+
     // Small HTML escaper for dialog text
     const esc = (v) =>
       String(v ?? "")
@@ -76,6 +86,10 @@
       game.user.id,
       "isGM:",
       game.user.isGM,
+      "primaryGM:",
+      getPrimaryActiveGM()?.id ?? "none",
+      "isPrimaryActiveGM:",
+      isPrimaryActiveGM(),
       "==="
     );
 
@@ -181,9 +195,17 @@
     async function handleTradeRequest(payload) {
       console.log("[OniTrade] handleTradeRequest on user", game.user.id, "payload:", payload);
 
-      // Only GM should process this message.
+      // Only the PRIMARY active GM should process this message.
       if (!isGM()) {
         console.log("[OniTrade] This user is not GM; ignoring OniTrade_Request.");
+        return;
+      }
+
+      if (!isPrimaryActiveGM()) {
+        console.log("[OniTrade] This GM is not the primary active GM; ignoring OniTrade_Request.", {
+          localUserId: game.user.id,
+          primaryGmUserId: getPrimaryActiveGM()?.id ?? null
+        });
         return;
       }
 
@@ -251,7 +273,7 @@
       }
 
       console.log(
-        "[OniTrade] GM accepted OniTrade_Request, will ask target to confirm.",
+        "[OniTrade] Primary GM accepted OniTrade_Request, will ask target to confirm.",
         { requestId, initiatorUserId, targetUserId }
       );
 
@@ -393,9 +415,17 @@
     async function handleTargetResponse(payload) {
       console.log("[OniTrade] handleTargetResponse on user", game.user.id, "payload:", payload);
 
-      // Only GM should process this message.
+      // Only the PRIMARY active GM should process this message.
       if (!isGM()) {
         console.log("[OniTrade] This user is not GM; ignoring OniTrade_TargetResponse.");
+        return;
+      }
+
+      if (!isPrimaryActiveGM()) {
+        console.log("[OniTrade] This GM is not the primary active GM; ignoring OniTrade_TargetResponse.", {
+          localUserId: game.user.id,
+          primaryGmUserId: getPrimaryActiveGM()?.id ?? null
+        });
         return;
       }
 

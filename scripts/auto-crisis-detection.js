@@ -19,6 +19,16 @@
   // ---------------------------------------------------------------------------
   const SOCKET = `module.${MODULE_ID}`;
 
+  function getPrimaryActiveGM() {
+    const gms = (game.users?.contents ?? []).filter(u => u?.isGM && u?.active);
+    return gms[0] ?? null;
+  }
+
+  function isPrimaryActiveGM() {
+    const gm = getPrimaryActiveGM();
+    return !!gm && game.user?.id === gm.id;
+  }
+
   // Dedupe cache on GM: key -> timestamp
   const _gmDedupe = new Map();
   const DEDUPE_WINDOW_MS = 1500;
@@ -282,15 +292,21 @@
   }
 
   Hooks.once("ready", () => {
-    log("Loaded.");
+    log("Loaded.", {
+      localUserId: game.user?.id ?? null,
+      isGM: !!game.user?.isGM,
+      primaryGmUserId: getPrimaryActiveGM()?.id ?? null,
+      isPrimaryActiveGM: isPrimaryActiveGM()
+    });
 
     // -------------------------------------------------------------------------
-    // GM socket receiver: GM is the only one who applies/removes Crisis effects
-    // and emits crisis enter/exit reaction triggers.
+    // GM socket receiver: ONLY the primary active GM applies/removes Crisis
+    // effects and emits crisis enter/exit reaction triggers.
     // -------------------------------------------------------------------------
     game.socket.on(SOCKET, async (msg) => {
       try {
-        if (!game.user.isGM) return;
+        if (!game.user?.isGM) return;
+        if (!isPrimaryActiveGM()) return;
         if (!msg || msg.type !== "autoCrisis:syncRequest") return;
 
         const { actorUuid, after, trigger, thresholdAfter, reactionPayload } = msg;
@@ -305,18 +321,20 @@
         const actor = await fromUuid(actorUuid);
         if (!actor) return;
 
-        // Always sync Crisis AE (authoritative on GM)
+        // Always sync Crisis AE (authoritative on primary GM only)
         await evaluateActorCrisis(actor);
 
         // Only emit reaction if a transition trigger was supplied
         if (trigger && reactionPayload) {
           emitReactionPhase(reactionPayload);
-          log(`(GM) Socket processed crisis trigger: ${trigger} for ${actor.name}`);
+          log(`(Primary GM) Socket processed crisis trigger: ${trigger} for ${actor.name}`, {
+            thresholdAfter
+          });
         } else {
-          log(`(GM) Socket synced Crisis AE (no trigger) for ${actor.name}`);
+          log(`(Primary GM) Socket synced Crisis AE (no trigger) for ${actor.name}`);
         }
       } catch (e) {
-        err("(GM) Socket sync failed:", e);
+        err("(Primary GM) Socket sync failed:", e);
       }
     });
 
@@ -361,9 +379,10 @@
       });
     });
 
-    // Main hook: after an Actor updates, request GM to sync Crisis state
-    // - GM: applies/removes AE and emits enter/exit trigger (once)
-    // - Non-GM: sends socket request to GM (no permission errors)
+    // Main hook: after an Actor updates, request the primary GM to sync Crisis state
+    // - Primary GM: applies/removes AE and emits enter/exit trigger (once)
+    // - Secondary GM: does nothing
+    // - Non-GM: sends socket request to primary GM
     Hooks.on("updateActor", (actor, changed, options) => {
       // Prevent recursion when we add/remove effects ourselves
       if (options?.oniAutoCrisis) return;
@@ -406,9 +425,17 @@
       }
 
       // -----------------------------
-      // GM path: do the real work
+      // Primary GM path: do the real work
       // -----------------------------
-      if (game.user.isGM) {
+      if (game.user?.isGM) {
+        if (!isPrimaryActiveGM()) {
+          log(`(Secondary GM) Ignoring updateActor Crisis processing for ${actor.name}`, {
+            actorUuid: actor.uuid,
+            trigger
+          });
+          return;
+        }
+
         // Dedupe here too, just in case (multiple rapid updates / unusual client setups)
         const key = makeDedupeKey({
           actorUuid: actor.uuid,
@@ -423,7 +450,7 @@
           .then(() => {
             if (trigger && reactionPayload) {
               emitReactionPhase(reactionPayload);
-              log(`(GM) Emitted Crisis Reaction trigger: ${trigger} for ${actor.name}`);
+              log(`(Primary GM) Emitted Crisis Reaction trigger: ${trigger} for ${actor.name}`);
             }
           })
           .catch(e => err("evaluateActorCrisis failed:", e));
@@ -432,7 +459,7 @@
       }
 
       // -----------------------------
-      // Non-GM path: request GM to do it
+      // Non-GM path: request primary GM to do it
       // -----------------------------
       try {
         game.socket.emit(SOCKET, {
@@ -443,7 +470,7 @@
           thresholdAfter,
           reactionPayload
         });
-        log(`(Client) Sent socket syncRequest to GM for ${actor.name}`, { trigger });
+        log(`(Client) Sent socket syncRequest to primary GM for ${actor.name}`, { trigger });
       } catch (e) {
         err("(Client) Failed to send socket syncRequest:", e);
       }
@@ -451,8 +478,8 @@
 
     // Optional: on ready, do a one-time sync across ALL actors in the world
     // so existing actors immediately get correct Crisis state after a reload.
-    // GM ONLY (authoritative) to avoid permission issues.
-    if (game.user.isGM) {
+    // PRIMARY GM ONLY (authoritative) to avoid permission issues and double-processing.
+    if (game.user?.isGM && isPrimaryActiveGM()) {
       for (const actor of game.actors ?? []) {
         evaluateActorCrisis(actor).catch(e => err("Initial sync failed:", e));
       }

@@ -47,6 +47,19 @@
   const err  = (...a) => console.error(TAG, ...a);
 
   // ─────────────────────────────────────────────────────────────
+  // Multi-GM authority helpers
+  // ─────────────────────────────────────────────────────────────
+  function getPrimaryActiveGM() {
+    const gms = (game.users?.contents ?? []).filter((u) => u?.isGM && u?.active);
+    return gms[0] ?? null;
+  }
+
+  function isPrimaryActiveGM() {
+    const gm = getPrimaryActiveGM();
+    return !!gm && game.user?.id === gm.id;
+  }
+
+  // ─────────────────────────────────────────────────────────────
   // Helpers
   // ─────────────────────────────────────────────────────────────
   const escapeHTML = (s) =>
@@ -318,7 +331,31 @@
   // GM open logic
   // ─────────────────────────────────────────────────────────────
   const gmOpenChest = async ({ sceneId, tileId, requesterId }) => {
-    log("GM open request received:", { sceneId, tileId, requesterId });
+    if (!game.user?.isGM) {
+      warn("gmOpenChest called on non-GM client; ignoring.", {
+        sceneId, tileId, requesterId, localUserId: game.user?.id ?? null
+      });
+      return;
+    }
+
+    if (!isPrimaryActiveGM()) {
+      warn("gmOpenChest called on secondary GM; ignoring.", {
+        sceneId,
+        tileId,
+        requesterId,
+        localUserId: game.user?.id ?? null,
+        primaryGmUserId: getPrimaryActiveGM()?.id ?? null
+      });
+      return;
+    }
+
+    log("GM open request received:", {
+      sceneId,
+      tileId,
+      requesterId,
+      localUserId: game.user?.id ?? null,
+      primaryGmUserId: getPrimaryActiveGM()?.id ?? null
+    });
 
     const scene = game.scenes?.get(sceneId);
     if (!scene) return warn("GM open: scene not found:", sceneId);
@@ -530,14 +567,23 @@
         const sceneId = canvas.scene?.id;
         if (!sceneId) return;
 
-        log("requestOpen called:", { tileId, sceneId, user: game.user.id, isGM: game.user.isGM });
+        log("requestOpen called:", {
+          tileId,
+          sceneId,
+          user: game.user.id,
+          isGM: game.user.isGM,
+          primaryGmUserId: getPrimaryActiveGM()?.id ?? null,
+          isPrimaryActiveGM: isPrimaryActiveGM()
+        });
 
-        if (game.user.isGM) {
+        // Primary GM opens directly.
+        if (game.user.isGM && isPrimaryActiveGM()) {
           await gmOpenChest({ sceneId, tileId, requesterId: game.user.id });
           this._queueScan("after-gm-open");
           return;
         }
 
+        // Secondary GM or player forwards request to primary GM.
         const payload = { sceneId, tileId, requesterId: game.user.id };
         for (const ch of CHANNELS) {
           try {
@@ -570,7 +616,17 @@
 
           if (msg.type === MSG_OPEN_REQ) {
             log("Socket RX:", msg);
+
             if (!game.user.isGM) return;
+            if (!isPrimaryActiveGM()) {
+              log("Ignoring chest open request on secondary GM.", {
+                localUserId: game.user?.id ?? null,
+                primaryGmUserId: getPrimaryActiveGM()?.id ?? null,
+                payload: msg.payload
+              });
+              return;
+            }
+
             await gmOpenChest(msg.payload);
             this._queueScan("after-socket-open");
           }
@@ -635,7 +691,14 @@
       this.running = true;
 
       await this.scan("start");
-      log("Treasure Chest system started.", { RANGE_PX: getRangePx(), POS_OVERRIDE_TTL_MS });
+      log("Treasure Chest system started.", {
+        RANGE_PX: getRangePx(),
+        POS_OVERRIDE_TTL_MS,
+        localUserId: game.user?.id ?? null,
+        isGM: !!game.user?.isGM,
+        primaryGmUserId: getPrimaryActiveGM()?.id ?? null,
+        isPrimaryActiveGM: isPrimaryActiveGM()
+      });
     },
 
     async stop() {
