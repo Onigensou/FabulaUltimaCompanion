@@ -313,6 +313,121 @@ Hooks.once("ready", () => {
       return toArrayUnique(collected);
     }
 
+    function firstNonBlank(...values) {
+      for (const value of values) {
+        if (value === null || value === undefined) continue;
+        const s = String(value).trim();
+        if (s) return s;
+      }
+      return "";
+    }
+
+    function extractActionCardRefFromPayload(payload) {
+      const src = (payload && typeof payload === "object") ? payload : {};
+      const nestedMeta = (src?.meta && typeof src.meta === "object") ? src.meta : {};
+      const actionContext = (src?.actionContext && typeof src.actionContext === "object") ? src.actionContext : {};
+      const actionContextMeta = (actionContext?.meta && typeof actionContext.meta === "object") ? actionContext.meta : {};
+
+      const actionId = firstNonBlank(
+        src?.sourceActionId,
+        nestedMeta?.sourceActionId,
+        src?.actionId,
+        nestedMeta?.actionId,
+        actionContext?.actionId,
+        actionContextMeta?.actionId
+      );
+
+      const actionCardId = firstNonBlank(
+        src?.sourceActionCardId,
+        nestedMeta?.sourceActionCardId,
+        src?.actionCardId,
+        nestedMeta?.actionCardId,
+        actionContext?.actionCardId,
+        actionContextMeta?.actionCardId
+      );
+
+      const actionCardMessageId = firstNonBlank(
+        src?.sourceActionCardMessageId,
+        nestedMeta?.sourceActionCardMessageId,
+        src?.actionCardMessageId,
+        nestedMeta?.actionCardMessageId,
+        actionContext?.actionCardMessageId,
+        actionContextMeta?.actionCardMessageId
+      );
+
+      const ownerUserId = firstNonBlank(
+        src?.sourceActionOwnerUserId,
+        nestedMeta?.sourceActionOwnerUserId,
+        src?.ownerUserId,
+        nestedMeta?.ownerUserId,
+        actionContextMeta?.ownerUserId
+      );
+
+      const ownerUserName = firstNonBlank(
+        src?.sourceActionOwnerUserName,
+        nestedMeta?.sourceActionOwnerUserName,
+        src?.ownerUserName,
+        nestedMeta?.ownerUserName,
+        actionContextMeta?.ownerUserName
+      );
+
+      const versionRaw =
+        src?.sourceActionCardVersion ??
+        nestedMeta?.sourceActionCardVersion ??
+        src?.actionCardVersion ??
+        nestedMeta?.actionCardVersion ??
+        actionContext?.actionCardVersion ??
+        actionContextMeta?.actionCardVersion ??
+        null;
+
+      const actionCardVersion = Number(versionRaw);
+
+      return {
+        sourceActionId: actionId || null,
+        sourceActionCardId: actionCardId || null,
+        sourceActionCardVersion: Number.isFinite(actionCardVersion) ? actionCardVersion : null,
+        sourceActionCardMessageId: actionCardMessageId || null,
+        sourceActionOwnerUserId: ownerUserId || null,
+        sourceActionOwnerUserName: ownerUserName || null
+      };
+    }
+
+    function resolveSourceActionRef({ preferredPayload, phasePayload, phasePayloadByTrigger }) {
+      const refs = [];
+      refs.push(extractActionCardRefFromPayload(preferredPayload));
+      refs.push(extractActionCardRefFromPayload(phasePayload));
+
+      if (phasePayloadByTrigger && typeof phasePayloadByTrigger === "object") {
+        for (const payload of Object.values(phasePayloadByTrigger)) {
+          refs.push(extractActionCardRefFromPayload(payload));
+        }
+      }
+
+      const pick = (key) => {
+        for (const ref of refs) {
+          if (!ref) continue;
+          const value = ref[key];
+          if (value === null || value === undefined) continue;
+          if (typeof value === "number") {
+            if (Number.isFinite(value)) return value;
+            continue;
+          }
+          const s = String(value).trim();
+          if (s) return s;
+        }
+        return null;
+      };
+
+      return {
+        sourceActionId: pick("sourceActionId"),
+        sourceActionCardId: pick("sourceActionCardId"),
+        sourceActionCardVersion: pick("sourceActionCardVersion"),
+        sourceActionCardMessageId: pick("sourceActionCardMessageId"),
+        sourceActionOwnerUserId: pick("sourceActionOwnerUserId"),
+        sourceActionOwnerUserName: pick("sourceActionOwnerUserName")
+      };
+    }
+
     async function openReactionDialog(ctx) {
       ensureReactionDialogStyles();
 
@@ -443,13 +558,19 @@ Hooks.once("ready", () => {
         phasePayload,
         phasePayloadByTrigger
       });
+      const sourceActionRef = resolveSourceActionRef({
+        preferredPayload: preferred?.payload,
+        phasePayload,
+        phasePayloadByTrigger
+      });
 
       if (!targets.length) {
         console.log("[ReactionChooseSkill] No phase-derived targets found for Reaction; deferring target selection to Action pipeline/JRPGTargeting.", {
           chosenItem: chosenGroup.item,
           preferred,
           phasePayload,
-          phasePayloadByTrigger
+          phasePayloadByTrigger,
+          sourceActionRef
         });
       }
 
@@ -462,10 +583,22 @@ Hooks.once("ready", () => {
         reaction_trigger_keys: toArrayUnique((chosenGroup.triggerKeys?.length ? chosenGroup.triggerKeys : triggerKeys).map(String)),
         reaction_phase_payload: preferred?.payload ?? {},
         reaction_phase_payload_by_trigger: phasePayloadByTrigger,
+        sourceActionId: sourceActionRef.sourceActionId,
+        sourceActionCardId: sourceActionRef.sourceActionCardId,
+        sourceActionCardVersion: sourceActionRef.sourceActionCardVersion,
+        sourceActionCardMessageId: sourceActionRef.sourceActionCardMessageId,
+        sourceActionOwnerUserId: sourceActionRef.sourceActionOwnerUserId,
+        sourceActionOwnerUserName: sourceActionRef.sourceActionOwnerUserName,
         meta: {
           executionMode: "reaction",
           skillTargetRaw: chosenGroup.item?.system?.skill_target ?? chosenGroup.item?.system?.system?.skill_target ?? null,
-          skillTypeRaw: chosenGroup.item?.system?.skill_type ?? chosenGroup.item?.system?.system?.skill_type ?? null
+          skillTypeRaw: chosenGroup.item?.system?.skill_type ?? chosenGroup.item?.system?.system?.skill_type ?? null,
+          sourceActionId: sourceActionRef.sourceActionId,
+          sourceActionCardId: sourceActionRef.sourceActionCardId,
+          sourceActionCardVersion: sourceActionRef.sourceActionCardVersion,
+          sourceActionCardMessageId: sourceActionRef.sourceActionCardMessageId,
+          sourceActionOwnerUserId: sourceActionRef.sourceActionOwnerUserId,
+          sourceActionOwnerUserName: sourceActionRef.sourceActionOwnerUserName
         }
       };
 
@@ -482,7 +615,8 @@ Hooks.once("ready", () => {
         skill_uuid: chosenGroup.item.uuid,
         triggerKey,
         triggerKeys,
-        preferredTrigger: preferred?.key
+        preferredTrigger: preferred?.key,
+        sourceActionRef
       });
 
       window.__PAYLOAD = payload;

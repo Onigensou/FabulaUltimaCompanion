@@ -98,6 +98,8 @@
   "scripts/reaction-system/reaction-triggerCore.js",
   "scripts/reaction-system/reaction-buttonUI.js",
   "scripts/reaction-system/reaction-chooseSkill.js",
+  "scripts/reaction-system/reaction-rebuildActionCard.js",
+  "scripts/reaction-system/reaction-redirectPendingAction.js",
   "scripts/reaction-system/reaction-manager.js",
   "scripts/reaction-system/reaction-phaseHandler.js",
   "scripts/fabula-initiative/fabula-initiative-ui.js",
