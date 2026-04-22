@@ -44,6 +44,21 @@ function getTokenName(token) {
   return token?.name ?? token?.document?.name ?? token?.actor?.name ?? "(Unknown Token)";
 }
 
+function normalizeAllowedTargetUuidSet(allowedTargetTokenUuids = []) {
+  return new Set(
+    toArray(allowedTargetTokenUuids)
+      .map((v) => String(v ?? "").trim())
+      .filter(Boolean)
+  );
+}
+
+function isTokenInAllowedUuidSet(token, allowedUuidSet = new Set()) {
+  if (!(allowedUuidSet instanceof Set) || allowedUuidSet.size <= 0) return true;
+  const tokenUuid = getTokenUuid(token);
+  if (!tokenUuid) return false;
+  return allowedUuidSet.has(String(tokenUuid));
+}
+
 function getCategoryLabel(category) {
   switch (category) {
     case TARGET_CATEGORIES.ALLY:
@@ -237,14 +252,20 @@ export function getJRPGEligibleSceneTokens({
   sceneTokens = [],
   parsedTargeting = null,
   sourceToken = null,
-  sourceDisposition = null
+  sourceDisposition = null,
+  allowedTargetTokenUuids = []
 } = {}) {
   const category = parsedTargeting?.category ?? TARGET_CATEGORIES.CREATURE;
 
-  return filterJRPGTokensByCategory(sceneTokens, category, {
+  const byCategory = filterJRPGTokensByCategory(sceneTokens, category, {
     sourceToken,
     sourceDisposition
   });
+
+  const allowedUuidSet = normalizeAllowedTargetUuidSet(allowedTargetTokenUuids);
+  if (allowedUuidSet.size <= 0) return byCategory;
+
+  return byCategory.filter((token) => isTokenInAllowedUuidSet(token, allowedUuidSet));
 }
 
 /* -------------------------------------------- */
@@ -256,7 +277,8 @@ export function validateJRPGTargetAttempt({
   currentTargets = [],
   candidateToken = null,
   sourceToken = null,
-  sourceDisposition = null
+  sourceDisposition = null,
+  allowedTargetTokenUuids = []
 } = {}) {
   const runId = dbg.makeRunId("VALIDATE-TARGET");
   const parsed = parsedTargeting ?? {};
@@ -269,6 +291,7 @@ export function validateJRPGTargetAttempt({
     sourceToken,
     sourceDisposition
   });
+  const allowedUuidSet = normalizeAllowedTargetUuidSet(allowedTargetTokenUuids);
 
   dbg.logRun(runId, "START", {
     mode: parsed?.mode,
@@ -279,6 +302,7 @@ export function validateJRPGTargetAttempt({
     candidateDisposition: getJRPGTokenDisposition(candidateToken),
     source: getTokenName(sourceToken),
     sourceDisposition: resolvedSourceDisposition,
+    allowedWhitelistCount: allowedUuidSet.size,
     isAlreadyTargeted
   });
 
@@ -297,6 +321,16 @@ export function validateJRPGTargetAttempt({
       ok: false,
       code: "MANUAL_SELECTION_DISABLED",
       notification: "Manual target selection is disabled for this targeting mode."
+    };
+    dbg.warnRun(runId, "BLOCK", result);
+    return result;
+  }
+
+    if (!isTokenInAllowedUuidSet(candidateToken, allowedUuidSet)) {
+    const result = {
+      ok: false,
+      code: "NOT_IN_ALLOWED_LIST",
+      notification: "That target is not valid for this effect."
     };
     dbg.warnRun(runId, "BLOCK", result);
     return result;

@@ -224,6 +224,7 @@ async function runRemoteTargetingRequest(options = {}) {
     parsedTargeting: options.parsedTargeting ?? null,
     action: options.action ?? null,
     sourceActorUuid: options.sourceActorUuid ?? null,
+    allowedTargetTokenUuids: options.allowedTargetTokenUuids ?? [],
     uiSettings: options.uiSettings ?? {},
     highlightSettings: options.highlightSettings ?? {},
     uiTitleText: options.uiTitleText ?? null
@@ -261,6 +262,7 @@ async function onSocketStartTargeting(payload = {}) {
     skillTarget: payload.skillTarget ?? "",
     parsedTargeting: payload.parsedTargeting ?? null,
     sourceActorUuid: payload.sourceActorUuid ?? null,
+    allowedTargetTokenUuids: payload.allowedTargetTokenUuids ?? [],
     uiSettings: payload.uiSettings ?? {},
     highlightSettings: payload.highlightSettings ?? {},
     uiTitleText: payload.uiTitleText ?? null
@@ -464,6 +466,7 @@ function buildPublicAPI() {
         userId,
         action: options.action ?? null,
         sourceActorUuid: options.sourceActorUuid ?? null,
+        allowedTargetTokenUuids: options.allowedTargetTokenUuids ?? [],
         skillTarget,
         parsedTargeting,
         uiSettings: options.uiSettings ?? {},

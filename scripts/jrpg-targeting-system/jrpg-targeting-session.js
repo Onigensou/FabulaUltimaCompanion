@@ -355,6 +355,7 @@ function buildActiveSessionSnapshot(instance) {
     sessionId: instance.sessionId,
     runId: instance.runId,
     userId: instance.userId,
+    allowedTargetTokenUuids: [...(instance.allowedTargetTokenUuids ?? [])],
     started: instance.state.started,
     active: instance.state.active,
     promptText: instance.parsedTargeting?.promptText ?? "",
@@ -379,6 +380,10 @@ export class JRPGTargetingSession {
     this.userId = options.userId ?? getCurrentUserId();
     this.action = options.action ?? null;
     this.sourceActorUuid = options.sourceActorUuid ?? null;
+
+    this.allowedTargetTokenUuids = compactArray(options.allowedTargetTokenUuids)
+      .map((v) => String(v ?? "").trim())
+      .filter(Boolean);
 
     this.rawSkillTarget = typeof options.skillTarget === "string"
       ? options.skillTarget
@@ -455,7 +460,8 @@ export class JRPGTargetingSession {
       sceneTokens: getSceneTokens(),
       parsedTargeting: this.parsedTargeting,
       sourceToken: this.sourceToken,
-      sourceDisposition: this.sourceDisposition
+      sourceDisposition: this.sourceDisposition,
+      allowedTargetTokenUuids: this.allowedTargetTokenUuids
     });
   }
 
@@ -841,7 +847,8 @@ export class JRPGTargetingSession {
       currentTargets: this.getSelectedTargets(),
       candidateToken: token,
       sourceToken: this.sourceToken,
-      sourceDisposition: this.sourceDisposition
+      sourceDisposition: this.sourceDisposition,
+      allowedTargetTokenUuids: this.allowedTargetTokenUuids
     });
 
     if (!validation.ok) {
@@ -955,7 +962,8 @@ export class JRPGTargetingSession {
       parsedTargeting: this.parsedTargeting,
       sceneTokens: getSceneTokens(),
       sourceToken: this.sourceToken,
-      sourceDisposition: this.sourceDisposition
+      sourceDisposition: this.sourceDisposition,
+      allowedTargetTokenUuids: this.allowedTargetTokenUuids
     });
 
     if (!autoTargets.length) {
