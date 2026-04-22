@@ -592,6 +592,57 @@ export class JRPGTargetingSession {
     await destroyActiveJRPGTargetingUI({ animate: false }).catch(() => {});
     await this.clearHighlightEffect("pre_start_cleanup");
 
+    if (this.parsedTargeting?.mode === MODES.NONE) {
+      dbg.logRun(this.runId, "NONE MODE -> SKIP TARGETING UI", {
+        rawSkillTarget: this.rawSkillTarget,
+        parsedTargeting: this.parsedTargeting
+      });
+
+      clearUserTargets({
+        user: getCurrentUser(),
+        reason: "none_mode_preconfirm",
+        runId: this.runId
+      });
+
+      const result = buildResolvedResult({
+        status: RESULT_STATUS.CONFIRMED,
+        sessionId: this.sessionId,
+        userId: this.userId,
+        parsedTargeting: this.parsedTargeting,
+        rawSkillTarget: this.rawSkillTarget,
+        tokens: []
+      });
+
+      storeJRPGConfirmedTargets({
+        userId: this.userId,
+        sessionId: this.sessionId,
+        parsedTargeting: this.parsedTargeting,
+        rawSkillTarget: this.rawSkillTarget,
+        normalizedSkillTarget: this.parsedTargeting?.normalized ?? "",
+        promptText: this.parsedTargeting?.promptText ?? "",
+        tokens: [],
+        actors: []
+      });
+
+      clearJRPGTargetingSessionForUser(this.userId);
+
+      const active = getJRPGActiveTargetingSession();
+      if (active?.sessionId === this.sessionId) {
+        clearJRPGActiveTargetingSession();
+      }
+
+      if (globalThis[GLOBALS.ACTIVE_SESSION_KEY]?.sessionId === this.sessionId) {
+        delete globalThis[GLOBALS.ACTIVE_SESSION_KEY];
+      }
+
+      this.state.active = false;
+      this.state.destroyed = true;
+      this.resolveResult(result);
+
+      dbg.logRun(this.runId, "NONE MODE -> RESOLVED IMMEDIATELY", result);
+      return this.resultPromise;
+    }
+
     this.uiInstance = createJRPGTargetingUI({
       instanceId: this.sessionId,
       sessionId: this.sessionId,

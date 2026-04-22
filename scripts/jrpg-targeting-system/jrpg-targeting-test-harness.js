@@ -17,7 +17,7 @@ const HARNESS_API_KEY = "JRPGTargetingTestHarness";
 
 const PRESETS = Object.freeze([
   { label: "Free / Empty", value: "" },
-  { label: "Free / -", value: "-" },
+  { label: "None / -", value: "-" },
   { label: "One Creature", value: "One Creature" },
   { label: "Two Creatures", value: "Two Creatures" },
   { label: "Up to Three Creature", value: "Up to Three Creature" },

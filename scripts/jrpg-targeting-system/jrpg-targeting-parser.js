@@ -82,6 +82,9 @@ function getCategoryLabel(category, count = 1) {
 
 function buildPromptText({ mode, count, category }) {
   switch (mode) {
+    case MODES.NONE:
+      return "No target selection required";
+
     case MODES.EXACT:
       return `Please select ${count} ${getCategoryLabel(category, count)}`;
 
@@ -164,6 +167,25 @@ function buildSelfResult({ raw, normalized }) {
   };
 }
 
+function buildJRPGNoneTargetingResult(raw = "") {
+  const normalized = normalizeJRPGTargetingText(raw);
+
+  return {
+    raw: toCleanString(raw),
+    normalized,
+    recognized: true,
+    mode: MODES.NONE,
+    category: TARGET_CATEGORIES.CREATURE,
+    count: 0,
+    minTargets: 0,
+    maxTargets: 0,
+    autoSelectAll: false,
+    acceptsZero: true,
+    skipTargeting: true,
+    promptText: buildPromptText({ mode: MODES.NONE, count: 0, category: TARGET_CATEGORIES.CREATURE })
+  };
+}
+
 export function buildJRPGFreeTargetingResult(raw = "") {
   const normalized = normalizeJRPGTargetingText(raw);
 
@@ -193,11 +215,17 @@ export function parseJRPGTargetingText(skillTargetText) {
 
   dbg.logRun(runId, "START", { raw, normalized });
 
-  if (!raw || isJRPGTargetingNoneText(raw)) {
-    const result = buildJRPGFreeTargetingResult(raw);
-    dbg.logRun(runId, "FREE MODE (empty/none)", result);
-    return result;
-  }
+if (!raw) {
+  const result = buildJRPGFreeTargetingResult(raw);
+  dbg.logRun(runId, "FREE MODE (empty target text)", result);
+  return result;
+}
+
+if (isJRPGTargetingNoneText(raw)) {
+  const result = buildJRPGNoneTargetingResult(raw);
+  dbg.logRun(runId, "NONE MODE (explicit none text)", result);
+  return result;
+}
 
   // Self mode
   {
@@ -309,6 +337,7 @@ export default {
   isJRPGTargetingNoneText,
   normalizeJRPGTargetCategory,
   parseJRPGTargetNumber,
+  buildJRPGNoneTargetingResult,
   buildJRPGFreeTargetingResult,
   parseJRPGTargetingText,
   getJRPGSkillTargetFromAction,

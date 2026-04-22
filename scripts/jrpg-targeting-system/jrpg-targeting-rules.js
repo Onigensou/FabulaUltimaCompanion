@@ -225,6 +225,7 @@ export function doesJRPGModeAutoSelectAll(parsedTargeting) {
 }
 
 export function doesJRPGModeAllowManualSelection(parsedTargeting) {
+  if (parsedTargeting?.mode === MODES.NONE) return false;
   return !doesJRPGModeAutoSelectAll(parsedTargeting);
 }
 
@@ -381,6 +382,16 @@ export function validateJRPGTargetConfirmation({
     acceptsZero: parsed?.acceptsZero
   });
 
+    if (mode === MODES.NONE) {
+    const result = {
+      ok: true,
+      code: "CONFIRM_NONE_OK",
+      notification: null
+    };
+    dbg.logRun(runId, "ALLOW", result);
+    return result;
+  }
+
   if (mode === MODES.SELF) {
     if (selectedCount !== 1) {
       const result = {
@@ -521,6 +532,11 @@ export function getJRPGAutoSelectedTargets({
     source: getTokenName(sourceToken),
     sourceDisposition: resolvedSourceDisposition
   });
+
+  if (parsed?.mode === MODES.NONE) {
+  dbg.logRun(runId, "SKIP", { reason: "None mode does not target anything." });
+  return [];
+}
 
   if (!doesJRPGModeAutoSelectAll(parsed)) {
     dbg.logRun(runId, "SKIP", { reason: "Mode does not auto-select all." });

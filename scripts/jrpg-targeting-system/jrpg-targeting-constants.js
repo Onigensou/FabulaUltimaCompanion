@@ -114,13 +114,14 @@ export const JRPG_TARGETING = Object.freeze({
     alwaysKeepSourceVisible: true
   }),
 
-  MODES: Object.freeze({
-    FREE: "free",
-    EXACT: "exact",
-    UP_TO: "up_to",
-    ALL: "all",
-    SELF: "self"
-  }),
+MODES: Object.freeze({
+  NONE: "none",
+  FREE: "free",
+  EXACT: "exact",
+  UP_TO: "up_to",
+  ALL: "all",
+  SELF: "self"
+}),
 
   TARGET_CATEGORIES: Object.freeze({
     CREATURE: "creature",
@@ -143,7 +144,7 @@ export const JRPG_TARGETING = Object.freeze({
   }),
 
   WORDS: Object.freeze({
-    NONE: Object.freeze(["", "-", "none", "nothing"]),
+    NONE: Object.freeze(["-", "none", "nothing"]),
     ALL: Object.freeze(["all"]),
     SELF: Object.freeze(["self"]),
     UP_TO: Object.freeze(["up to", "upto"]),
