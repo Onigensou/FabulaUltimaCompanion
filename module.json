@@ -102,6 +102,7 @@
   "scripts/reaction-system/reaction-redirectPendingAction.js",
   "scripts/reaction-system/reaction-manager.js",
   "scripts/reaction-system/reaction-phaseHandler.js",
+  "scripts/reaction-system/reaction-protectFeedback.js",
   "scripts/fabula-initiative/fabula-initiative-ui.js",
   "scripts/fabula-initiative/fabula-initiative-controller.js",
   "scripts/fabula-initiative/fabula-initiative-round-announcer.js",

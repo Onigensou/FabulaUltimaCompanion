@@ -894,6 +894,90 @@ async function openTargetSelectorForCandidate(candidate, opts = {}) {
   });
 }
 
+    async function requestProtectTargetViaJRPGTargeting(candidate, reactorInfo = {}, opts = {}) {
+      const targetingApi =
+        game.modules?.get(MODULE_NS)?.api?.JRPGTargeting ??
+        globalThis.__ONI_JRPG_TARGETING_API__ ??
+        null;
+
+      if (!targetingApi?.requestTargeting) {
+        ui.notifications.warn("[Reaction] JRPG Targeting API is not available for Protect target selection.");
+        return { ok: false, cancelled: true, reason: "targeting_api_missing" };
+      }
+
+      const allowed = [];
+      const indexByTokenUuid = new Map();
+
+      for (const index of candidate?.matchingIndexes ?? []) {
+        const tokenUuid = String(candidate?.targetUUIDs?.[index] ?? "").trim();
+        const actorUuid = String(candidate?.targetActorUUIDs?.[index] ?? "").trim();
+
+        if (!tokenUuid) continue;
+
+        // You cannot protect yourself.
+        if (reactorInfo?.tokenUuid && tokenUuid === String(reactorInfo.tokenUuid)) continue;
+        if (reactorInfo?.actorUuid && actorUuid && actorUuid === String(reactorInfo.actorUuid)) continue;
+
+        if (!indexByTokenUuid.has(tokenUuid)) {
+          indexByTokenUuid.set(tokenUuid, index);
+          allowed.push(tokenUuid);
+        }
+      }
+
+      if (!allowed.length) {
+        ui.notifications.warn("[Reaction] No valid protect targets remain after excluding the protector.");
+        return { ok: false, cancelled: true, reason: "no_valid_protect_targets" };
+      }
+
+      if (allowed.length === 1) {
+        const targetIndex = indexByTokenUuid.get(allowed[0]);
+        const originalTargetName =
+          candidate?.targetNames?.[targetIndex] ??
+          `Target #${Number(targetIndex) + 1}`;
+
+        return {
+          ok: true,
+          picked: {
+            candidate,
+            targetIndex,
+            originalTargetName
+          }
+        };
+      }
+
+      const result = await targetingApi.requestTargeting({
+        userId: game.user?.id ?? null,
+        skillTarget: "One Creature",
+        sourceActorUuid: reactorInfo?.actorUuid ?? reactorInfo?.tokenUuid ?? null,
+        uiTitleText: "Choose which ally to protect",
+        allowedTargetTokenUuids: allowed
+      });
+
+      if (!result?.confirmed) {
+        return { ok: false, cancelled: true, reason: "targeting_cancelled" };
+      }
+
+      const chosenTokenUuid = String(result?.tokenUuids?.[0] ?? "").trim();
+      const targetIndex = indexByTokenUuid.get(chosenTokenUuid);
+
+      if (!chosenTokenUuid || !Number.isInteger(targetIndex)) {
+        return { ok: false, cancelled: true, reason: "targeting_no_match" };
+      }
+
+      const originalTargetName =
+        candidate?.targetNames?.[targetIndex] ??
+        `Target #${Number(targetIndex) + 1}`;
+
+      return {
+        ok: true,
+        picked: {
+          candidate,
+          targetIndex,
+          originalTargetName
+        }
+      };
+    }
+
     async function openRedirectDialog(opts = {}) {
   ensureStyles();
 
@@ -951,15 +1035,19 @@ async function openTargetSelectorForCandidate(candidate, opts = {}) {
     </div>
   `;
 
-  const picked = await new Promise((resolve) => {
+    const picked = await new Promise((resolve) => {
     let dlg = null;
     let busy = false;
+    let suppressCloseResolve = false;
 
     dlg = new Dialog({
       title: "Choose Action To Redirect",
       content,
       buttons: {},
-      close: () => resolve(null),
+      close: () => {
+        if (suppressCloseResolve) return;
+        resolve(null);
+      },
       render: (html) => {
         const rowMap = new Map(rows.map(r => [r.id, r]));
         const $html = $(html);
@@ -979,6 +1067,7 @@ async function openTargetSelectorForCandidate(candidate, opts = {}) {
               return;
             }
 
+            // Single valid target slot -> no second targeting request needed
             if ((candidate.matchingIndexes?.length ?? 0) <= 1) {
               const targetIndex = candidate.matchingIndexes?.[0] ?? 0;
               const originalTargetName =
@@ -990,24 +1079,34 @@ async function openTargetSelectorForCandidate(candidate, opts = {}) {
                 targetIndex,
                 originalTargetName
               });
+
+              suppressCloseResolve = true;
               dlg.close();
               return;
             }
 
-            const targetPick = await openTargetSelectorForCandidate(candidate, {
-              reactorName
-            });
+            // Multi-target case:
+            // Close the redirect window FIRST,
+            // then enter JRPG targeting mode.
+            suppressCloseResolve = true;
+            dlg.close();
 
-            if (!targetPick) {
-              busy = false;
+            const targetingPick = await requestProtectTargetViaJRPGTargeting(
+              candidate,
+              reactorInfo,
+              { reactorName }
+            );
+
+            if (!targetingPick?.ok) {
+              resolve(null);
               return;
             }
 
-            resolve(targetPick);
-            dlg.close();
+            resolve(targetingPick.picked);
           } catch (e) {
             console.error("[ReactionRedirectPendingAction] Row click handling failed:", e);
             busy = false;
+            resolve(null);
           }
         });
       }
@@ -1368,6 +1467,45 @@ return {
     selection,
     resultValue
   });
+
+  // --------------------------------------------------
+  // Protect feedback
+  // - show passive-style card: "💥 Protect"
+  // - play protect animation
+  // This is presentation only; redirect/rebuild already succeeded.
+  // --------------------------------------------------
+  try {
+    const protectFeedbackApi = window["oni.ReactionProtectFeedback"];
+
+    if (protectFeedbackApi?.playFromRedirect) {
+      const feedbackResult = await protectFeedbackApi.playFromRedirect(
+        opts?.payload ?? {},
+        resultValue,
+        {
+          cardTitle: "💥 Protect",
+          broadcastCard: true,
+          playAnimation: true
+        }
+      );
+
+      log("Protect feedback played.", {
+        selection,
+        resultValue,
+        feedbackResult
+      });
+    } else {
+      warn("Protect feedback helper not available; skipping Protect feedback.", {
+        hasApi: !!protectFeedbackApi
+      });
+    }
+  } catch (feedbackError) {
+    err("Protect feedback failed, but redirect already succeeded.", {
+      selection,
+      resultValue,
+      error: String(feedbackError?.message ?? feedbackError),
+      stack: feedbackError?.stack ?? null
+    });
+  }
 
   return {
     ok: true,
