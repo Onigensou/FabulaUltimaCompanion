@@ -161,11 +161,20 @@ return (async () => {
       globalThis.FUCompanion?.api?.GMExecutor ??
       null;
 
-    const canUseGMExecutor = !!(
-      !game.user?.isGM &&
-      gmExecutor &&
-      typeof gmExecutor.executeSnippet === "function"
-    );
+const canUseGMExecutor = !!(
+  !game.user?.isGM &&
+  gmExecutor &&
+  typeof gmExecutor.executeSnippet === "function"
+);
+
+// Passive wrappers do not inspect individual passive script text here,
+// so they only respect the shared payload/meta opt-out flag.
+const forceLocalExecution = !!(
+  PAYLOAD?.meta?.__forceLocalUiExecution === true ||
+  PAYLOAD?.meta?.passiveLogicForceLocal === true
+);
+
+const shouldUseGMExecutor = canUseGMExecutor && !forceLocalExecution;
 
     const before = snapshotPayload(PAYLOAD);
 
@@ -240,7 +249,8 @@ return (async () => {
       elementType: before.elementType,
       targets: before.targets,
       autoPassive: isAutoPassiveExecution,
-      executionPath: canUseGMExecutor ? "gm-executor-generic" : "local",
+      executionPath: shouldUseGMExecutor ? "gm-executor-generic" : "local",
+      forceLocalExecution,
       autoFlag: !!AUTO
     });
 
@@ -363,14 +373,19 @@ return {
     };
 
     let execResult;
-    if (canUseGMExecutor) {
-      execResult = await runPassiveViaGM();
-    } else {
-      if (!game.user?.isGM && !gmExecutor?.executeSnippet) {
-        warn("GMExecutor generic API is unavailable on a non-GM client. Falling back to local execution; permission-gated logic may fail.");
-      }
-      execResult = await runLocalPassiveEngine();
-    }
+if (shouldUseGMExecutor) {
+  execResult = await runPassiveViaGM();
+} else {
+  if (forceLocalExecution) {
+    log("FORCING LOCAL EXECUTION for UI-driven passive wrapper.", {
+      callerUserId: game.user?.id ?? null,
+      skillName: before.skillName
+    });
+  } else if (!game.user?.isGM && !gmExecutor?.executeSnippet) {
+    warn("GMExecutor generic API is unavailable on a non-GM client. Falling back to local execution; permission-gated logic may fail.");
+  }
+  execResult = await runLocalPassiveEngine();
+}
 
     await broadcastAppliedPassiveCards(execResult);
 
@@ -381,7 +396,8 @@ return {
         actorName: execResult?.actorName ?? null,
         actorUuid: execResult?.actorUuid ?? null,
         ok: !!execResult?.ok,
-        executionPath: execResult?.via ?? (canUseGMExecutor ? "gm-executor-generic" : "local"),
+        executionPath: execResult?.via ?? (shouldUseGMExecutor ? "gm-executor-generic" : "local"),
+        forceLocalExecution,
         ranScripts: Array.isArray(execResult?.engineResult?.ranScripts) ? clone(execResult.engineResult.ranScripts, []) : [],
         skippedScripts: Array.isArray(execResult?.engineResult?.skippedScripts) ? clone(execResult.engineResult.skippedScripts, []) : [],
         errors: Array.isArray(execResult?.engineResult?.errors) ? clone(execResult.engineResult.errors, []) : [],
@@ -398,7 +414,8 @@ return {
     log("DONE", {
       actor: execResult?.actorName ?? null,
       ok: !!execResult?.ok,
-      executionPath: execResult?.via ?? (canUseGMExecutor ? "gm-executor-generic" : "local"),
+      executionPath: execResult?.via ?? (shouldUseGMExecutor ? "gm-executor-generic" : "local"),
+      forceLocalExecution,
       ranScripts: Array.isArray(execResult?.engineResult?.ranScripts) ? execResult.engineResult.ranScripts.length : 0,
       skippedScripts: Array.isArray(execResult?.engineResult?.skippedScripts) ? execResult.engineResult.skippedScripts.length : 0,
       errors: Array.isArray(execResult?.engineResult?.errors) ? execResult.engineResult.errors.length : 0,
@@ -409,7 +426,7 @@ return {
       ok: !!execResult?.ok,
       actorName: execResult?.actorName ?? null,
       actorUuid: execResult?.actorUuid ?? null,
-      executionPath: execResult?.via ?? (canUseGMExecutor ? "gm-executor-generic" : "local"),
+      executionPath: execResult?.via ?? (shouldUseGMExecutor ? "gm-executor-generic" : "local"),
       ranScripts: Array.isArray(execResult?.engineResult?.ranScripts) ? execResult.engineResult.ranScripts.length : 0,
       skippedScripts: Array.isArray(execResult?.engineResult?.skippedScripts) ? execResult.engineResult.skippedScripts.length : 0,
       errors: Array.isArray(execResult?.engineResult?.errors) ? execResult.engineResult.errors.length : 0,

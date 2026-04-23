@@ -79,11 +79,25 @@ return (async () => {
     globalThis.FUCompanion?.api?.GMExecutor ??
     null;
 
-  const canUseGMExecutor = !!(
-    !game.user?.isGM &&
-    gmExecutor &&
-    typeof gmExecutor.executeSnippet === "function"
-  );
+const canUseGMExecutor = !!(
+  !game.user?.isGM &&
+  gmExecutor &&
+  typeof gmExecutor.executeSnippet === "function"
+);
+
+// Selective local-only opt-out for UI-driven snippets.
+// Default behavior remains GMExecutor.
+// Opt-in local markers:
+//   1) PAYLOAD.meta.__forceLocalUiExecution = true
+//   2) script contains: // @local-ui-only
+//   3) script contains: // @force-local
+const forceLocalExecution = !!(
+  PAYLOAD?.meta?.__forceLocalUiExecution === true ||
+  /@local-ui-only\b/i.test(scriptText) ||
+  /@force-local\b/i.test(scriptText)
+);
+
+const shouldUseGMExecutor = canUseGMExecutor && !forceLocalExecution;
 
   // Snapshot for debug diffs
   const snap = () => ({
@@ -568,7 +582,8 @@ return (async () => {
     actionTypeIsSpell: actionTypeDebug.isSpell,
     actionTypeCandidates: actionTypeDebug.spellCandidates,
     actionTypeRaw: actionTypeDebug.raw,
-    executionPath: canUseGMExecutor ? "gm-executor-generic" : "local",
+    executionPath: shouldUseGMExecutor ? "gm-executor-generic" : "local",
+    forceLocalExecution,
     preview: scriptText.slice(0, 160),
     chatMsgId: context.chatMsgId
   });
@@ -680,14 +695,21 @@ ${scriptText}
   try {
     let execResult;
 
-    if (canUseGMExecutor) {
-      execResult = await runSnippetViaGM();
-    } else {
-      if (!game.user?.isGM && !gmExecutor?.executeSnippet) {
-        warn("GMExecutor generic API is unavailable on a non-GM client. Falling back to local execution; permission-gated logic may fail.");
-      }
-      execResult = await runSnippetLocally();
-    }
+    if (shouldUseGMExecutor) {
+  execResult = await runSnippetViaGM();
+} else {
+  if (forceLocalExecution) {
+    log("FORCING LOCAL EXECUTION for UI-driven custom logic.", {
+      callerUserId: game.user?.id ?? null,
+      skillName: context.skillName,
+      chatMsgId: context.chatMsgId
+    });
+  } else if (!game.user?.isGM && !gmExecutor?.executeSnippet) {
+    warn("GMExecutor generic API is unavailable on a non-GM client. Falling back to local execution; permission-gated logic may fail.");
+  }
+
+  execResult = await runSnippetLocally();
+}
 
     if (!execResult?.ok) {
       throw Object.assign(new Error(execResult?.error ?? "Custom logic resolution failed"), {
@@ -705,13 +727,14 @@ ${scriptText}
       actionTypeDetected: actionTypeDebug.detectedActionType,
       actionTypeIsSpell: actionTypeDebug.isSpell,
       actionTypeCandidates: actionTypeDebug.spellCandidates,
-      executionPath: execResult?.via ?? (canUseGMExecutor ? "gm-executor-generic" : "local")
+      executionPath: execResult?.via ?? (shouldUseGMExecutor ? "gm-executor-generic" : "local")
     };
 
     const after = snap();
     log("DONE", {
       dtMs: Math.round(performance.now() - t0),
-      executionPath: execResult?.via ?? (canUseGMExecutor ? "gm-executor-generic" : "local"),
+      executionPath: execResult?.via ?? (shouldUseGMExecutor ? "gm-executor-generic" : "local"),
+      forceLocalExecution,
       changed: {
         elementType: `${before.elementType} → ${after.elementType}`,
         weaponType: `${before.weaponType} → ${after.weaponType}`,
@@ -733,7 +756,7 @@ ${scriptText}
     return {
       ok: true,
       runId,
-      executionPath: execResult?.via ?? (canUseGMExecutor ? "gm-executor-generic" : "local"),
+      executionPath: execResult?.via ?? (shouldUseGMExecutor ? "gm-executor-generic" : "local"),
       cancelled: !!ARGS.__abortConfirm,
       reason: ARGS.__abortReason ?? null,
       passiveSkipped: !!PAYLOAD.meta.__passiveSkipped,

@@ -275,6 +275,66 @@ return (async () => {
     });
   }
 
+  const parsedTargeting = typeof api.parseTargetingText === "function"
+    ? api.parseTargetingText(skillTargetRaw)
+    : null;
+
+  if (str(parsedTargeting?.mode).toLowerCase() === "none") {
+    const skipReason = 'Skill target is "None"';
+
+    log("SKIP TARGETING", {
+      reason: skipReason,
+      executionMode,
+      skillTargetRaw,
+      parsedTargeting,
+      preservedTokenTargets: preExistingTargets,
+      preservedActorTargets: preExistingActorTargets
+    });
+
+    PAYLOAD.targets = [...preExistingTargets];
+    PAYLOAD.originalTargetUUIDs = [...preExistingTargets];
+    PAYLOAD.originalTargetActorUUIDs = [...preExistingActorTargets];
+
+    PAYLOAD.meta.originalTargetUUIDs = [...preExistingTargets];
+    PAYLOAD.meta.originalTargetActorUUIDs = [...preExistingActorTargets];
+
+    PAYLOAD.meta.targeting = {
+      skipped: true,
+      reason: skipReason,
+      ok: true,
+      confirmed: true,
+      cancelled: false,
+      status: "confirmed",
+      mode: "none",
+      category: str(parsedTargeting?.category),
+      promptText: str(parsedTargeting?.promptText),
+      selectedCount: preExistingTargets.length,
+      tokenUuids: [...preExistingTargets],
+      actorUuids: [...preExistingActorTargets],
+      userId: ownerUserId,
+      sourceActorUuid: attackerUuid,
+      skillTypeRaw,
+      skillTargetRaw,
+      executionMode: PAYLOAD?.meta?.executionMode ?? null,
+      isPassiveExecution: !!PAYLOAD?.meta?.isPassiveExecution,
+      waitedMs: 0,
+      finishedAtMs: sinceStart()
+    };
+
+    payloadSnapshot("PAYLOAD AFTER NONE TARGETING SKIP");
+
+    return {
+      ok: true,
+      skipped: true,
+      reason: skipReason,
+      tokenUuids: [...preExistingTargets],
+      actorUuids: [...preExistingActorTargets],
+      selectedCount: preExistingTargets.length,
+      waitedMs: 0,
+      totalMacroMs: sinceStart()
+    };
+  }
+
   const actionStub = {
     name: skillName,
     system: {

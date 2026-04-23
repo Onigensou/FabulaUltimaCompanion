@@ -184,12 +184,100 @@ const MAGIC_ICON_URL  = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/F
     return ui.notifications.error("CreateActionCard: Missing __PAYLOAD (call ActionDataFetch first).");
   }
 
-  PAYLOAD.meta = PAYLOAD.meta || {};
+   PAYLOAD.meta = PAYLOAD.meta || {};
   PAYLOAD.core = PAYLOAD.core || {};
 
   const cacLog  = (...a) => { if (CAC_DEBUG) console.log(CAC_TAG, ...a); };
   const cacWarn = (...a) => { if (CAC_DEBUG) console.warn(CAC_TAG, ...a); };
   const cacErr  = (...a) => { if (CAC_DEBUG) console.error(CAC_TAG, ...a); };
+
+  const nowMs = () => Date.now();
+  const isoNow = () => new Date().toISOString();
+  const makeActionRefId = (prefix = "ACT") => {
+    const rnd = (foundry?.utils?.randomID?.(8))
+      ?? Math.random().toString(36).slice(2, 10);
+    return `${prefix}-${nowMs().toString(36)}-${rnd}`;
+  };
+
+  function ensureActionCardIdentity(payload) {
+  payload.meta = payload.meta || {};
+
+  const existingActionId = String(
+    payload?.meta?.actionId ??
+    payload?.actionId ??
+    ""
+  ).trim();
+
+  const existingCardId = String(
+    payload?.meta?.actionCardId ??
+    payload?.actionCardId ??
+    ""
+  ).trim();
+
+  const nextActionId = existingActionId || makeActionRefId("ACT");
+  const nextActionCardId = makeActionRefId("ACARD");
+  const nextVersion = (Number(payload?.meta?.actionCardVersion ?? payload?.actionCardVersion ?? 0) || 0) + 1;
+  const createdAtMs = Number(payload?.meta?.actionCreatedAtMs ?? payload?.actionCreatedAtMs ?? nowMs()) || nowMs();
+  const createdAtIso = String(
+    payload?.meta?.actionCreatedAtIso ??
+    payload?.actionCreatedAtIso ??
+    new Date(createdAtMs).toISOString()
+  );
+
+  const replacedCardIds = Array.isArray(payload?.meta?.replacedActionCardIds)
+    ? payload.meta.replacedActionCardIds.filter(Boolean).map(String)
+    : [];
+
+  if (existingCardId && existingCardId !== nextActionCardId && !replacedCardIds.includes(existingCardId)) {
+    replacedCardIds.push(existingCardId);
+  }
+
+  payload.actionId = nextActionId;
+  payload.actionCardId = nextActionCardId;
+  payload.actionCardVersion = nextVersion;
+  payload.actionCreatedAtMs = createdAtMs;
+  payload.actionCreatedAtIso = createdAtIso;
+
+  payload.meta.actionId = nextActionId;
+  payload.meta.actionCardId = nextActionCardId;
+  payload.meta.actionCardVersion = nextVersion;
+  payload.meta.actionCreatedAtMs = createdAtMs;
+  payload.meta.actionCreatedAtIso = createdAtIso;
+  payload.meta.actionCardRenderedAtMs = nowMs();
+  payload.meta.actionCardRenderedAtIso = isoNow();
+  payload.meta.replacedActionCardIds = replacedCardIds;
+
+  if (payload?.meta?.actionCardMessageId !== undefined && payload?.meta?.actionCardMessageId !== null) {
+    payload.actionCardMessageId = String(payload.meta.actionCardMessageId);
+  }
+
+  return {
+    actionId: nextActionId,
+    actionCardId: nextActionCardId,
+    actionCardVersion: nextVersion,
+    actionCreatedAtMs: createdAtMs,
+    actionCreatedAtIso: createdAtIso,
+    replacedActionCardIds: replacedCardIds
+  };
+}
+
+function buildActionCardFlagData(payload, messageId = null) {
+  const resolvedMessageId =
+    messageId ??
+    payload?.meta?.actionCardMessageId ??
+    payload?.actionCardMessageId ??
+    null;
+
+  return {
+    payload,
+    actionId: payload?.meta?.actionId ?? payload?.actionId ?? null,
+    actionCardId: payload?.meta?.actionCardId ?? payload?.actionCardId ?? null,
+    actionCardVersion: payload?.meta?.actionCardVersion ?? payload?.actionCardVersion ?? null,
+    actionCardMessageId: resolvedMessageId ? String(resolvedMessageId) : null
+  };
+}
+
+  const actionCardIdentity = ensureActionCardIdentity(PAYLOAD);
 
   const passiveGuardExecutionMode = String(
     PAYLOAD?.executionMode ??
@@ -326,7 +414,13 @@ const MAGIC_ICON_URL  = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/F
 
         // Target info
         targets: targetsFromPayload,
-        attackRange: attackRange ?? null
+        attackRange: attackRange ?? null,
+
+        // Universal action-card identity
+        actionId: actionCardIdentity.actionId,
+        actionCardId: actionCardIdentity.actionCardId,
+        actionCardVersion: actionCardIdentity.actionCardVersion,
+        actionCardMessageId: PAYLOAD?.meta?.actionCardMessageId ?? PAYLOAD?.actionCardMessageId ?? null
       };
 
       // 1) Trigger: "When a creature performs an action"
@@ -852,6 +946,9 @@ const effectHTML = !hasEffect ? "" : `
               aeDirectives: meta?.activeEffects ?? [],
               attackerUuid: meta?.attackerUuid ?? null,
               originalTargetUUIDs,
+              actionId: actionCardIdentity.actionId,
+              actionCardId: actionCardIdentity.actionCardId,
+              actionCardVersion: actionCardIdentity.actionCardVersion,
 
               hasDamageSection: !!hasDamageSection
             }))}'
@@ -889,7 +986,11 @@ const effectHTML = !hasEffect ? "" : `
             ">✏️</button>`;
 
   const cardHTML = `
-    <div class="fu-card" style="font-family: Signika, sans-serif; letter-spacing:.2px; position:relative; overflow:hidden; border-radius:10px;">
+    <div class="fu-card"
+         data-fu-action-id="${esc(actionCardIdentity.actionId)}"
+         data-fu-action-card-id="${esc(actionCardIdentity.actionCardId)}"
+         data-fu-action-card-version="${esc(String(actionCardIdentity.actionCardVersion))}"
+         style="font-family: Signika, sans-serif; letter-spacing:.2px; position:relative; overflow:hidden; border-radius:10px;">
       <div class="fu-body">
 <h1 style="
   font-family: Signika, sans-serif;
@@ -922,9 +1023,23 @@ ${attackerBox}
       </div>
     </div>`;
 
-  // ============ post & after-post light wiring ============
+    // ============ post & after-post light wiring ============
   const speaker = ChatMessage.getSpeaker();
   const posted  = await ChatMessage.create({ user: game.userId, speaker, content: cardHTML });
+
+  PAYLOAD.meta.actionCardMessageId = posted?.id ? String(posted.id) : null;
+  PAYLOAD.actionCardMessageId = PAYLOAD.meta.actionCardMessageId;
+
+  try {
+    await posted.update(
+      { [`flags.${MODULE_NS}.actionCard`]: buildActionCardFlagData(PAYLOAD, posted?.id ?? null) },
+      { render: false }
+    );
+  } catch (e1) {
+    try {
+      await posted.setFlag(MODULE_NS, "actionCard", buildActionCardFlagData(PAYLOAD, posted?.id ?? null));
+    } catch (e2) {}
+  }
 
   Hooks.on("renderChatMessage", async function fuCardInit(chatMsg, htmlEl) {
     if (chatMsg.id !== posted.id) return;
@@ -940,10 +1055,14 @@ ${attackerBox}
     }
 
     const confirmBtn = root.querySelector("[data-fu-confirm]");
-    if (confirmBtn?.dataset?.fuArgs) {
+        if (confirmBtn?.dataset?.fuArgs) {
       try {
         const cur = JSON.parse(confirmBtn.dataset.fuArgs);
         cur.chatMsgId = chatMsg.id;
+        cur.actionCardMessageId = chatMsg.id;
+        cur.actionId = PAYLOAD?.meta?.actionId ?? PAYLOAD?.actionId ?? null;
+        cur.actionCardId = PAYLOAD?.meta?.actionCardId ?? PAYLOAD?.actionCardId ?? null;
+        cur.actionCardVersion = PAYLOAD?.meta?.actionCardVersion ?? PAYLOAD?.actionCardVersion ?? null;
         confirmBtn.dataset.fuArgs = JSON.stringify(cur);
       } catch {}
     }
@@ -1003,20 +1122,27 @@ ${attackerBox}
       console.warn("Effect preview init failed:", e);
     }
 
-    // --- Persist payload WITHOUT re-rendering the message ---
+        // --- Persist payload WITHOUT re-rendering the message ---
+    PAYLOAD.meta.actionCardMessageId = chatMsg?.id ? String(chatMsg.id) : (PAYLOAD?.meta?.actionCardMessageId ?? null);
+    PAYLOAD.actionCardMessageId = PAYLOAD.meta.actionCardMessageId;
+
     try {
       await chatMsg.update(
-        { [`flags.${MODULE_NS}.actionCard`]: { payload: PAYLOAD } },
+        { [`flags.${MODULE_NS}.actionCard`]: buildActionCardFlagData(PAYLOAD, chatMsg?.id ?? null) },
         { render: false }
       );
     } catch (e1) {
-      try { await chatMsg.setFlag(MODULE_NS, "actionCard", { payload: PAYLOAD }); } catch (e2) {}
+      try { await chatMsg.setFlag(MODULE_NS, "actionCard", buildActionCardFlagData(PAYLOAD, chatMsg?.id ?? null)); } catch (e2) {}
     }
   });
 
-  cacLog("Posted with canonical targets:", {
+    cacLog("Posted with canonical targets:", {
     count: originalTargetUUIDs.length,
     source: originalTargetSource,
-    targets: originalTargetUUIDs
+    targets: originalTargetUUIDs,
+    actionId: PAYLOAD?.meta?.actionId ?? null,
+    actionCardId: PAYLOAD?.meta?.actionCardId ?? null,
+    actionCardVersion: PAYLOAD?.meta?.actionCardVersion ?? null,
+    actionCardMessageId: PAYLOAD?.meta?.actionCardMessageId ?? null
   });
 })();

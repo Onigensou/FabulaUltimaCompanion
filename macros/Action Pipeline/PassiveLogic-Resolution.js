@@ -71,11 +71,20 @@ return (async () => {
     globalThis.FUCompanion?.api?.GMExecutor ??
     null;
 
-  const canUseGMExecutor = !!(
-    !game.user?.isGM &&
-    gmExecutor &&
-    typeof gmExecutor.executeSnippet === "function"
-  );
+const canUseGMExecutor = !!(
+  !game.user?.isGM &&
+  gmExecutor &&
+  typeof gmExecutor.executeSnippet === "function"
+);
+
+// Passive wrappers do not inspect individual passive script text here,
+// so they only respect the shared payload/meta opt-out flag.
+const forceLocalExecution = !!(
+  PAYLOAD?.meta?.__forceLocalUiExecution === true ||
+  PAYLOAD?.meta?.passiveLogicForceLocal === true
+);
+
+const shouldUseGMExecutor = canUseGMExecutor && !forceLocalExecution;
 
   const passiveApi =
     globalThis.FUCompanion?.api?.passiveModifier ??
@@ -379,14 +388,20 @@ return {
   try {
     let execResult;
 
-    if (canUseGMExecutor) {
-      execResult = await runPassiveViaGM();
-    } else {
-      if (!game.user?.isGM && !gmExecutor?.executeSnippet) {
-        warn("GMExecutor generic API is unavailable on a non-GM client. Falling back to local execution; permission-gated logic may fail.");
-      }
-      execResult = await runPassiveLocally();
-    }
+if (shouldUseGMExecutor) {
+  execResult = await runPassiveViaGM();
+} else {
+  if (forceLocalExecution) {
+    log("FORCING LOCAL EXECUTION for UI-driven passive wrapper.", {
+      callerUserId: game.user?.id ?? null,
+      skillName: PAYLOAD?.core?.skillName ?? null,
+      chatMsgId: CHAT_MSG?.id ?? null
+    });
+  } else if (!game.user?.isGM && !gmExecutor?.executeSnippet) {
+    warn("GMExecutor generic API is unavailable on a non-GM client. Falling back to local execution; permission-gated logic may fail.");
+  }
+  execResult = await runPassiveLocally();
+}
 
     if (!execResult?.ok) {
       throw Object.assign(new Error(execResult?.error ?? "Passive logic resolution failed"), {
@@ -403,7 +418,8 @@ return {
       skillName: PAYLOAD?.core?.skillName ?? null,
       isPassiveExecution: isAutoPassiveExecution,
       passiveTriggerKey: PAYLOAD?.meta?.passiveTriggerKey ?? PAYLOAD?.meta?.triggerKey ?? null,
-      executionPath: execResult?.via ?? (canUseGMExecutor ? "gm-executor-generic" : "local"),
+      executionPath: execResult?.via ?? (shouldUseGMExecutor ? "gm-executor-generic" : "local"),
+      forceLocalExecution,
       actorName: execResult?.actorName ?? null,
       actorUuid: execResult?.actorUuid ?? null,
       engineSummary: {
@@ -416,7 +432,8 @@ return {
     const after = snap();
     log("DONE", {
       dtMs: Math.round(performance.now() - t0),
-      executionPath: execResult?.via ?? (canUseGMExecutor ? "gm-executor-generic" : "local"),
+      executionPath: execResult?.via ?? (shouldUseGMExecutor ? "gm-executor-generic" : "local"),
+      forceLocalExecution,
       changed: {
         elementType: `${before.elementType} → ${after.elementType}`,
         weaponType: `${before.weaponType} → ${after.weaponType}`,
@@ -438,7 +455,7 @@ return {
     return {
       ok: true,
       runId,
-      executionPath: execResult?.via ?? (canUseGMExecutor ? "gm-executor-generic" : "local"),
+      executionPath: execResult?.via ?? (shouldUseGMExecutor ? "gm-executor-generic" : "local"),
       cancelled: !!ARGS.__abortConfirm,
       reason: ARGS.__abortReason ?? null,
       passiveSkipped: !!PAYLOAD.meta.__passiveSkipped,

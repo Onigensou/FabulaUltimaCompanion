@@ -77,11 +77,22 @@ return (async () => {
     globalThis.FUCompanion?.api?.GMExecutor ??
     null;
 
-  const canUseGMExecutor = !!(
-    !game.user?.isGM &&
-    gmExecutor &&
-    typeof gmExecutor.executeSnippet === "function"
-  );
+const canUseGMExecutor = !!(
+  !game.user?.isGM &&
+  gmExecutor &&
+  typeof gmExecutor.executeSnippet === "function"
+);
+
+// Local-only opt-out for UI-driven snippets.
+// Use this for skills whose custom logic should open dialogs on the client
+// that clicked the button, not on the GM client.
+const forceLocalExecution = !!(
+  PAYLOAD?.meta?.customLogicActionForceLocal === true ||
+  /@local-ui-only\b/i.test(scriptText) ||
+  /@force-local\b/i.test(scriptText)
+);
+
+const shouldUseGMExecutor = canUseGMExecutor && !forceLocalExecution;
 
   // Lightweight snapshot for debug diffs
   const snap = () => ({
@@ -542,7 +553,8 @@ return (async () => {
     actionTypeIsSpell: actionTypeDebug.isSpell,
     actionTypeCandidates: actionTypeDebug.spellCandidates,
     actionTypeRaw: actionTypeDebug.raw,
-    executionPath: canUseGMExecutor ? "gm-executor-generic" : "local",
+    executionPath: shouldUseGMExecutor ? "gm-executor-generic" : "local",
+    forceLocalExecution,
     preview: scriptText.slice(0, 160)
   });
 
@@ -639,14 +651,20 @@ ${scriptText}
   try {
     let execResult;
 
-    if (canUseGMExecutor) {
-      execResult = await runSnippetViaGM();
-    } else {
-      if (!game.user?.isGM && !gmExecutor?.executeSnippet) {
-        warn("GMExecutor generic API is unavailable on a non-GM client. Falling back to local execution; permission-gated logic may fail.");
-      }
-      execResult = await runSnippetLocally();
-    }
+    if (shouldUseGMExecutor) {
+  execResult = await runSnippetViaGM();
+} else {
+  if (forceLocalExecution) {
+    log("FORCING LOCAL EXECUTION for UI-driven custom logic.", {
+      callerUserId: game.user?.id ?? null,
+      skillName: context.skillName
+    });
+  } else if (!game.user?.isGM && !gmExecutor?.executeSnippet) {
+    warn("GMExecutor generic API is unavailable on a non-GM client. Falling back to local execution; permission-gated logic may fail.");
+  }
+
+  execResult = await runSnippetLocally();
+}
 
     if (!execResult?.ok) {
       throw Object.assign(new Error(execResult?.error ?? "Custom logic execution failed"), {
@@ -665,14 +683,15 @@ ${scriptText}
       actionTypeDetected: actionTypeDebug.detectedActionType,
       actionTypeIsSpell: actionTypeDebug.isSpell,
       actionTypeCandidates: actionTypeDebug.spellCandidates,
-      executionPath: execResult?.via ?? (canUseGMExecutor ? "gm-executor-generic" : "local")
+      executionPath: execResult?.via ?? (shouldUseGMExecutor ? "gm-executor-generic" : "local")
     };
 
     const after = snap();
 
     log("DONE", {
       dtMs: Math.round(performance.now() - t0),
-      executionPath: execResult?.via ?? (canUseGMExecutor ? "gm-executor-generic" : "local"),
+      executionPath: execResult?.via ?? (shouldUseGMExecutor ? "gm-executor-generic" : "local"),
+      forceLocalExecution,
       changed: {
         costRaw: `${before.costRaw} → ${after.costRaw}`,
         baseValue: `${before.baseValue} → ${after.baseValue}`,
