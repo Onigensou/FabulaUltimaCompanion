@@ -579,17 +579,52 @@
     }
   }
 
-  async function consumeItemIfNeeded(actionContext, runId) {
-    const attackerUuid = actionContext?.meta?.attackerUuid ?? null;
-    const itemUsage = actionContext?.itemUsage ?? actionContext?.meta?.itemUsage ?? null;
+async function consumeItemIfNeeded(actionContext, runId) {
+  const attackerUuid = actionContext?.meta?.attackerUuid ?? null;
+  const itemUsage = actionContext?.itemUsage ?? actionContext?.meta?.itemUsage ?? null;
 
-    if (!attackerUuid || !itemUsage?.itemUuid) {
-      log(runId, "ITEM CONSUME skipped", {
-        hasAttacker: !!attackerUuid,
-        hasItemUsage: !!itemUsage
-      });
-      return { ok: true, skipped: true };
-    }
+  const itemUseMode = String(
+    actionContext?.itemUseMode ??
+    actionContext?.meta?.itemUseMode ??
+    itemUsage?.mode ??
+    actionContext?.itemCreate?.mode ??
+    actionContext?.meta?.itemCreate?.mode ??
+    ""
+  ).trim().toLowerCase();
+
+  const isCreateItemMode =
+    itemUseMode === "create" ||
+    actionContext?.itemCreate?.enabled === true ||
+    actionContext?.meta?.itemCreate?.enabled === true;
+
+  const consumeQuantity =
+    itemUsage?.consumeQuantity !== false &&
+    !isCreateItemMode;
+
+  // Create Item mode spends IP through ResourceGate/action cost spending.
+  // It should NOT consume an owned item from inventory.
+  if (!consumeQuantity) {
+    log(runId, "ITEM CONSUME skipped", {
+      reason: "consumeQuantity_false_or_create_mode",
+      itemUseMode,
+      isCreateItemMode,
+      itemUsage
+    });
+
+    return {
+      ok: true,
+      skipped: true,
+      reason: "consumeQuantity_false_or_create_mode"
+    };
+  }
+
+  if (!attackerUuid || !itemUsage?.itemUuid) {
+    log(runId, "ITEM CONSUME skipped", {
+      hasAttacker: !!attackerUuid,
+      hasItemUsage: !!itemUsage
+    });
+    return { ok: true, skipped: true };
+  }
 
     try {
       const actor = await resolveActorFromUuid(attackerUuid);

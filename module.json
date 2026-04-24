@@ -24,6 +24,7 @@
   "scripts/dialog-system/dialog-ui.js",
   "scripts/dialog-system/dialog-core.js",
   "scripts/dialog-system/dialog-examineUI.js",
+  "scripts/command-system/command-itemCreate.js",
   "scripts/main.js",
   "scripts/speech-bubble.js",
   "scripts/turn-ui-manager.js",

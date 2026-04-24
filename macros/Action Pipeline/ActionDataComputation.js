@@ -234,6 +234,46 @@ const PASSIVE_ACTION_MACRO_NAME = "PassiveLogic-Action";
     game.user?.name ||
     null;
 
+      // ---------------- Item Use/Create carry-through helpers ----------------
+  function seededItemUseMode(payload = {}) {
+    return String(
+      payload?.itemUseMode ??
+      payload?.meta?.itemUseMode ??
+      payload?.itemUsage?.mode ??
+      payload?.meta?.itemUsage?.mode ??
+      (
+        payload?.itemCreate?.enabled ||
+        payload?.meta?.itemCreate?.enabled
+          ? "create"
+          : ""
+      ) ??
+      ""
+    ).trim().toLowerCase();
+  }
+
+  function seededItemCreate(payload = {}) {
+    const raw = payload?.itemCreate ?? payload?.meta?.itemCreate ?? null;
+    if (!raw) return null;
+    return cloneObject(raw, null);
+  }
+
+  function seededItemUsage(payload = {}) {
+    const raw = payload?.itemUsage ?? payload?.meta?.itemUsage ?? null;
+    if (!raw) return null;
+    return cloneObject(raw, null);
+  }
+
+  function seededItemCostMeta(payload = {}) {
+    const meta = payload?.meta ?? {};
+    const out = {};
+
+    if (meta.costRawOriginal !== undefined) out.costRawOriginal = meta.costRawOriginal;
+    if (meta.costRaw !== undefined) out.costRaw = meta.costRaw;
+    if (meta.costRawOverride !== undefined) out.costRawOverride = meta.costRawOverride;
+    if (meta.costRawFinal !== undefined) out.costRawFinal = meta.costRawFinal;
+
+    return out;
+  }
 
   function canonicalTargetUUIDsFromPayload(payload = {}) {
     return cloneArray(
@@ -1242,7 +1282,43 @@ const totalFlatBonus =
       autoHit  : _isCritFinal === true
     };
 
-    const costRaw = String(skillItem?.system?.props?.cost ?? skillItem?.system?.cost ?? "").trim();
+        const baseSkillCostRaw = String(
+      skillItem?.system?.props?.cost ??
+      skillItem?.system?.cost ??
+      ""
+    ).trim();
+
+    const itemUseMode = seededItemUseMode(PAYLOAD);
+    const itemCreate = seededItemCreate(PAYLOAD);
+    const itemUsage = seededItemUsage(PAYLOAD);
+    const itemCostMeta = seededItemCostMeta(PAYLOAD);
+
+    const costRaw = String(
+      itemCostMeta.costRaw ??
+      baseSkillCostRaw ??
+      ""
+    ).trim();
+
+    const costRawOverride = itemCostMeta.costRawOverride;
+
+    const costRawFinal = String(
+      itemCostMeta.costRawFinal ??
+      itemCostMeta.costRawOverride ??
+      costRaw ??
+      ""
+    ).trim();
+
+    adcLog("ITEM / COST CARRY-THROUGH", {
+      skillName: dataCore.skillName,
+      listType,
+      itemUseMode,
+      hasItemCreate: !!itemCreate,
+      hasItemUsage: !!itemUsage,
+      baseSkillCostRaw,
+      costRaw,
+      costRawOverride,
+      costRawFinal
+    });
 
     const cardPayload = {
       core: {
@@ -1270,7 +1346,23 @@ const totalFlatBonus =
         invoked: { trait:false, bond:false },
 
         bonds: collectBondsSnapshot(actorProps),
+
+        // Resource cost carry-through.
+        // Normal Skill/Item use keeps the skill cost.
+        // Create Item mode can override this with "1 IP", "2 IP", etc.
         costRaw,
+        costRawOriginal: itemCostMeta.costRawOriginal ?? baseSkillCostRaw,
+
+        ...(costRawOverride !== undefined ? { costRawOverride } : {}),
+        ...(costRawFinal ? { costRawFinal } : {}),
+
+        // Item mode carry-through.
+        // Use mode: consume owned quantity later.
+        // Create mode: spend IP later, do not consume quantity.
+        itemUseMode,
+        itemCreate,
+        itemUsage,
+
         skillTypeRaw : dataCore.skillTypeRaw,
         skillTargetRaw: dataCore.skillTargetRaw,
         executionMode: executionModeSeed,
@@ -1323,8 +1415,10 @@ const totalFlatBonus =
       sourceActionOwnerUserId: seededSourceActionOwnerUserId(PAYLOAD),
       sourceActionOwnerUserName: seededSourceActionOwnerUserName(PAYLOAD),
 
-      // carry itemUsage forward if ActionDataFetch provided it
-      itemUsage: PAYLOAD?.itemUsage ?? null,
+      // Carry Item Use/Create data forward into the Action Card flag.
+      itemUseMode,
+      itemCreate,
+      itemUsage,
 
       // also store at top-level for convenience
       customLogicActionRaw,

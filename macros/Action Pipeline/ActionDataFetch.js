@@ -513,17 +513,102 @@ const MODULE_ID = "fabula-ultima-companion";
       skillTargetRaw: dataCore.skillTargetRaw
     });
 
-    const itemUsage = (() => {
-      if (!itemDoc) return null;
-      const p = itemDoc.system?.props ?? {};
-      const isUnique = !!p.isUnique;
-      let quantity = 0;
-      if (!isUnique) {
-        const q = Number(p.item_quantity ?? 0);
-        quantity = Number.isFinite(q) ? q : 0;
-      }
-      return { itemUuid: itemDoc.uuid, itemId: itemDoc.id, itemName: itemDoc.name ?? "", isUnique, quantity };
-    })();
+    const itemUseMode = String(
+  PAYLOAD?.itemUseMode ??
+  PAYLOAD?.meta?.itemUseMode ??
+  (PAYLOAD?.itemCreate?.enabled || PAYLOAD?.meta?.itemCreate?.enabled ? "create" : "use")
+).trim().toLowerCase();
+
+const isCreateItemMode = itemUseMode === "create";
+
+const itemCreate = (() => {
+  const raw = PAYLOAD?.itemCreate ?? PAYLOAD?.meta?.itemCreate ?? null;
+  if (!raw) return null;
+
+  try {
+    return foundry.utils.deepClone(raw);
+  } catch {
+    return { ...raw };
+  }
+})();
+
+const itemUsage = (() => {
+  if (!itemDoc) return null;
+
+  const p = itemDoc.system?.props ?? {};
+  const isUnique = !!p.isUnique;
+
+  // Create mode:
+  // The item is being created from IP, not consumed from inventory.
+  if (isCreateItemMode) {
+    return {
+      mode: "create",
+      consumeQuantity: false,
+
+      itemUuid: itemDoc.uuid,
+      itemId: itemDoc.id,
+      itemName: itemDoc.name ?? "",
+
+      createdItemUuid: itemCreate?.createdItemUuid ?? itemDoc.uuid,
+      createdItemId: itemCreate?.createdItemId ?? itemDoc.id,
+      createdItemName: itemCreate?.createdItemName ?? itemDoc.name ?? "",
+
+      recipeUuid: itemCreate?.recipeUuid ?? null,
+      recipeName: itemCreate?.recipeName ?? null,
+
+      isUnique: false,
+      quantity: null
+    };
+  }
+
+  // Use mode:
+  // Normal JRPG item usage; quantity should be consumed later by ActionExecutionCore.
+  let quantity = 0;
+  if (!isUnique) {
+    const q = Number(p.item_quantity ?? 0);
+    quantity = Number.isFinite(q) ? q : 0;
+  }
+
+  return {
+    mode: "use",
+    consumeQuantity: true,
+
+    itemUuid: itemDoc.uuid,
+    itemId: itemDoc.id,
+    itemName: itemDoc.name ?? "",
+
+    isUnique,
+    quantity
+  };
+})();
+
+const itemCostMeta = (() => {
+  const out = {};
+
+  if (PAYLOAD?.meta?.costRaw !== undefined) {
+    out.costRaw = PAYLOAD.meta.costRaw;
+  }
+
+  if (PAYLOAD?.meta?.costRawOverride !== undefined) {
+    out.costRawOverride = PAYLOAD.meta.costRawOverride;
+  }
+
+  if (PAYLOAD?.meta?.costRawFinal !== undefined) {
+    out.costRawFinal = PAYLOAD.meta.costRawFinal;
+  }
+
+  return out;
+})();
+
+_adfLog("Item usage mode resolved", {
+  itemUseMode,
+  isCreateItemMode,
+  itemName: itemDoc?.name ?? null,
+  itemUuid: itemDoc?.uuid ?? null,
+  itemUsage,
+  itemCreate,
+  itemCostMeta
+});
 
     const targets = Array.isArray(PAYLOAD.targets)
       ? PAYLOAD.targets
@@ -554,8 +639,20 @@ const MODULE_ID = "fabula-ultima-companion";
         customLogicActionRaw,
         customLogicResolutionRaw,
 
-        itemUsage,
-        meta: buildForwardMeta()
+itemUseMode,
+itemCreate,
+itemUsage,
+
+meta: buildForwardMeta({
+  itemUseMode,
+  itemCreate,
+  itemUsage,
+
+  itemUuid: itemDoc?.uuid ?? PAYLOAD?.itemUuid ?? null,
+  itemName: itemDoc?.name ?? PAYLOAD?.itemName ?? null,
+
+  ...itemCostMeta
+})
       }
     });
 
