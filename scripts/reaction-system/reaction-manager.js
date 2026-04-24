@@ -50,6 +50,60 @@ Hooks.once("ready", () => {
     // Optional local mirror for socket-built contexts on non-GM clients.
     const _localReactionWindows = new Map();
 
+    // Player → GM socket request de-dupe.
+// This prevents repeated action/check/target events from spam-refreshing the same UI window.
+const _recentSocketPhaseRequests = new Map();
+
+function getPrimaryActiveGM() {
+  const users = Array.from(game.users?.contents ?? game.users ?? []);
+  const activeGMs = users
+    .filter(u => u?.active && u?.isGM)
+    .sort((a, b) => String(a.id).localeCompare(String(b.id)));
+
+  return activeGMs[0] ?? null;
+}
+
+function isPrimaryReactionGM() {
+  if (!game.user?.isGM) return false;
+  const primary = getPrimaryActiveGM();
+  return !primary || primary.id === game.user.id;
+}
+
+function makeSocketPhaseRequestKey(payload = {}) {
+  return [
+    payload?.actionCardId ?? payload?.actionId ?? "(no-action)",
+    payload?.trigger ?? "(no-trigger)",
+    payload?.targetUuid ?? "(no-target)",
+    payload?.requestedByUserId ?? "(no-user)"
+  ].map(v => String(v ?? "")).join("::");
+}
+
+function shouldProcessSocketPhaseRequest(payload = {}) {
+  const now = Date.now();
+
+  // Clean old entries.
+  for (const [key, time] of _recentSocketPhaseRequests.entries()) {
+    if (now - time > 2500) {
+      _recentSocketPhaseRequests.delete(key);
+    }
+  }
+
+  const key = makeSocketPhaseRequestKey(payload);
+
+  if (_recentSocketPhaseRequests.has(key)) {
+    return false;
+  }
+
+  _recentSocketPhaseRequests.set(key, now);
+  return true;
+}
+
+function isPrimaryReactionGM() {
+  if (!game.user?.isGM) return false;
+  const primary = getPrimaryActiveGM();
+  return !primary || primary.id === game.user.id;
+}
+
     // -------------------------------------------------------------------------
     // HARD NUKE – clear all Reaction buttons on THIS client
     // -------------------------------------------------------------------------
@@ -74,18 +128,26 @@ Hooks.once("ready", () => {
         isGM: game.user.isGM
       });
 
-      // 1) Try via official ReactionButtonUI API
-      const uiApi = window["oni.ReactionButtonUI"];
-      if (uiApi && typeof uiApi.clearAll === "function") {
-        try {
-          uiApi.clearAll();
-          console.log("[ReactionManager] Called ReactionButtonUI.clearAll() from hardNukeReactionButtons.");
-        } catch (err) {
-          console.error("[ReactionManager] Error calling ReactionButtonUI.clearAll().", err);
-        }
-      } else {
-        console.warn("[ReactionManager] ReactionButtonUI API not available on this client (hardNukeReactionButtons).");
-      }
+// 1) Try via official ReactionButtonUI API
+const uiApi = window["oni.ReactionButtonUI"];
+let usedOfficialClear = false;
+
+if (uiApi && typeof uiApi.clearAll === "function") {
+  try {
+    uiApi.clearAll();
+    usedOfficialClear = true;
+    console.log("[ReactionManager] Called ReactionButtonUI.clearAll() from hardNukeReactionButtons.");
+  } catch (err) {
+    console.error("[ReactionManager] Error calling ReactionButtonUI.clearAll().", err);
+  }
+} else {
+  console.warn("[ReactionManager] ReactionButtonUI API not available on this client (hardNukeReactionButtons).");
+}
+
+// If the official UI API handled the known buttons, do not also schedule
+// raw DOM removal timers for the same elements. That can delete the newly
+// refreshed button after spawnButton revives it.
+if (usedOfficialClear) return;
 
       // 2) Direct DOM cleanup as safety net, but with a small ease-out animation.
       try {
@@ -818,197 +880,239 @@ Hooks.once("ready", () => {
     // -------------------------------------------------------------------------
 
     function handleModuleMessage(data) {
-      if (!data || typeof data !== "object") return;
+  if (!data || typeof data !== "object") return;
 
-      // 1) CLEAR: GM changed phase bucket; everyone clears buttons.
-      if (data.type === "OniReactionClear") {
-        const payload = data.payload || {};
-        const { phaseBucket, triggerKey, fromUserId } = payload;
+  // -------------------------------------------------------------------------
+  // 0) PLAYER → GM PHASE REQUEST
+  // -------------------------------------------------------------------------
+  if (data.type === "OniReactionPhaseRequest") {
+    const payload = data.payload || {};
 
-        console.log("[ReactionManager] Socket OniReactionClear on user", game.user.id, {
-          phaseBucket,
-          triggerKey,
-          fromUserId
-        });
+    if (!game.user?.isGM) return;
 
-        clearAllReactionWindows();
-
-        // Use the same hard nuke we proved with the manual V3 macro.
-        hardNukeReactionButtons("socket");
-
-        // Keep the local bucket in sync (mostly for debugging)
-        _currentPhaseBucket = phaseBucket ?? null;
-        return;
-      }
-
-      // 2) OFFER: GM is telling a specific user to show Reaction buttons.
-      if (data.type === "OniReactionOffer") {
-        const payload = data.payload || {};
-        const {
-          targetUserId,
-          triggerKey,
-          latestTriggerKey,
-          triggerKeys,
-          phaseBucket,
-          actorUuid,
-          tokenId,
-          itemUuids,
-          itemGroups,
-          phasePayload,
-          latestPhasePayload,
-          phasePayloadByTrigger
-        } = payload;
-
-        console.log("[ReactionManager] Socket OniReactionOffer on user", game.user.id, payload);
-
-        // Only the targeted user should respond.
-        if (!targetUserId || targetUserId !== game.user.id) {
-          console.log("[ReactionManager] OniReactionOffer: message not for this user; ignoring.", {
-            localUserId: game.user.id,
-            targetUserId
-          });
-          return;
-        }
-
-        const uiApi = window["oni.ReactionButtonUI"];
-        if (!uiApi || typeof uiApi.spawnButton !== "function") {
-          ui.notifications?.error?.("[Reaction] ReactionButtonUI script not installed (socket offer).");
-          console.error("[ReactionManager] Missing oni.ReactionButtonUI API for OniReactionOffer.");
-          return;
-        }
-
-        // If GM says phase bucket is now X, keep our local view in sync
-        if (phaseBucket && phaseBucket !== _currentPhaseBucket) {
-          clearAllReactionWindows();
-          hardNukeReactionButtons("socket-phase-change");
-          _currentPhaseBucket = phaseBucket;
-        }
-
-        // Resolve the token on this canvas
-        const token = byIdOnCanvas(tokenId);
-        if (!token) {
-          console.warn("[ReactionManager] OniReactionOffer: token not found on this canvas.", { tokenId });
-          return;
-        }
-
-        // Resolve the actor (prefer actorUuid, fall back to token.actor)
-        let actor = null;
-        try {
-          actor = actorUuid ? fromUuidSync(actorUuid) : token.actor;
-        } catch (err) {
-          console.warn("[ReactionManager] OniReactionOffer: error resolving actor from uuid.", actorUuid, err);
-          actor = token.actor;
-        }
-
-        if (!actor) {
-          console.warn("[ReactionManager] OniReactionOffer: no actor found for token / actorUuid.", {
-            tokenId,
-            actorUuid
-          });
-          return;
-        }
-
-        // Rebuild a simple "reactions" array: [{ item, triggers }, ...]
-        const reactions = [];
-        const uniqueIds = new Set();
-        const itemGroupMap = new Map();
-
-        if (Array.isArray(itemGroups)) {
-          for (const g of itemGroups) {
-            if (!g?.itemUuid) continue;
-            itemGroupMap.set(g.itemUuid, {
-              itemUuid: g.itemUuid,
-              triggers: uniqueStrings(g.triggers ?? [])
-            });
-          }
-        }
-
-        const uuidsToResolve = Array.isArray(itemUuids)
-          ? itemUuids
-          : Array.from(itemGroupMap.keys());
-
-        for (const u of uuidsToResolve) {
-          if (!u) continue;
-
-          let item = null;
-
-          // Try resolving via fromUuidSync first
-          try {
-            item = fromUuidSync(u);
-          } catch (_err) {}
-
-          // Fallback: try to pull from the actor's own items
-          if (!item && actor.items) {
-            const match = u.match(/Item\.([A-Za-z0-9]+)$/);
-            const idGuess = match ? match[1] : null;
-            if (idGuess) {
-              item = actor.items.get(idGuess);
-            }
-          }
-
-          if (!item || uniqueIds.has(item.id)) continue;
-          uniqueIds.add(item.id);
-
-          const triggerInfo = itemGroupMap.get(u);
-          reactions.push({
-            item,
-            triggers: uniqueStrings(triggerInfo?.triggers ?? []),
-            rows: []
-          });
-        }
-
-        if (!reactions.length) {
-          console.warn("[ReactionManager] OniReactionOffer: no valid Item documents resolved for this offer.", itemUuids);
-          return;
-        }
-
-        const resolvedTriggerKey = latestTriggerKey ?? triggerKey ?? "(unknown_trigger)";
-        const resolvedTriggerKeys = uniqueStrings(triggerKeys ?? reactions.flatMap(r => r?.triggers ?? []));
-
-        const ctx = {
-          combatant: null, // not used by ReactionChooseSkill
-          actor,
-          token,
-          reactions,
-          triggerKey: resolvedTriggerKey,
-          latestTriggerKey: resolvedTriggerKey,
-          triggerKeys: resolvedTriggerKeys,
-          phasePayload: foundry.utils.deepClone(latestPhasePayload ?? phasePayload ?? {}),
-          latestPhasePayload: foundry.utils.deepClone(latestPhasePayload ?? phasePayload ?? {}),
-          phasePayloadByTrigger: foundry.utils.deepClone(phasePayloadByTrigger ?? {}),
-          triggerEntries: resolvedTriggerKeys.map(k => ({
-            triggerKey: k,
-            phasePayload: foundry.utils.deepClone((phasePayloadByTrigger ?? {})[k] ?? {}),
-            reactions: reactions.filter(r => Array.isArray(r?.triggers) && r.triggers.includes(k))
-          })),
-          phaseBucket: phaseBucket ?? null,
-          ownerUserIds: [targetUserId]
-        };
-
-        _localReactionWindows.set(makeWindowKey(phaseBucket, tokenId), foundry.utils.deepClone({
-          phaseBucket,
-          tokenId,
-          triggerKey: resolvedTriggerKey,
-          triggerKeys: resolvedTriggerKeys
-        }));
-
-        // Spawn the floating button and wire it to open the dialog on click
-        uiApi.spawnButton(token, ctx, (clickedCtx) => {
-          const dialogApi = window["oni.ReactionChooseSkill"];
-          if (!dialogApi || typeof dialogApi.openReactionDialog !== "function") {
-            ui.notifications?.error?.("[Reaction] ReactionChooseSkill script not installed (socket offer).");
-            console.error("[ReactionManager] Missing oni.ReactionChooseSkill.openReactionDialog for OniReactionOffer.");
-            return;
-          }
-
-          dialogApi.openReactionDialog(clickedCtx);
-        });
-
-        return;
-      }
-
-      // Other message types on this channel are ignored by ReactionManager.
+    if (!isPrimaryReactionGM()) {
+      console.log("[ReactionManager] OniReactionPhaseRequest ignored on non-primary GM.", {
+        localUserId: game.user.id,
+        localUserName: game.user.name,
+        primaryGmId: getPrimaryActiveGM()?.id ?? null,
+        trigger: payload?.trigger,
+        actionId: payload?.actionId ?? null,
+        actionCardId: payload?.actionCardId ?? null
+      });
+      return;
     }
+
+    if (!shouldProcessSocketPhaseRequest(payload)) {
+      console.log("[ReactionManager] Duplicate OniReactionPhaseRequest ignored.", {
+        trigger: payload?.trigger,
+        actionId: payload?.actionId ?? null,
+        actionCardId: payload?.actionCardId ?? null,
+        targetUuid: payload?.targetUuid ?? null,
+        requestedByUserId: payload?.requestedByUserId ?? null
+      });
+      return;
+    }
+
+    const clonedPayload = foundry.utils.deepClone(payload);
+
+    console.log("[ReactionManager] Primary GM received OniReactionPhaseRequest.", {
+      trigger: clonedPayload?.trigger,
+      requestedByUserId: clonedPayload?.requestedByUserId ?? null,
+      requestedByUserName: clonedPayload?.requestedByUserName ?? null,
+      actionId: clonedPayload?.actionId ?? null,
+      actionCardId: clonedPayload?.actionCardId ?? null,
+      payload: clonedPayload
+    });
+
+    Hooks.callAll("oni:reactionPhase", {
+      ...clonedPayload,
+      fromSocketRequest: true
+    });
+
+    return;
+  }
+
+  // -------------------------------------------------------------------------
+  // 1) CLEAR: GM changed phase bucket; everyone clears buttons.
+  // -------------------------------------------------------------------------
+  if (data.type === "OniReactionClear") {
+    const payload = data.payload || {};
+    const { phaseBucket, triggerKey, fromUserId } = payload;
+
+    console.log("[ReactionManager] Socket OniReactionClear on user", game.user.id, {
+      phaseBucket,
+      triggerKey,
+      fromUserId
+    });
+
+    clearAllReactionWindows();
+    hardNukeReactionButtons("socket");
+
+    _currentPhaseBucket = phaseBucket ?? null;
+    return;
+  }
+
+  // -------------------------------------------------------------------------
+  // 2) OFFER: GM is telling a specific user to show Reaction buttons.
+  // -------------------------------------------------------------------------
+  if (data.type === "OniReactionOffer") {
+    const payload = data.payload || {};
+    const {
+      targetUserId,
+      triggerKey,
+      latestTriggerKey,
+      triggerKeys,
+      phaseBucket,
+      actorUuid,
+      tokenId,
+      itemUuids,
+      itemGroups,
+      phasePayload,
+      latestPhasePayload,
+      phasePayloadByTrigger
+    } = payload;
+
+    console.log("[ReactionManager] Socket OniReactionOffer on user", game.user.id, payload);
+
+    if (!targetUserId || targetUserId !== game.user.id) {
+      console.log("[ReactionManager] OniReactionOffer: message not for this user; ignoring.", {
+        localUserId: game.user.id,
+        targetUserId
+      });
+      return;
+    }
+
+    const uiApi = window["oni.ReactionButtonUI"];
+    if (!uiApi || typeof uiApi.spawnButton !== "function") {
+      ui.notifications?.error?.("[Reaction] ReactionButtonUI script not installed (socket offer).");
+      console.error("[ReactionManager] Missing oni.ReactionButtonUI API for OniReactionOffer.");
+      return;
+    }
+
+    if (phaseBucket && phaseBucket !== _currentPhaseBucket) {
+      clearAllReactionWindows();
+      hardNukeReactionButtons("socket-phase-change");
+      _currentPhaseBucket = phaseBucket;
+    }
+
+    const token = byIdOnCanvas(tokenId);
+    if (!token) {
+      console.warn("[ReactionManager] OniReactionOffer: token not found on this canvas.", { tokenId });
+      return;
+    }
+
+    let actor = null;
+    try {
+      actor = actorUuid ? fromUuidSync(actorUuid) : token.actor;
+    } catch (err) {
+      console.warn("[ReactionManager] OniReactionOffer: error resolving actor from uuid.", actorUuid, err);
+      actor = token.actor;
+    }
+
+    if (!actor) {
+      console.warn("[ReactionManager] OniReactionOffer: no actor found for token / actorUuid.", {
+        tokenId,
+        actorUuid
+      });
+      return;
+    }
+
+    const reactions = [];
+    const uniqueIds = new Set();
+    const itemGroupMap = new Map();
+
+    if (Array.isArray(itemGroups)) {
+      for (const g of itemGroups) {
+        if (!g?.itemUuid) continue;
+        itemGroupMap.set(g.itemUuid, {
+          itemUuid: g.itemUuid,
+          triggers: uniqueStrings(g.triggers ?? [])
+        });
+      }
+    }
+
+    const uuidsToResolve = Array.isArray(itemUuids)
+      ? itemUuids
+      : Array.from(itemGroupMap.keys());
+
+    for (const u of uuidsToResolve) {
+      if (!u) continue;
+
+      let item = null;
+
+      try {
+        item = fromUuidSync(u);
+      } catch (_err) {}
+
+      if (!item && actor.items) {
+        const match = u.match(/Item\.([A-Za-z0-9]+)$/);
+        const idGuess = match ? match[1] : null;
+        if (idGuess) {
+          item = actor.items.get(idGuess);
+        }
+      }
+
+      if (!item || uniqueIds.has(item.id)) continue;
+      uniqueIds.add(item.id);
+
+      const triggerInfo = itemGroupMap.get(u);
+      reactions.push({
+        item,
+        triggers: uniqueStrings(triggerInfo?.triggers ?? []),
+        rows: []
+      });
+    }
+
+    if (!reactions.length) {
+      console.warn("[ReactionManager] OniReactionOffer: no valid Item documents resolved for this offer.", itemUuids);
+      return;
+    }
+
+    const resolvedTriggerKey = latestTriggerKey ?? triggerKey ?? "(unknown_trigger)";
+    const resolvedTriggerKeys = uniqueStrings(triggerKeys ?? reactions.flatMap(r => r?.triggers ?? []));
+
+    const ctx = {
+      combatant: null,
+      actor,
+      token,
+      reactions,
+      triggerKey: resolvedTriggerKey,
+      latestTriggerKey: resolvedTriggerKey,
+      triggerKeys: resolvedTriggerKeys,
+      phasePayload: foundry.utils.deepClone(latestPhasePayload ?? phasePayload ?? {}),
+      latestPhasePayload: foundry.utils.deepClone(latestPhasePayload ?? phasePayload ?? {}),
+      phasePayloadByTrigger: foundry.utils.deepClone(phasePayloadByTrigger ?? {}),
+      triggerEntries: resolvedTriggerKeys.map(k => ({
+        triggerKey: k,
+        phasePayload: foundry.utils.deepClone((phasePayloadByTrigger ?? {})[k] ?? {}),
+        reactions: reactions.filter(r => Array.isArray(r?.triggers) && r.triggers.includes(k))
+      })),
+      phaseBucket: phaseBucket ?? null,
+      ownerUserIds: [targetUserId]
+    };
+
+    _localReactionWindows.set(makeWindowKey(phaseBucket, tokenId), foundry.utils.deepClone({
+      phaseBucket,
+      tokenId,
+      triggerKey: resolvedTriggerKey,
+      triggerKeys: resolvedTriggerKeys
+    }));
+
+    uiApi.spawnButton(token, ctx, (clickedCtx) => {
+      const dialogApi = window["oni.ReactionChooseSkill"];
+
+      if (!dialogApi || typeof dialogApi.openReactionDialog !== "function") {
+        ui.notifications?.error?.("[Reaction] ReactionChooseSkill script not installed (socket offer).");
+        console.error("[ReactionManager] Missing oni.ReactionChooseSkill.openReactionDialog for OniReactionOffer.");
+        return;
+      }
+
+      dialogApi.openReactionDialog(clickedCtx);
+    });
+
+    return;
+  }
+}
 
     // Attach our handler to the module channel on every client (GM + players)
     if (game.socket) {
