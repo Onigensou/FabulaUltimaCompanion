@@ -174,7 +174,7 @@ const MAGIC_ICON_URL  = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/F
   Hooks.on("closeChatMessage", () => { const t=document.getElementById(TT_ID); if (t) t.style.display="none"; });
 })();
 
-(async () => {
+return (async () => {
   // ============ read payload ============
   let AUTO, PAYLOAD;
   if (typeof __AUTO !== "undefined") { AUTO = __AUTO; PAYLOAD = __PAYLOAD ?? {}; }
@@ -199,8 +199,26 @@ const MAGIC_ICON_URL  = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/F
     return `${prefix}-${nowMs().toString(36)}-${rnd}`;
   };
 
-  function ensureActionCardIdentity(payload) {
+  function ensureActionCardIdentity(payload, options = {}) {
   payload.meta = payload.meta || {};
+
+  const updateExisting = !!(
+    options.updateExisting === true ||
+    payload?.meta?.__actionCardUpdateExisting === true ||
+    String(payload?.meta?.__actionCardRenderMode ?? "").trim().toLowerCase() === "updateexisting"
+  );
+
+  const preserveCardId = !!(
+    options.preserveCardId === true ||
+    payload?.meta?.__preserveActionCardId === true ||
+    updateExisting
+  );
+
+  const preserveVersion = !!(
+    options.preserveVersion === true ||
+    payload?.meta?.__preserveActionCardVersion === true ||
+    updateExisting
+  );
 
   const existingActionId = String(
     payload?.meta?.actionId ??
@@ -214,10 +232,27 @@ const MAGIC_ICON_URL  = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/F
     ""
   ).trim();
 
+  const existingVersion = Number(
+    payload?.meta?.actionCardVersion ??
+    payload?.actionCardVersion ??
+    0
+  ) || 0;
+
   const nextActionId = existingActionId || makeActionRefId("ACT");
-  const nextActionCardId = makeActionRefId("ACARD");
-  const nextVersion = (Number(payload?.meta?.actionCardVersion ?? payload?.actionCardVersion ?? 0) || 0) + 1;
-  const createdAtMs = Number(payload?.meta?.actionCreatedAtMs ?? payload?.actionCreatedAtMs ?? nowMs()) || nowMs();
+  const nextActionCardId = preserveCardId && existingCardId
+    ? existingCardId
+    : makeActionRefId("ACARD");
+
+  const nextVersion = preserveVersion
+    ? Math.max(1, existingVersion || 1)
+    : existingVersion + 1;
+
+  const createdAtMs = Number(
+    payload?.meta?.actionCreatedAtMs ??
+    payload?.actionCreatedAtMs ??
+    nowMs()
+  ) || nowMs();
+
   const createdAtIso = String(
     payload?.meta?.actionCreatedAtIso ??
     payload?.actionCreatedAtIso ??
@@ -228,7 +263,12 @@ const MAGIC_ICON_URL  = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/F
     ? payload.meta.replacedActionCardIds.filter(Boolean).map(String)
     : [];
 
-  if (existingCardId && existingCardId !== nextActionCardId && !replacedCardIds.includes(existingCardId)) {
+  if (
+    !preserveCardId &&
+    existingCardId &&
+    existingCardId !== nextActionCardId &&
+    !replacedCardIds.includes(existingCardId)
+  ) {
     replacedCardIds.push(existingCardId);
   }
 
@@ -247,6 +287,10 @@ const MAGIC_ICON_URL  = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/F
   payload.meta.actionCardRenderedAtIso = isoNow();
   payload.meta.replacedActionCardIds = replacedCardIds;
 
+  if (!payload.meta.actionCardState) {
+    payload.meta.actionCardState = "pending";
+  }
+
   if (payload?.meta?.actionCardMessageId !== undefined && payload?.meta?.actionCardMessageId !== null) {
     payload.actionCardMessageId = String(payload.meta.actionCardMessageId);
   }
@@ -257,27 +301,216 @@ const MAGIC_ICON_URL  = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/F
     actionCardVersion: nextVersion,
     actionCreatedAtMs: createdAtMs,
     actionCreatedAtIso: createdAtIso,
-    replacedActionCardIds: replacedCardIds
+    replacedActionCardIds: replacedCardIds,
+    updateExisting,
+    preserveCardId,
+    preserveVersion
   };
 }
 
 function buildActionCardFlagData(payload, messageId = null) {
+  payload.meta = payload.meta || {};
+
   const resolvedMessageId =
     messageId ??
     payload?.meta?.actionCardMessageId ??
     payload?.actionCardMessageId ??
     null;
 
+  if (resolvedMessageId) {
+    payload.meta.actionCardMessageId = String(resolvedMessageId);
+    payload.actionCardMessageId = String(resolvedMessageId);
+  }
+
+  const replacedActionCardIds = Array.from(new Set([
+    ...(Array.isArray(payload?.meta?.replacedActionCardIds) ? payload.meta.replacedActionCardIds : []),
+    ...(Array.isArray(payload?.replacedActionCardIds) ? payload.replacedActionCardIds : [])
+  ].filter(Boolean).map(String)));
+
+  payload.meta.replacedActionCardIds = replacedActionCardIds;
+
   return {
     payload,
     actionId: payload?.meta?.actionId ?? payload?.actionId ?? null,
     actionCardId: payload?.meta?.actionCardId ?? payload?.actionCardId ?? null,
     actionCardVersion: payload?.meta?.actionCardVersion ?? payload?.actionCardVersion ?? null,
-    actionCardMessageId: resolvedMessageId ? String(resolvedMessageId) : null
+    actionCardMessageId: resolvedMessageId ? String(resolvedMessageId) : null,
+    replacedActionCardIds,
+    actionCardState: payload?.meta?.actionCardState ?? payload?.actionCardState ?? "pending",
+    lastRenderedAtMs: payload?.meta?.actionCardRenderedAtMs ?? nowMs(),
+    lastRenderedAtIso: payload?.meta?.actionCardRenderedAtIso ?? isoNow()
   };
 }
 
-  const actionCardIdentity = ensureActionCardIdentity(PAYLOAD);
+async function saveActionCardFlagToMessage(message, payload) {
+  if (!message) return { ok: false, reason: "missing_message" };
+
+  const flagData = buildActionCardFlagData(payload, message.id);
+
+  try {
+    await message.update(
+      { [`flags.${MODULE_NS}.actionCard`]: flagData },
+      { render: false }
+    );
+
+    return {
+      ok: true,
+      messageId: message.id,
+      flagData
+    };
+  } catch (e1) {
+    try {
+      await message.setFlag(MODULE_NS, "actionCard", flagData);
+
+      return {
+        ok: true,
+        messageId: message.id,
+        flagData,
+        fallback: "setFlag"
+      };
+    } catch (e2) {
+      cacWarn("saveActionCardFlagToMessage failed", {
+        messageId: message?.id ?? null,
+        updateError: String(e1?.message ?? e1),
+        setFlagError: String(e2?.message ?? e2)
+      });
+
+      return {
+        ok: false,
+        reason: "save_flag_failed",
+        updateError: String(e1?.message ?? e1),
+        setFlagError: String(e2?.message ?? e2)
+      };
+    }
+  }
+}
+
+function registerCreateActionCardRendererApi() {
+  const api = {
+    version: "0.1.0",
+
+    renderActionCardHTML: async (payload, options = {}) => {
+      const macro = game.macros?.getName?.("CreateActionCard") ?? null;
+
+      if (!macro) {
+        throw new Error('CreateActionCard macro not found.');
+      }
+
+      const messageId = String(
+        options?.targetMessageId ??
+        options?.message?.id ??
+        payload?.meta?.actionCardMessageId ??
+        payload?.actionCardMessageId ??
+        ""
+      ).trim();
+
+      const renderPayload = foundry?.utils?.deepClone
+        ? foundry.utils.deepClone(payload)
+        : JSON.parse(JSON.stringify(payload ?? {}));
+
+      renderPayload.meta = renderPayload.meta || {};
+      renderPayload.meta.__actionCardRenderMode = "updateExisting";
+      renderPayload.meta.__actionCardUpdateExisting = true;
+      renderPayload.meta.__preserveActionCardId = true;
+      renderPayload.meta.__preserveActionCardVersion = true;
+      renderPayload.meta.__targetMessageId = messageId;
+      renderPayload.meta.__skipReactionEmit = true;
+      renderPayload.meta.__skipCriticalCutin = true;
+      renderPayload.meta.__rebuiltByActionCardRebuilder = true;
+
+      const result = await macro.execute({
+        __AUTO: true,
+        __PAYLOAD: renderPayload
+      });
+
+      return {
+        ok: !!result?.ok,
+        html: result?.html ?? result?.content ?? "",
+        content: result?.content ?? result?.html ?? "",
+        payload: result?.payload ?? renderPayload,
+        messageId: result?.messageId ?? messageId,
+        actionId: result?.actionId ?? renderPayload?.meta?.actionId ?? null,
+        actionCardId: result?.actionCardId ?? renderPayload?.meta?.actionCardId ?? null,
+        actionCardVersion: result?.actionCardVersion ?? renderPayload?.meta?.actionCardVersion ?? null
+      };
+    },
+
+    updateExistingActionCard: async ({ payload, messageId } = {}) => {
+      return await api.renderActionCardHTML(payload, {
+        targetMessageId: messageId
+      });
+    },
+
+    buildActionCardFlagData,
+    saveActionCardFlagToMessage
+  };
+
+  globalThis.FUCompanion = globalThis.FUCompanion || {};
+  globalThis.FUCompanion.api = globalThis.FUCompanion.api || {};
+  globalThis.FUCompanion.api.createActionCardRenderer = api;
+  globalThis.FUCompanion.api.actionCardRenderer = api;
+
+  try {
+    const mod = game.modules?.get?.(MODULE_NS);
+    if (mod) {
+      mod.api = mod.api || {};
+      mod.api.createActionCardRenderer = api;
+      mod.api.actionCardRenderer = api;
+    }
+  } catch (e) {
+    cacWarn("Could not register CreateActionCard renderer API.", {
+      error: String(e?.message ?? e)
+    });
+  }
+
+  cacLog("CreateActionCard renderer API registered.", {
+    hasRenderActionCardHTML: true
+  });
+
+  return api;
+}
+
+registerCreateActionCardRendererApi();
+
+    const renderModeRaw = String(PAYLOAD?.meta?.__actionCardRenderMode ?? "").trim().toLowerCase();
+
+  const actionCardUpdateExisting = !!(
+    renderModeRaw === "updateexisting" ||
+    PAYLOAD?.meta?.__actionCardUpdateExisting === true
+  );
+
+  const actionCardTargetMessageId = String(
+    PAYLOAD?.meta?.__targetMessageId ??
+    PAYLOAD?.meta?.actionCardMessageId ??
+    PAYLOAD?.actionCardMessageId ??
+    ""
+  ).trim();
+
+  const skipReactionEmit = !!(
+    actionCardUpdateExisting ||
+    PAYLOAD?.meta?.__skipReactionEmit === true
+  );
+
+  const skipCriticalCutin = !!(
+    actionCardUpdateExisting ||
+    PAYLOAD?.meta?.__skipCriticalCutin === true
+  );
+
+  const actionCardIdentity = ensureActionCardIdentity(PAYLOAD, {
+    updateExisting: actionCardUpdateExisting,
+    preserveCardId: actionCardUpdateExisting,
+    preserveVersion: actionCardUpdateExisting
+  });
+
+  cacLog("ACTION CARD RENDER MODE", {
+    updateExisting: actionCardUpdateExisting,
+    targetMessageId: actionCardTargetMessageId || null,
+    actionId: actionCardIdentity.actionId,
+    actionCardId: actionCardIdentity.actionCardId,
+    actionCardVersion: actionCardIdentity.actionCardVersion,
+    skipReactionEmit,
+    skipCriticalCutin
+  });
 
   const passiveGuardExecutionMode = String(
     PAYLOAD?.executionMode ??
@@ -385,7 +618,7 @@ function buildActionCardFlagData(payload, messageId = null) {
 
     // --- ONI Reaction Phase beacons: action declared / checks / targeting ---
   try {
-    if (globalThis.ONI?.emit) {
+        if (!skipReactionEmit && globalThis.ONI?.emit) {
       const targetsFromPayload = [...originalTargetUUIDs];
 
       const baseReactionPayload = {
@@ -494,7 +727,7 @@ function buildActionCardFlagData(payload, messageId = null) {
       } catch {}
     }
 
-    if (isCritical && attackerUuid && window.FUCompanion?.api?.cutinBroadcast) {
+        if (!skipCriticalCutin && isCritical && attackerUuid && window.FUCompanion?.api?.cutinBroadcast) {
       const SUSPENSE_MS = 0;
       const SLIDE_IN_MS = 220;
       const HOLD_MS     = 700;
@@ -946,9 +1179,14 @@ const effectHTML = !hasEffect ? "" : `
               aeDirectives: meta?.activeEffects ?? [],
               attackerUuid: meta?.attackerUuid ?? null,
               originalTargetUUIDs,
+              originalTargetActorUUIDs,
+
+              actionContext: PAYLOAD,
+
               actionId: actionCardIdentity.actionId,
               actionCardId: actionCardIdentity.actionCardId,
               actionCardVersion: actionCardIdentity.actionCardVersion,
+              actionCardMessageId: PAYLOAD?.meta?.actionCardMessageId ?? PAYLOAD?.actionCardMessageId ?? null,
 
               hasDamageSection: !!hasDamageSection
             }))}'
@@ -1023,22 +1261,66 @@ ${attackerBox}
       </div>
     </div>`;
 
-    // ============ post & after-post light wiring ============
-  const speaker = ChatMessage.getSpeaker();
-  const posted  = await ChatMessage.create({ user: game.userId, speaker, content: cardHTML });
+        // ============ post / update & after-post light wiring ============
+  let posted = null;
 
-  PAYLOAD.meta.actionCardMessageId = posted?.id ? String(posted.id) : null;
-  PAYLOAD.actionCardMessageId = PAYLOAD.meta.actionCardMessageId;
+  if (actionCardUpdateExisting) {
+    posted = game.messages?.get?.(actionCardTargetMessageId) ?? null;
 
-  try {
-    await posted.update(
-      { [`flags.${MODULE_NS}.actionCard`]: buildActionCardFlagData(PAYLOAD, posted?.id ?? null) },
-      { render: false }
-    );
-  } catch (e1) {
-    try {
-      await posted.setFlag(MODULE_NS, "actionCard", buildActionCardFlagData(PAYLOAD, posted?.id ?? null));
-    } catch (e2) {}
+    if (!posted) {
+      cacWarn("UPDATE EXISTING failed: target ChatMessage not found.", {
+        targetMessageId: actionCardTargetMessageId,
+        actionId: actionCardIdentity.actionId,
+        actionCardId: actionCardIdentity.actionCardId
+      });
+
+      ui.notifications?.warn?.("CreateActionCard: could not find existing Action Card message to update.");
+
+      return {
+        ok: false,
+        reason: "target_message_not_found",
+        actionId: actionCardIdentity.actionId,
+        actionCardId: actionCardIdentity.actionCardId,
+        actionCardVersion: actionCardIdentity.actionCardVersion,
+        targetMessageId: actionCardTargetMessageId || null
+      };
+    }
+
+    PAYLOAD.meta.actionCardMessageId = String(posted.id);
+    PAYLOAD.actionCardMessageId = String(posted.id);
+
+    const flagData = buildActionCardFlagData(PAYLOAD, posted.id);
+
+    await posted.update({
+      content: cardHTML,
+      [`flags.${MODULE_NS}.actionCard`]: flagData
+    });
+
+    cacLog("UPDATED EXISTING ACTION CARD", {
+      messageId: posted.id,
+      actionId: actionCardIdentity.actionId,
+      actionCardId: actionCardIdentity.actionCardId,
+      actionCardVersion: actionCardIdentity.actionCardVersion
+    });
+  } else {
+    const speaker = ChatMessage.getSpeaker();
+    posted = await ChatMessage.create({
+      user: game.userId,
+      speaker,
+      content: cardHTML
+    });
+
+    PAYLOAD.meta.actionCardMessageId = posted?.id ? String(posted.id) : null;
+    PAYLOAD.actionCardMessageId = PAYLOAD.meta.actionCardMessageId;
+
+    await saveActionCardFlagToMessage(posted, PAYLOAD);
+
+    cacLog("CREATED NEW ACTION CARD", {
+      messageId: posted?.id ?? null,
+      actionId: actionCardIdentity.actionId,
+      actionCardId: actionCardIdentity.actionCardId,
+      actionCardVersion: actionCardIdentity.actionCardVersion
+    });
   }
 
   Hooks.on("renderChatMessage", async function fuCardInit(chatMsg, htmlEl) {
@@ -1145,4 +1427,18 @@ ${attackerBox}
     actionCardVersion: PAYLOAD?.meta?.actionCardVersion ?? null,
     actionCardMessageId: PAYLOAD?.meta?.actionCardMessageId ?? null
   });
+    return {
+    ok: true,
+    updatedExisting: !!actionCardUpdateExisting,
+    createdNew: !actionCardUpdateExisting,
+    messageId: posted?.id ?? null,
+    chatMsgId: posted?.id ?? null,
+    actionId: actionCardIdentity.actionId,
+    actionCardId: actionCardIdentity.actionCardId,
+    actionCardVersion: actionCardIdentity.actionCardVersion,
+    actionCardMessageId: posted?.id ?? null,
+    content: cardHTML,
+    html: cardHTML,
+    payload: PAYLOAD
+  };
 })();

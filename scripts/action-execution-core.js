@@ -309,6 +309,126 @@
     return resolveSavedTargetUUIDs(actionContext).uuids;
   }
 
+  function forceMergedArgsToLatestPayload(actionContext, mergedArgs, chatMsgId = null) {
+  const payload = actionContext ?? {};
+  const meta = payload?.meta ?? {};
+  const core = payload?.core ?? {};
+  const dataCore = payload?.dataCore ?? {};
+  const adv = payload?.advPayload ?? {};
+  const accuracy = payload?.accuracy ?? null;
+
+  const savedTargets = resolveSavedTargetUUIDs(payload).uuids;
+  const savedActorTargets = cloneArray(
+    payload?.originalTargetActorUUIDs ??
+    payload?.meta?.originalTargetActorUUIDs ??
+    []
+  ).filter(Boolean).map(String);
+
+  // Keep macro names from args/defaults, but force game data from latest payload.
+  mergedArgs.advPayload = foundry.utils.deepClone(adv);
+
+  mergedArgs.actionId = meta.actionId ?? payload.actionId ?? mergedArgs.actionId ?? null;
+  mergedArgs.actionCardId = meta.actionCardId ?? payload.actionCardId ?? mergedArgs.actionCardId ?? null;
+  mergedArgs.actionCardVersion = meta.actionCardVersion ?? payload.actionCardVersion ?? mergedArgs.actionCardVersion ?? null;
+  mergedArgs.actionCardMessageId = meta.actionCardMessageId ?? payload.actionCardMessageId ?? chatMsgId ?? mergedArgs.actionCardMessageId ?? null;
+
+  mergedArgs.elementType =
+    meta.elementType ??
+    adv.elementType ??
+    core.typeDamageTxt ??
+    dataCore.typeDamageTxt ??
+    mergedArgs.elementType ??
+    "physical";
+
+  mergedArgs.weaponType =
+    core.weaponType ??
+    adv.weaponType ??
+    meta.weaponType ??
+    mergedArgs.weaponType ??
+    "";
+
+  mergedArgs.valueType =
+    adv.valueType ??
+    meta.valueType ??
+    mergedArgs.valueType ??
+    "hp";
+
+  mergedArgs.baseValue =
+    adv.baseValue ??
+    meta.baseValue ??
+    mergedArgs.baseValue ??
+    "0";
+
+  mergedArgs.bonus =
+    adv.bonus ??
+    meta.bonus ??
+    mergedArgs.bonus ??
+    0;
+
+  mergedArgs.reduction =
+    adv.reduction ??
+    meta.reduction ??
+    mergedArgs.reduction ??
+    0;
+
+  mergedArgs.multiplier =
+    adv.multiplier ??
+    meta.multiplier ??
+    mergedArgs.multiplier ??
+    100;
+
+  mergedArgs.ignoreShield = !!(adv.ignoreShield ?? meta.ignoreShield ?? mergedArgs.ignoreShield);
+  mergedArgs.ignoreDamageReduction = !!(adv.ignoreDamageReduction ?? meta.ignoreDamageReduction ?? mergedArgs.ignoreDamageReduction);
+
+  mergedArgs.isSpellish = !!(
+    meta.isSpellish ??
+    dataCore.isSpell ??
+    dataCore.isOffSpell ??
+    mergedArgs.isSpellish
+  );
+
+  mergedArgs.hasAccuracy = !!accuracy;
+  mergedArgs.accuracyTotal = accuracy?.total ?? mergedArgs.accuracyTotal ?? null;
+
+  mergedArgs.autoHit = !!(
+    accuracy?.autoHit ??
+    meta.autoHit ??
+    adv.autoHit ??
+    adv.isCrit ??
+    accuracy?.isCrit ??
+    mergedArgs.autoHit
+  );
+
+  mergedArgs.forceMiss = !!(accuracy?.forceMiss ?? meta.forceMiss ?? mergedArgs.forceMiss);
+
+  mergedArgs.attackRange = meta.attackRange ?? adv.attackRange ?? mergedArgs.attackRange ?? "Melee";
+  mergedArgs.attackerName = meta.attackerName ?? core.attackerName ?? mergedArgs.attackerName ?? "Unknown";
+  mergedArgs.attackerUuid = meta.attackerUuid ?? payload.attackerUuid ?? payload.attackerActorUuid ?? mergedArgs.attackerUuid ?? null;
+
+  mergedArgs.sourceType = meta.sourceType ?? adv.sourceType ?? mergedArgs.sourceType ?? null;
+  mergedArgs.skillName = core.skillName ?? dataCore.skillName ?? mergedArgs.skillName ?? null;
+  mergedArgs.skillTypeRaw = core.skillTypeRaw ?? dataCore.skillTypeRaw ?? meta.skillTypeRaw ?? mergedArgs.skillTypeRaw ?? "";
+
+  mergedArgs.hasDamageSection =
+    (meta.hasDamageSection !== undefined)
+      ? !!meta.hasDamageSection
+      : (adv.hasDamageSection !== undefined)
+        ? !!adv.hasDamageSection
+        : !!mergedArgs.hasDamageSection;
+
+  mergedArgs.declaresHealing = !!(meta.declaresHealing ?? adv.declaresHealing ?? mergedArgs.declaresHealing);
+
+  mergedArgs.aeDirectives = Array.isArray(meta.activeEffects)
+    ? meta.activeEffects
+    : (Array.isArray(mergedArgs.aeDirectives) ? mergedArgs.aeDirectives : []);
+
+  mergedArgs.originalTargetUUIDs = savedTargets;
+  mergedArgs.targets = savedTargets;
+  mergedArgs.originalTargetActorUUIDs = savedActorTargets;
+
+  return mergedArgs;
+}
+
   async function buildSourceSnapshot(actionContext, mergedArgs) {
     const payload = actionContext ?? {};
     const meta = payload?.meta ?? {};
@@ -827,7 +947,10 @@
         (payload?.accuracy?.isCrit === true)
     };
 
+    // Allow confirm/custom systems to pass utility fields,
+    // but never allow stale button-baked action data to override the latest card flag.
     Object.assign(mergedArgs, args || {});
+    forceMergedArgsToLatestPayload(payload, mergedArgs, chatMsgId);
 
     log(runId, "START", {
       executionMode,
@@ -1121,19 +1244,121 @@
             }
 
             if (mergedArgs.hasDamageSection) {
-              const advUniversalPayload = {
-                ...mergedArgs.advPayload,
-                targetIds: hitIds,
-                actionContext: payload,
-                actionCardMsgId: chatMsgId ?? null
-              };
+              const latestElementType = String(
+  payload?.meta?.elementType ??
+  payload?.advPayload?.elementType ??
+  mergedArgs.elementType ??
+  mergedArgs.advPayload?.elementType ??
+  "physical"
+).trim().toLowerCase();
 
-              log(runId, "AdvanceDamage begin", {
-                macro: mergedArgs.advMacroName,
-                targetIds: hitIds.length
-              });
+const latestAdvPayload = {
+  ...(mergedArgs.advPayload ?? {}),
 
-              await adv.execute({ __AUTO: true, __PAYLOAD: advUniversalPayload });
+  // IMPORTANT:
+  // Force latest edited Action Card data back into the flattened payload
+  // that AdvanceDamage actually consumes.
+  elementType: latestElementType,
+
+  weaponType:
+    payload?.advPayload?.weaponType ??
+    mergedArgs.advPayload?.weaponType ??
+    mergedArgs.weaponType ??
+    payload?.core?.weaponType ??
+    "none_ef",
+
+  valueType:
+    payload?.advPayload?.valueType ??
+    mergedArgs.advPayload?.valueType ??
+    mergedArgs.valueType ??
+    "hp",
+
+  baseValue:
+    payload?.advPayload?.baseValue ??
+    mergedArgs.advPayload?.baseValue ??
+    mergedArgs.baseValue ??
+    "0",
+
+  reduction:
+    payload?.advPayload?.reduction ??
+    mergedArgs.advPayload?.reduction ??
+    mergedArgs.reduction ??
+    0,
+
+  bonus:
+    payload?.advPayload?.bonus ??
+    mergedArgs.advPayload?.bonus ??
+    mergedArgs.bonus ??
+    0,
+
+  multiplier:
+    payload?.advPayload?.multiplier ??
+    mergedArgs.advPayload?.multiplier ??
+    mergedArgs.multiplier ??
+    100,
+
+  targetAffinity:
+    payload?.advPayload?.targetAffinity ??
+    mergedArgs.advPayload?.targetAffinity ??
+    mergedArgs.targetAffinity ??
+    "neutral",
+
+  ignoreDamageReduction:
+    payload?.advPayload?.ignoreDamageReduction ??
+    mergedArgs.advPayload?.ignoreDamageReduction ??
+    mergedArgs.ignoreDamageReduction ??
+    false,
+
+  ignoreShield:
+    payload?.advPayload?.ignoreShield ??
+    mergedArgs.advPayload?.ignoreShield ??
+    mergedArgs.ignoreShield ??
+    false,
+
+  attackerUuid:
+    payload?.meta?.attackerUuid ??
+    payload?.advPayload?.attackerUuid ??
+    mergedArgs.attackerUuid ??
+    mergedArgs.advPayload?.attackerUuid ??
+    null,
+
+  isCrit:
+    payload?.advPayload?.isCrit ??
+    payload?.accuracy?.isCrit ??
+    mergedArgs.advPayload?.isCrit ??
+    false
+};
+
+const advUniversalPayload = {
+  ...latestAdvPayload,
+  targetIds: hitIds,
+  actionContext: payload,
+  actionCardMsgId: chatMsgId ?? null,
+
+  __actionEditorResolutionDebug: {
+    runId,
+    actionId: payload?.meta?.actionId ?? payload?.actionId ?? null,
+    actionCardId: payload?.meta?.actionCardId ?? payload?.actionCardId ?? null,
+    actionCardVersion: payload?.meta?.actionCardVersion ?? payload?.actionCardVersion ?? null,
+    forcedElementType: latestElementType,
+    payloadMetaElement: payload?.meta?.elementType ?? null,
+    payloadAdvElement: payload?.advPayload?.elementType ?? null,
+    mergedArgElement: mergedArgs.elementType ?? null,
+    mergedAdvElement: mergedArgs.advPayload?.elementType ?? null
+  }
+};
+
+log(runId, "AdvanceDamage begin", {
+  macro: mergedArgs.advMacroName,
+  targetIds: hitIds.length,
+  elementType: advUniversalPayload.elementType,
+  payloadMetaElement: payload?.meta?.elementType ?? null,
+  payloadAdvElement: payload?.advPayload?.elementType ?? null,
+  mergedArgElement: mergedArgs.elementType ?? null,
+  mergedAdvElement: mergedArgs.advPayload?.elementType ?? null
+});
+
+await adv.execute({ __AUTO: true, __PAYLOAD: advUniversalPayload });
               log(runId, "AdvanceDamage done");
             } else {
               const animScriptRaw =

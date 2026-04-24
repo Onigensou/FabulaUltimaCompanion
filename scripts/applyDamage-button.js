@@ -65,6 +65,209 @@ function isPrimaryActiveGMClient() {
   return !!primary && primary.id === game.userId;
 }
 
+function getSavedTargetUUIDsFromPayload(payload = {}) {
+  const arr =
+    (Array.isArray(payload?.originalTargetUUIDs) && payload.originalTargetUUIDs.length)
+      ? payload.originalTargetUUIDs
+      : (Array.isArray(payload?.meta?.originalTargetUUIDs) && payload.meta.originalTargetUUIDs.length)
+        ? payload.meta.originalTargetUUIDs
+        : (Array.isArray(payload?.targets) ? payload.targets : []);
+
+  return Array.from(new Set(arr.filter(Boolean).map(String)));
+}
+
+function getSavedTargetActorUUIDsFromPayload(payload = {}) {
+  const arr =
+    (Array.isArray(payload?.originalTargetActorUUIDs) && payload.originalTargetActorUUIDs.length)
+      ? payload.originalTargetActorUUIDs
+      : (Array.isArray(payload?.meta?.originalTargetActorUUIDs) && payload.meta.originalTargetActorUUIDs.length)
+        ? payload.meta.originalTargetActorUUIDs
+        : [];
+
+  return Array.from(new Set(arr.filter(Boolean).map(String)));
+}
+
+function buildSafeExecutionArgsFromFlaggedPayload(flagged, incomingArgs = {}, chatMsgId = null) {
+  const clean = foundry.utils.deepClone(incomingArgs || {});
+
+  // These are baked into the button when the card is printed.
+  // After Action Editor edits the card, these may be stale, so remove them.
+  const staleKeys = [
+    "actionContext",
+    "advPayload",
+
+    "elementType",
+    "weaponType",
+    "valueType",
+    "baseValue",
+    "bonus",
+    "reduction",
+    "multiplier",
+
+    "ignoreShield",
+    "ignoreDamageReduction",
+
+    "hasDamageSection",
+    "declaresHealing",
+    "isSpellish",
+    "skillTypeRaw",
+
+    "attackerUuid",
+    "attackerName",
+    "skillName",
+    "sourceType",
+    "attackRange",
+
+    "hasAccuracy",
+    "accuracyTotal",
+    "autoHit",
+    "forceMiss",
+
+    "targets",
+    "originalTargetUUIDs",
+    "originalTargetActorUUIDs"
+  ];
+
+  for (const key of staleKeys) {
+    delete clean[key];
+  }
+
+  const meta = flagged?.meta ?? {};
+  const core = flagged?.core ?? {};
+  const dataCore = flagged?.dataCore ?? {};
+  const adv = flagged?.advPayload ?? {};
+  const accuracy = flagged?.accuracy ?? null;
+
+  const savedTargets = getSavedTargetUUIDsFromPayload(flagged);
+  const savedTargetActors = getSavedTargetActorUUIDsFromPayload(flagged);
+
+  return {
+    ...clean,
+
+    // Identity from the latest flag.
+    actionId: meta.actionId ?? flagged?.actionId ?? null,
+    actionCardId: meta.actionCardId ?? flagged?.actionCardId ?? null,
+    actionCardVersion: meta.actionCardVersion ?? flagged?.actionCardVersion ?? null,
+    actionCardMessageId: meta.actionCardMessageId ?? flagged?.actionCardMessageId ?? chatMsgId ?? null,
+    chatMsgId,
+
+    // Most important: resolution receives the latest edited payload.
+    actionContext: flagged,
+    advPayload: foundry.utils.deepClone(adv),
+
+    attackerUuid: meta.attackerUuid ?? flagged?.attackerUuid ?? flagged?.attackerActorUuid ?? null,
+    attackerName: meta.attackerName ?? core.attackerName ?? "Unknown",
+
+    skillName: core.skillName ?? dataCore.skillName ?? null,
+    sourceType: meta.sourceType ?? adv.sourceType ?? null,
+    attackRange: meta.attackRange ?? adv.attackRange ?? "Melee",
+
+    elementType:
+      meta.elementType ??
+      adv.elementType ??
+      core.typeDamageTxt ??
+      dataCore.typeDamageTxt ??
+      "physical",
+
+    weaponType:
+      core.weaponType ??
+      adv.weaponType ??
+      meta.weaponType ??
+      "",
+
+    valueType:
+      adv.valueType ??
+      meta.valueType ??
+      "hp",
+
+    baseValue:
+      adv.baseValue ??
+      meta.baseValue ??
+      "0",
+
+    bonus:
+      adv.bonus ??
+      meta.bonus ??
+      0,
+
+    reduction:
+      adv.reduction ??
+      meta.reduction ??
+      0,
+
+    multiplier:
+      adv.multiplier ??
+      meta.multiplier ??
+      100,
+
+    ignoreShield: !!(adv.ignoreShield ?? meta.ignoreShield),
+    ignoreDamageReduction: !!(adv.ignoreDamageReduction ?? meta.ignoreDamageReduction),
+
+    hasDamageSection:
+      (meta.hasDamageSection !== undefined)
+        ? !!meta.hasDamageSection
+        : (adv.hasDamageSection !== undefined)
+          ? !!adv.hasDamageSection
+          : true,
+
+    declaresHealing: !!(meta.declaresHealing ?? adv.declaresHealing),
+
+    isSpellish: !!(
+      meta.isSpellish ??
+      dataCore.isSpell ??
+      dataCore.isOffSpell
+    ),
+
+    skillTypeRaw:
+      core.skillTypeRaw ??
+      dataCore.skillTypeRaw ??
+      meta.skillTypeRaw ??
+      "",
+
+    hasAccuracy: !!accuracy,
+    accuracyTotal: accuracy?.total ?? null,
+
+    autoHit: !!(
+      accuracy?.autoHit ??
+      meta.autoHit ??
+      adv.autoHit ??
+      adv.isCrit ??
+      accuracy?.isCrit
+    ),
+
+    forceMiss: !!(accuracy?.forceMiss ?? meta.forceMiss),
+
+    targets: savedTargets,
+    originalTargetUUIDs: savedTargets,
+    originalTargetActorUUIDs: savedTargetActors
+  };
+}
+
+async function setActionCardState(chatMsg, state, extra = {}) {
+  if (!chatMsg) return;
+
+  const flag = foundry.utils.deepClone(chatMsg.getFlag(MODULE_NS, "actionCard") ?? {});
+  const payload = flag?.payload ?? null;
+  if (!payload) return;
+
+  payload.meta = payload.meta || {};
+  payload.meta.actionCardState = state;
+  payload.actionCardState = state;
+
+  const at = Date.now();
+  payload.meta.actionCardStateChangedAtMs = at;
+  payload.meta.actionCardStateChangedAtIso = new Date(at).toISOString();
+
+  for (const [k, v] of Object.entries(extra || {})) {
+    payload.meta[k] = v;
+  }
+
+  flag.payload = payload;
+  flag.actionCardState = state;
+
+  await chatMsg.setFlag(MODULE_NS, "actionCard", flag);
+}
+
   // ------------------------------------------------------------
   // Core resolver (GM only)
   // ------------------------------------------------------------
@@ -120,7 +323,12 @@ function isPrimaryActiveGMClient() {
         return;
       }
 
-      const executionArgs = foundry.utils.deepClone(args || {});
+      await setActionCardState(chatMsg, "confirming", {
+        actionCardConfirmingByUserId: confirmingUserId ?? game.userId,
+        actionCardConfirmingRunId: runId
+      });
+
+      const executionArgs = buildSafeExecutionArgsFromFlaggedPayload(flagged, args, chatMsg.id);
 
       console.log(`${RUN_TAG} execution handoff`, {
         runId,
@@ -144,9 +352,21 @@ function isPrimaryActiveGMClient() {
       if (!result?.ok) {
         const reason = result?.reason ?? "unknown";
         console.warn(`${RUN_TAG} executor reported non-ok result`, { runId, reason, result });
-        if (btn) unlockButton(btn);
-        return;
-      }
+
+      await setActionCardState(chatMsg, "pending", {
+        actionCardLastConfirmFailedByUserId: confirmingUserId ?? game.userId,
+        actionCardLastConfirmFailedRunId: runId,
+        actionCardLastConfirmFailedReason: reason
+      });
+
+      if (btn) unlockButton(btn);
+      return;
+    }
+
+    await setActionCardState(chatMsg, "resolved", {
+      actionCardResolvedByUserId: confirmingUserId ?? game.userId,
+      actionCardResolvedRunId: runId
+    });
 
       // Stamp + disable button (GM client)
       if (btn) {
@@ -186,11 +406,18 @@ function isPrimaryActiveGMClient() {
         missUUIDs: result?.missUUIDs ?? []
       });
 
-    } catch (err) {
-      console.error(err);
-      ui.notifications?.error("Confirm failed (see console).");
-      if (btn) unlockButton(btn);
-    } finally {
+} catch (err) {
+  console.error(err);
+
+  await setActionCardState(chatMsg, "pending", {
+    actionCardLastConfirmError: String(err?.message ?? err),
+    actionCardLastConfirmFailedByUserId: confirmingUserId ?? game.userId,
+    actionCardLastConfirmFailedRunId: runId
+  });
+
+  ui.notifications?.error("Confirm failed (see console).");
+  if (btn) unlockButton(btn);
+} finally {
       console.groupEnd();
     }
   }
