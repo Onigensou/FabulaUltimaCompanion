@@ -6,49 +6,57 @@
  * ---------------------------------------------------------------------------
  */
 // ============================================================================
-  // ONI ReactionButtonUI – Floating "Reaction" blade next to tokens (Foundry v12)
-  // ---------------------------------------------------------------------------
-  // PURPOSE
-  // -------
-  // This script ONLY handles the small floating "Reaction" button UI:
-  //
-  //   • Creates the #oni-reaction-root container and CSS
-  //   • Spawns / positions a "Reaction" blade next to a token
-  //   • Cleans up buttons when asked
-  //
-  // It exposes a small API on window["oni.ReactionButtonUI"]:
-  //
-  //   const ui = window["oni.ReactionButtonUI"];
-  //   ui.spawnButton(token, context, (ctxClicked) => { ... });
-  //   ui.removeButton(tokenId);
-  //   ui.clearAll();
-  //
-  // NOTES
-  // -----
-  // - It DOES NOT know anything about triggers, phases, or skill selection.
-  // - ReactionManager decides *when* to show a button and what happens when
-  //   it's clicked. This file just does the pretty floating UI.
-  // ============================================================================
+// ONI ReactionButtonUI – Floating "Reaction" blade next to tokens (Foundry v12)
+// ---------------------------------------------------------------------------
+// PURPOSE
+// -------
+// This script ONLY handles the small floating "Reaction" button UI:
+//
+//   • Creates the #oni-reaction-root container and CSS
+//   • Spawns / positions a "Reaction" blade next to a token
+//   • Cleans up buttons when asked
+//
+// It exposes a small API on window["oni.ReactionButtonUI"]:
+//
+//   const ui = window["oni.ReactionButtonUI"];
+//   ui.spawnButton(token, context, (ctxClicked) => { ... });
+//   ui.removeButton(tokenId);
+//   ui.clearAll();
+//
+// NOTES
+// -----
+// - It DOES NOT know anything about triggers, phases, or skill selection.
+// - ReactionManager decides *when* to show a button and what happens when
+//   it's clicked. This file just does the pretty floating UI.
+// ============================================================================
 
 Hooks.once("ready", () => {
   (() => {
     const KEY = "oni.ReactionButtonUI";
+
     if (window[KEY]) {
       console.log("[ReactionButtonUI] Already installed.");
       return;
     }
+
+    const STYLE_ID = "oni-reaction-manager-style";
+
+    const ReactionUI = {
+      root: null,
+      buttons: {}
+    };
 
     function byIdOnCanvas(tokenId) {
       if (!tokenId) return null;
       return canvas?.tokens?.get(tokenId) ?? null;
     }
 
-    const STYLE_ID = "oni-reaction-manager-style";
-
     function ensureReactionStyles() {
       if (document.getElementById(STYLE_ID)) return;
+
       const css = document.createElement("style");
       css.id = STYLE_ID;
+
       css.textContent = `
         #oni-reaction-root {
           position: fixed;
@@ -100,8 +108,9 @@ Hooks.once("ready", () => {
           );
           border: 2px solid var(--bd-stroke, #7a6a55);
           border-radius: 12px;
-          box-shadow: 0 3px 0 var(--bd-shadow, rgba(41,33,24,.55)),
-                      0 0 0 1px var(--bd-highlight, rgba(255,255,255,.7)) inset;
+          box-shadow:
+            0 3px 0 var(--bd-shadow, rgba(41,33,24,.55)),
+            0 0 0 1px var(--bd-highlight, rgba(255,255,255,.7)) inset;
           text-shadow: 0 1px 0 rgba(255,255,255,0.75);
         }
 
@@ -130,8 +139,9 @@ Hooks.once("ready", () => {
 
         #oni-reaction-root .oni-reaction-blade:hover {
           filter: brightness(1.04);
-          box-shadow: 0 4px 0 rgba(41,33,24,.65),
-                      0 0 0 1px rgba(255,255,255,.8) inset;
+          box-shadow:
+            0 4px 0 rgba(41,33,24,.65),
+            0 0 0 1px rgba(255,255,255,.8) inset;
           transform: translateY(-1px);
         }
 
@@ -139,19 +149,19 @@ Hooks.once("ready", () => {
           transform: translateY(0) scale(.97);
         }
       `;
+
       document.head.appendChild(css);
     }
 
-    const ReactionUI = {
-      root: null,
-      buttons: {}
-    };
-
     function ensureRoot() {
-      if (ReactionUI.root && document.body.contains(ReactionUI.root)) return ReactionUI.root;
+      if (ReactionUI.root && document.body.contains(ReactionUI.root)) {
+        return ReactionUI.root;
+      }
+
       const root = document.createElement("div");
       root.id = "oni-reaction-root";
       document.body.appendChild(root);
+
       ReactionUI.root = root;
       return root;
     }
@@ -164,25 +174,39 @@ Hooks.once("ready", () => {
 
       const offsetX = -token.w * 0.37;
       const offsetY = -token.h * 1;
-      return { x: c.x + offsetX, y: c.y + offsetY };
+
+      return {
+        x: c.x + offsetX,
+        y: c.y + offsetY
+      };
     }
 
     function worldToClient(x, y) {
       const wt = canvas.stage.worldTransform;
       const out = new PIXI.Point();
+
       wt.apply({ x, y }, out);
+
       const rect = canvas.app.view.getBoundingClientRect();
-      return { x: rect.left + out.x, y: rect.top + out.y };
+
+      return {
+        x: rect.left + out.x,
+        y: rect.top + out.y
+      };
     }
 
     function updateButtonPosition(rec) {
+      if (!rec) return;
+
       const token = byIdOnCanvas(rec.tokenId);
       if (!token || !ReactionUI.root) return;
+
       const world = tokenAnchorWorld(token);
       const client = worldToClient(world.x, world.y);
 
       const el = rec.wrap;
       if (!el) return;
+
       el.style.left = `${client.x}px`;
       el.style.top = `${client.y}px`;
     }
@@ -190,12 +214,18 @@ Hooks.once("ready", () => {
     function getTriggerCount(context) {
       if (!context || typeof context !== "object") return 1;
 
-      const direct = Array.isArray(context.triggerKeys) ? context.triggerKeys.filter(Boolean) : [];
+      const direct = Array.isArray(context.triggerKeys)
+        ? context.triggerKeys.filter(Boolean)
+        : [];
+
       if (direct.length) return new Set(direct).size;
 
-      const byTrigger = context.phasePayloadByTrigger && typeof context.phasePayloadByTrigger === "object"
-        ? Object.keys(context.phasePayloadByTrigger).filter(Boolean)
-        : [];
+      const byTrigger =
+        context.phasePayloadByTrigger &&
+        typeof context.phasePayloadByTrigger === "object"
+          ? Object.keys(context.phasePayloadByTrigger).filter(Boolean)
+          : [];
+
       if (byTrigger.length) return new Set(byTrigger).size;
 
       return context.triggerKey ? 1 : 1;
@@ -208,6 +238,8 @@ Hooks.once("ready", () => {
     }
 
     function applyContextToRecord(rec, context, onClick) {
+      if (!rec) return;
+
       rec.context = context;
       rec.onClick = typeof onClick === "function" ? onClick : null;
 
@@ -226,29 +258,79 @@ Hooks.once("ready", () => {
       }
     }
 
+    function detachTrackingHooks(rec) {
+      if (!rec) return;
+
+      for (const h of rec.hooks ?? []) {
+        try {
+          Hooks.off(h.event, h.handler);
+        } catch (_e) {}
+      }
+
+      rec.hooks = [];
+    }
+
     function attachTrackingHooks(rec) {
+      if (!rec) return;
+
+      if (!Array.isArray(rec.hooks)) {
+        rec.hooks = [];
+      }
+
       const tokenId = rec.tokenId;
 
-      const h1 = Hooks.on("updateToken", (doc) => {
+      const updateTokenHandler = (doc) => {
         if (doc.id !== tokenId) return;
         updateButtonPosition(rec);
-      });
-      const h2 = Hooks.on("canvasPan", () => {
+      };
+
+      const canvasPanHandler = () => {
         updateButtonPosition(rec);
-      });
+      };
+
+      Hooks.on("updateToken", updateTokenHandler);
+      Hooks.on("canvasPan", canvasPanHandler);
 
       rec.hooks.push(
-        { event: "updateToken", handler: h1 },
-        { event: "canvasPan", handler: h2 }
+        { event: "updateToken", handler: updateTokenHandler },
+        { event: "canvasPan", handler: canvasPanHandler }
       );
     }
 
     function updateExistingButton(rec, context, onClick) {
+      if (!rec) return;
+
+      // Revive this existing record.
       rec.leaving = false;
+
+      // Cancel any delayed removal from an older clear/remove.
+      if (rec.removeTimer) {
+        clearTimeout(rec.removeTimer);
+        rec.removeTimer = null;
+      }
+
+      if (rec.finishRemove && rec.wrap) {
+        try {
+          rec.wrap.removeEventListener("transitionend", rec.finishRemove);
+        } catch (_e) {}
+
+        rec.finishRemove = null;
+      }
+
       applyContextToRecord(rec, context, onClick);
       updateButtonPosition(rec);
 
+      // If the previous removeButton() detached hooks, restore them.
+      if (!Array.isArray(rec.hooks)) {
+        rec.hooks = [];
+      }
+
+      if (rec.hooks.length === 0) {
+        attachTrackingHooks(rec);
+      }
+
       const wrap = rec.wrap;
+
       if (wrap?.isConnected) {
         wrap.classList.remove("is-leaving");
         wrap.classList.add("is-visible");
@@ -259,10 +341,12 @@ Hooks.once("ready", () => {
       if (!token) return;
 
       ensureReactionStyles();
+
       const root = ensureRoot();
       const tokenId = token.id;
 
       const existing = ReactionUI.buttons[tokenId];
+
       if (existing) {
         updateExistingButton(existing, context, onClick);
         return;
@@ -273,6 +357,7 @@ Hooks.once("ready", () => {
 
       const blade = document.createElement("div");
       blade.className = "oni-reaction-blade";
+
       blade.innerHTML = `
         <span class="label">Reaction</span>
         <span class="count" aria-hidden="true">1</span>
@@ -288,11 +373,15 @@ Hooks.once("ready", () => {
         hooks: [],
         context,
         onClick: typeof onClick === "function" ? onClick : null,
-        leaving: false
+        leaving: false,
+        removeTimer: null,
+        finishRemove: null,
+        removeSeq: 0
       };
 
       blade.addEventListener("click", (ev) => {
         ev.stopPropagation();
+
         if (typeof rec.onClick === "function") {
           try {
             rec.onClick(rec.context);
@@ -318,16 +407,21 @@ Hooks.once("ready", () => {
       const rec = ReactionUI.buttons[tokenId];
       if (!rec) return;
       if (rec.leaving) return;
-      rec.leaving = true;
 
-      for (const h of rec.hooks ?? []) {
-        try { Hooks.off(h.event, h.handler); } catch {}
-      }
-      rec.hooks = [];
+      rec.leaving = true;
+      rec.removeSeq = (rec.removeSeq ?? 0) + 1;
+
+      const seq = rec.removeSeq;
+
+      detachTrackingHooks(rec);
 
       const el = rec.wrap;
+
       if (!el) {
-        delete ReactionUI.buttons[tokenId];
+        if (ReactionUI.buttons[tokenId] === rec) {
+          delete ReactionUI.buttons[tokenId];
+        }
+
         return;
       }
 
@@ -335,16 +429,32 @@ Hooks.once("ready", () => {
       el.classList.add("is-leaving");
 
       let done = false;
+
       const finish = () => {
-        if (done) return;
+        // If this record was revived by updateExistingButton(), do not delete it.
+        if (done || !rec.leaving || rec.removeSeq !== seq) return;
+
         done = true;
-        try { el.removeEventListener("transitionend", finish); } catch {}
-        try { el.remove(); } catch {}
-        delete ReactionUI.buttons[tokenId];
+
+        try {
+          el.removeEventListener("transitionend", finish);
+        } catch (_e) {}
+
+        try {
+          el.remove();
+        } catch (_e) {}
+
+        rec.finishRemove = null;
+        rec.removeTimer = null;
+
+        if (ReactionUI.buttons[tokenId] === rec) {
+          delete ReactionUI.buttons[tokenId];
+        }
       };
 
+      rec.finishRemove = finish;
       el.addEventListener("transitionend", finish);
-      setTimeout(finish, 250);
+      rec.removeTimer = setTimeout(finish, 250);
     }
 
     function clearAll() {
