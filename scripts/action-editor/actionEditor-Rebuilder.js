@@ -1004,6 +1004,15 @@
   nextPayload.meta.__actionEditorReplacementAtMs = Date.now();
   nextPayload.meta.__actionEditorReplacementAtIso = new Date().toISOString();
 
+// IMPORTANT:
+// This render is only a card replacement/edit preview.
+// It should NOT count as "the actor performed an action" again.
+// So CreateActionCard must not emit action-phase reaction beacons,
+// and it must not replay critical cut-ins.
+nextPayload.meta.__skipReactionEmit = true;
+nextPayload.meta.__skipCriticalCutin = true;
+nextPayload.meta.__suppressActionDeclarationEvents = true;
+
   nextPayload.meta.previousActionCardMessageIds = Array.from(new Set([
     ...(Array.isArray(nextPayload.meta.previousActionCardMessageIds) ? nextPayload.meta.previousActionCardMessageIds : []),
     oldMessageId
