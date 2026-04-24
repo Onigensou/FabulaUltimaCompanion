@@ -47,7 +47,8 @@
     summaryUI: "[BattleEnd: SummaryUI]",
     transition: "[BattleEnd: Transition]",
     cameraReset: "[BattleEnd: CameraReset]",
-    cleanup: "[BattleEnd: Cleanup]"
+    cleanup: "[BattleEnd: Cleanup]",
+    resetResource: "[BattleEnd: ResetResource]"
   };
 
   // -----------------------------
@@ -284,6 +285,39 @@
     return String(payload?.battleEnd?.meta?.mode ?? "").toLowerCase();
   }
 
+    function extractPartyActorIds(payload) {
+    const ids = [];
+
+    const partyMembers = payload?.party?.members;
+    if (Array.isArray(partyMembers)) {
+      for (const m of partyMembers) {
+        const id =
+          m?.actorId ??
+          m?.id ??
+          m?.actor_id ??
+          "";
+
+        if (id) ids.push(String(id));
+      }
+    }
+
+    const partyActorIds = payload?.partyActorIds;
+    if (Array.isArray(partyActorIds)) {
+      for (const id of partyActorIds) {
+        if (id) ids.push(String(id));
+      }
+    }
+
+    const contextPartyActorIds = payload?.context?.partyActorIds;
+    if (Array.isArray(contextPartyActorIds)) {
+      for (const id of contextPartyActorIds) {
+        if (id) ids.push(String(id));
+      }
+    }
+
+    return [...new Set(ids.map(x => String(x ?? "").trim()).filter(Boolean))];
+  }
+
   async function waitForStepCompletion(sourceScene, stepId, startedAtMs) {
     const t0 = Date.now();
 
@@ -330,8 +364,11 @@
 
   const runId = `bend_mgr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-  // Cache battle scene id early (Cleanup clears the canonical payload flag)
+  // Cache battle scene id + party actor ids early.
+  // Cleanup clears the canonical payload flag, so later steps need this cached data.
   let cachedBattleSceneId = payload?.step4?.battleScene?.id ?? payload?.context?.battleSceneId ?? null;
+  let cachedPartyActorIds = extractPartyActorIds(payload);
+
   const battleId = String(payload?.meta?.battleId ?? "(no battleId)");
     log("START", { runId, battleId, from, sourceScene: { id: sourceScene.id, name: sourceScene.name } });
 
@@ -380,7 +417,11 @@
     { id: "cameraReset", name: "Camera Reset", macroName: MACRO_NAMES.cameraReset, wantsScene: "any", waitForMarker: false },
 
     // Cleanup can run on any scene (it resolves battle scene from payload)
-    { id: "cleanup",     name: "Cleanup",      macroName: MACRO_NAMES.cleanup,     wantsScene: "any" }
+    { id: "cleanup",     name: "Cleanup",      macroName: MACRO_NAMES.cleanup,     wantsScene: "any" },
+
+    // Reset battle-only class resources after Cleanup clears the battle payload.
+    // This uses cached party actor IDs injected through __PAYLOAD.
+    { id: "resetResource", name: "Reset Resource", macroName: MACRO_NAMES.resetResource, wantsScene: "any", waitForMarker: false, allowMissingPayload: true }
   ];
 
   // -----------------------------
@@ -392,9 +433,12 @@
       const p0 = await readPayload(sourceScene);
       if (!p0 && step.id !== "cleanup" && !step.allowMissingPayload) throw new Error("Payload disappeared (flag missing).");
 
-      // Keep battle scene id cached while payload still exists
+      // Keep battle scene id + party actor ids cached while payload still exists.
       if (p0) {
         cachedBattleSceneId = cachedBattleSceneId ?? (p0?.step4?.battleScene?.id ?? p0?.context?.battleSceneId ?? null);
+
+        const idsNow = extractPartyActorIds(p0);
+        if (idsNow.length) cachedPartyActorIds = idsNow;
       }
 
       // Conditional skip
@@ -454,13 +498,30 @@
 
       // Execute step macro
 
-      // For CameraReset (runs after Cleanup), inject minimal context so the macro can still find the battle scene.
+      // For CameraReset, inject minimal context so the macro can still find the battle scene.
       if (step.id === "cameraReset") {
         globalThis.__PAYLOAD = {
           meta: { battleId },
           battleEnd: { meta: { runId } },
           step4: { battleScene: { id: cachedBattleSceneId } }
         };
+      }
+
+      // For ResetResource, Cleanup may already have erased the canonical payload.
+      // So we inject the cached party actor IDs directly.
+      if (step.id === "resetResource") {
+        globalThis.__PAYLOAD = {
+          meta: { battleId },
+          battleEnd: { meta: { runId } },
+          resetResource: {
+            actorIds: cachedPartyActorIds
+          }
+        };
+
+        log("Injected ResetResource payload.", {
+          actorIds: cachedPartyActorIds,
+          battleId
+        });
       }
 
       await runMacroByName(step.macroName);
