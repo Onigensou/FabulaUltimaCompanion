@@ -297,45 +297,159 @@ Hooks.once("ready", () => {
       );
     }
 
-    function updateExistingButton(rec, context, onClick) {
-      if (!rec) return;
+function getContextActionKey(context) {
+  return String(
+    context?.latestPhasePayload?.actionCardId ??
+    context?.latestPhasePayload?.actionId ??
+    context?.phasePayload?.actionCardId ??
+    context?.phasePayload?.actionId ??
+    ""
+  ).trim();
+}
 
-      // Revive this existing record.
-      rec.leaving = false;
+function getContextTriggerKey(context) {
+  return String(
+    context?.latestTriggerKey ??
+    context?.triggerKey ??
+    ""
+  ).trim();
+}
 
-      // Cancel any delayed removal from an older clear/remove.
-      if (rec.removeTimer) {
-        clearTimeout(rec.removeTimer);
-        rec.removeTimer = null;
-      }
+function getContextPhaseBucket(context) {
+  return String(
+    context?.phaseBucket ??
+    ""
+  ).trim();
+}
 
-      if (rec.finishRemove && rec.wrap) {
-        try {
-          rec.wrap.removeEventListener("transitionend", rec.finishRemove);
-        } catch (_e) {}
+function shouldPlayRespawnAnimation(rec, nextContext) {
+  if (!rec) return false;
 
-        rec.finishRemove = null;
-      }
+  const wrap = rec.wrap;
 
-      applyContextToRecord(rec, context, onClick);
-      updateButtonPosition(rec);
+  // If the button was in the middle of leaving, the next update should visibly
+  // re-enter. This is the main phase-change case.
+  if (rec.leaving || wrap?.classList?.contains?.("is-leaving")) {
+    return true;
+  }
 
-      // If the previous removeButton() detached hooks, restore them.
-      if (!Array.isArray(rec.hooks)) {
-        rec.hooks = [];
-      }
+  const oldContext = rec.context ?? {};
 
-      if (rec.hooks.length === 0) {
-        attachTrackingHooks(rec);
-      }
+  const oldBucket = getContextPhaseBucket(oldContext);
+  const newBucket = getContextPhaseBucket(nextContext);
 
-      const wrap = rec.wrap;
+  if (oldBucket && newBucket && oldBucket !== newBucket) {
+    return true;
+  }
 
-      if (wrap?.isConnected) {
-        wrap.classList.remove("is-leaving");
-        wrap.classList.add("is-visible");
-      }
-    }
+  const oldTrigger = getContextTriggerKey(oldContext);
+  const newTrigger = getContextTriggerKey(nextContext);
+
+  if (oldTrigger && newTrigger && oldTrigger !== newTrigger) {
+    return true;
+  }
+
+  // Same bucket + same trigger, but a different action card/action event.
+  // Example: another creature performs another action during action_phase.
+  const oldActionKey = getContextActionKey(oldContext);
+  const newActionKey = getContextActionKey(nextContext);
+
+  if (oldActionKey && newActionKey && oldActionKey !== newActionKey) {
+    return true;
+  }
+
+  return false;
+}
+
+function playRespawnAnimation(rec) {
+  const wrap = rec?.wrap;
+  if (!wrap?.isConnected) return;
+
+  // TUNING KNOB:
+  // How long the button stays in its "leaving" pose before entering again.
+  const RESPAWN_GAP_MS = 130;
+
+  if (rec.respawnTimer) {
+    clearTimeout(rec.respawnTimer);
+    rec.respawnTimer = null;
+  }
+
+  // Temporarily prevent clicking during the tiny transition swap.
+  wrap.style.pointerEvents = "none";
+
+  // Step 1: visibly leave.
+  wrap.classList.remove("is-visible");
+  wrap.classList.add("is-leaving");
+
+  // Force browser to notice the class change.
+  // eslint-disable-next-line no-unused-expressions
+  wrap.offsetWidth;
+
+  rec.respawnTimer = setTimeout(() => {
+    rec.respawnTimer = null;
+
+    if (!wrap.isConnected) return;
+
+    // Step 2: reset to hidden enter pose.
+    wrap.classList.remove("is-leaving");
+
+    // Force reset before entering.
+    // eslint-disable-next-line no-unused-expressions
+    wrap.offsetWidth;
+
+    // Step 3: enter again.
+    requestAnimationFrame(() => {
+      if (!wrap.isConnected) return;
+
+      wrap.classList.add("is-visible");
+      wrap.style.pointerEvents = "";
+    });
+  }, RESPAWN_GAP_MS);
+}
+
+function updateExistingButton(rec, context, onClick) {
+  if (!rec) return;
+
+  const shouldRespawn = shouldPlayRespawnAnimation(rec, context);
+
+  // Revive this record safely.
+  rec.leaving = false;
+
+  // Cancel any old delayed removal from removeButton().
+  if (rec.removeTimer) {
+    clearTimeout(rec.removeTimer);
+    rec.removeTimer = null;
+  }
+
+  if (rec.finishRemove && rec.wrap) {
+    try {
+      rec.wrap.removeEventListener("transitionend", rec.finishRemove);
+    } catch (_e) {}
+
+    rec.finishRemove = null;
+  }
+
+  applyContextToRecord(rec, context, onClick);
+  updateButtonPosition(rec);
+
+  if (!Array.isArray(rec.hooks)) {
+    rec.hooks = [];
+  }
+
+  if (rec.hooks.length === 0) {
+    attachTrackingHooks(rec);
+  }
+
+  const wrap = rec.wrap;
+  if (!wrap?.isConnected) return;
+
+  if (shouldRespawn) {
+    playRespawnAnimation(rec);
+  } else {
+    wrap.classList.remove("is-leaving");
+    wrap.classList.add("is-visible");
+  }
+}
 
     function spawnButton(token, context, onClick) {
       if (!token) return;
@@ -366,18 +480,19 @@ Hooks.once("ready", () => {
       wrap.appendChild(blade);
       root.appendChild(wrap);
 
-      const rec = {
-        wrap,
-        blade,
-        tokenId,
-        hooks: [],
-        context,
-        onClick: typeof onClick === "function" ? onClick : null,
-        leaving: false,
-        removeTimer: null,
-        finishRemove: null,
-        removeSeq: 0
-      };
+const rec = {
+  wrap,
+  blade,
+  tokenId,
+  hooks: [],
+  context,
+  onClick: typeof onClick === "function" ? onClick : null,
+  leaving: false,
+  removeTimer: null,
+  finishRemove: null,
+  removeSeq: 0,
+  respawnTimer: null
+};
 
       blade.addEventListener("click", (ev) => {
         ev.stopPropagation();
