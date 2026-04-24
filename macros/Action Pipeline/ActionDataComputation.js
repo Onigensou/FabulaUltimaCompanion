@@ -175,6 +175,54 @@ const PASSIVE_ACTION_MACRO_NAME = "PassiveLogic-Action";
     );
   }
 
+  function seededSourceActionId(payload = {}) {
+    return (
+      payload?.sourceActionId ??
+      payload?.meta?.sourceActionId ??
+      null
+    );
+  }
+
+  function seededSourceActionCardId(payload = {}) {
+    return (
+      payload?.sourceActionCardId ??
+      payload?.meta?.sourceActionCardId ??
+      null
+    );
+  }
+
+  function seededSourceActionCardVersion(payload = {}) {
+    return (
+      payload?.sourceActionCardVersion ??
+      payload?.meta?.sourceActionCardVersion ??
+      null
+    );
+  }
+
+  function seededSourceActionCardMessageId(payload = {}) {
+    return (
+      payload?.sourceActionCardMessageId ??
+      payload?.meta?.sourceActionCardMessageId ??
+      null
+    );
+  }
+
+  function seededSourceActionOwnerUserId(payload = {}) {
+    return (
+      payload?.sourceActionOwnerUserId ??
+      payload?.meta?.sourceActionOwnerUserId ??
+      null
+    );
+  }
+
+  function seededSourceActionOwnerUserName(payload = {}) {
+    return (
+      payload?.sourceActionOwnerUserName ??
+      payload?.meta?.sourceActionOwnerUserName ??
+      null
+    );
+  }
+
   const ownerUserIdSeed =
     PAYLOAD?.meta?.ownerUserId ||
     game.user?.id ||
@@ -971,7 +1019,14 @@ const totalFlatBonus =
         passiveTriggerKey: seededPassiveTriggerKey(PAYLOAD),
         passiveSourceEvent: seededPassiveSourceEvent(PAYLOAD),
 
-        // Custom logic carry-through (weapon branch usually blank, but safe)
+        sourceActionId: seededSourceActionId(PAYLOAD),
+        sourceActionCardId: seededSourceActionCardId(PAYLOAD),
+        sourceActionCardVersion: seededSourceActionCardVersion(PAYLOAD),
+        sourceActionCardMessageId: seededSourceActionCardMessageId(PAYLOAD),
+        sourceActionOwnerUserId: seededSourceActionOwnerUserId(PAYLOAD),
+        sourceActionOwnerUserName: seededSourceActionOwnerUserName(PAYLOAD),
+
+        // Custom logic carry-through (blank => no custom logic)
         customLogicActionRaw,
         customLogicResolutionRaw,
         hasCustomLogicAction,
@@ -1260,6 +1315,13 @@ const totalFlatBonus =
       reaction_phase_payload_by_trigger: seededReactionPhasePayloadByTrigger(PAYLOAD),
       passiveTriggerKey: seededPassiveTriggerKey(PAYLOAD),
       passiveSourceEvent: seededPassiveSourceEvent(PAYLOAD),
+
+      sourceActionId: seededSourceActionId(PAYLOAD),
+      sourceActionCardId: seededSourceActionCardId(PAYLOAD),
+      sourceActionCardVersion: seededSourceActionCardVersion(PAYLOAD),
+      sourceActionCardMessageId: seededSourceActionCardMessageId(PAYLOAD),
+      sourceActionOwnerUserId: seededSourceActionOwnerUserId(PAYLOAD),
+      sourceActionOwnerUserName: seededSourceActionOwnerUserName(PAYLOAD),
 
       // carry itemUsage forward if ActionDataFetch provided it
       itemUsage: PAYLOAD?.itemUsage ?? null,

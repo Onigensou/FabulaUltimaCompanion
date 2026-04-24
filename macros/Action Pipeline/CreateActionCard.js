@@ -672,49 +672,70 @@ cacLog("ACTION CARD RENDER MODE", {
         actionCardMessageId: PAYLOAD?.meta?.actionCardMessageId ?? PAYLOAD?.actionCardMessageId ?? null
       };
 
-      // 1) Trigger: "When a creature performs an action"
-      ONI.emit(
-        "oni:reactionPhase",
-        {
-          ...baseReactionPayload,
-          trigger: "creature_performs_action"
-        },
-        {
-          local: true,
-          world: false
-        }
-      );
+      function emitReactionPhaseForActionCard(payload) {
+  const cleanPayload = {
+    ...payload,
+    requestedByUserId: game.user?.id ?? null,
+    requestedByUserName: game.user?.name ?? null
+  };
 
-      // 2) Trigger: "When a creature performs a check"
-      if (accuracy) {
-        ONI.emit(
-          "oni:reactionPhase",
-          {
-            ...baseReactionPayload,
-            trigger: "creature_performs_check"
-          },
-          {
-            local: true,
-            world: false
-          }
-        );
-      }
+  // GM-created action cards can process locally.
+  if (game.user?.isGM) {
+    ONI.emit("oni:reactionPhase", cleanPayload, {
+      local: true,
+      world: false
+    });
+    return;
+  }
 
-      // 3) Trigger: "When a creature gets targeted by an action"
-      for (const targetUuid of targetsFromPayload) {
-        ONI.emit(
-          "oni:reactionPhase",
-          {
-            ...baseReactionPayload,
-            trigger: "creature_is_targeted",
-            targetUuid
-          },
-          {
-            local: true,
-            world: false
-          }
-        );
-      }
+  // Player-created action cards must ask the GM to process the trigger.
+  const channel = `module.${MODULE_NS}`;
+
+  if (game.socket) {
+    game.socket.emit(channel, {
+      type: "OniReactionPhaseRequest",
+      payload: cleanPayload
+    });
+
+    console.log("[CreateActionCard] Sent OniReactionPhaseRequest to GM.", {
+      trigger: cleanPayload.trigger,
+      actionId: cleanPayload.actionId,
+      actionCardId: cleanPayload.actionCardId,
+      requestedByUserId: cleanPayload.requestedByUserId
+    });
+  } else {
+    console.warn("[CreateActionCard] game.socket unavailable; cannot forward reaction phase to GM.", cleanPayload);
+  }
+
+  // Keep local debug visibility. Non-GM ReactionManager will ignore this.
+  ONI.emit("oni:reactionPhase", cleanPayload, {
+    local: true,
+    world: false
+  });
+}
+
+// 1) Trigger: "When a creature performs an action"
+emitReactionPhaseForActionCard({
+  ...baseReactionPayload,
+  trigger: "creature_performs_action"
+});
+
+// 2) Trigger: "When a creature performs a check"
+if (accuracy) {
+  emitReactionPhaseForActionCard({
+    ...baseReactionPayload,
+    trigger: "creature_performs_check"
+  });
+}
+
+// 3) Trigger: "When a creature gets targeted by an action"
+for (const targetUuid of targetsFromPayload) {
+  emitReactionPhaseForActionCard({
+    ...baseReactionPayload,
+    trigger: "creature_is_targeted",
+    targetUuid
+  });
+}
     }
   } catch (err) {
     console.warn("[CreateActionCard] ReactionPhase emit failed (safe to ignore for now):", err);
