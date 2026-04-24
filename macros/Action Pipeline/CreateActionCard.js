@@ -202,22 +202,21 @@ return (async () => {
   function ensureActionCardIdentity(payload, options = {}) {
   payload.meta = payload.meta || {};
 
-  const updateExisting = !!(
-    options.updateExisting === true ||
-    payload?.meta?.__actionCardUpdateExisting === true ||
-    String(payload?.meta?.__actionCardRenderMode ?? "").trim().toLowerCase() === "updateexisting"
+  const preserveActionId = !!(
+    options.preserveActionId === true ||
+    payload?.meta?.__preserveActionId === true ||
+    payload?.meta?.__actionEditorPreserveIdentity === true
   );
 
-  const preserveCardId = !!(
-    options.preserveCardId === true ||
+  const preserveActionCardId = !!(
+    options.preserveActionCardId === true ||
     payload?.meta?.__preserveActionCardId === true ||
-    updateExisting
+    payload?.meta?.__actionEditorPreserveIdentity === true
   );
 
   const preserveVersion = !!(
     options.preserveVersion === true ||
-    payload?.meta?.__preserveActionCardVersion === true ||
-    updateExisting
+    payload?.meta?.__preserveActionCardVersion === true
   );
 
   const existingActionId = String(
@@ -232,26 +231,26 @@ return (async () => {
     ""
   ).trim();
 
-  const existingVersion = Number(
-    payload?.meta?.actionCardVersion ??
-    payload?.actionCardVersion ??
-    0
-  ) || 0;
+  const existingVersion =
+    Number(payload?.meta?.actionCardVersion ?? payload?.actionCardVersion ?? 0) || 0;
 
-  const nextActionId = existingActionId || makeActionRefId("ACT");
-  const nextActionCardId = preserveCardId && existingCardId
-    ? existingCardId
-    : makeActionRefId("ACARD");
+  const nextActionId =
+    preserveActionId && existingActionId
+      ? existingActionId
+      : existingActionId || makeActionRefId("ACT");
 
-  const nextVersion = preserveVersion
-    ? Math.max(1, existingVersion || 1)
-    : existingVersion + 1;
+  const nextActionCardId =
+    preserveActionCardId && existingCardId
+      ? existingCardId
+      : makeActionRefId("ACARD");
 
-  const createdAtMs = Number(
-    payload?.meta?.actionCreatedAtMs ??
-    payload?.actionCreatedAtMs ??
-    nowMs()
-  ) || nowMs();
+  const nextVersion =
+    preserveVersion
+      ? Math.max(1, existingVersion || 1)
+      : existingVersion + 1;
+
+  const createdAtMs =
+    Number(payload?.meta?.actionCreatedAtMs ?? payload?.actionCreatedAtMs ?? nowMs()) || nowMs();
 
   const createdAtIso = String(
     payload?.meta?.actionCreatedAtIso ??
@@ -264,7 +263,6 @@ return (async () => {
     : [];
 
   if (
-    !preserveCardId &&
     existingCardId &&
     existingCardId !== nextActionCardId &&
     !replacedCardIds.includes(existingCardId)
@@ -302,8 +300,8 @@ return (async () => {
     actionCreatedAtMs: createdAtMs,
     actionCreatedAtIso: createdAtIso,
     replacedActionCardIds: replacedCardIds,
-    updateExisting,
-    preserveCardId,
+    preserveActionId,
+    preserveActionCardId,
     preserveVersion
   };
 }
@@ -486,31 +484,49 @@ registerCreateActionCardRendererApi();
     ""
   ).trim();
 
-  const skipReactionEmit = !!(
-    actionCardUpdateExisting ||
-    PAYLOAD?.meta?.__skipReactionEmit === true
-  );
+const skipReactionEmit = !!(
+  actionCardUpdateExisting ||
+  PAYLOAD?.meta?.__skipReactionEmit === true ||
+  PAYLOAD?.meta?.__suppressActionDeclarationEvents === true ||
+  PAYLOAD?.meta?.__actionEditorReplacementRender === true
+);
 
-  const skipCriticalCutin = !!(
-    actionCardUpdateExisting ||
-    PAYLOAD?.meta?.__skipCriticalCutin === true
-  );
+const skipCriticalCutin = !!(
+  actionCardUpdateExisting ||
+  PAYLOAD?.meta?.__skipCriticalCutin === true ||
+  PAYLOAD?.meta?.__actionEditorReplacementRender === true
+);
 
   const actionCardIdentity = ensureActionCardIdentity(PAYLOAD, {
-    updateExisting: actionCardUpdateExisting,
-    preserveCardId: actionCardUpdateExisting,
-    preserveVersion: actionCardUpdateExisting
-  });
+  preserveActionId: !!(
+    PAYLOAD?.meta?.__preserveActionId ||
+    PAYLOAD?.meta?.__actionEditorPreserveIdentity ||
+    actionCardUpdateExisting
+  ),
 
-  cacLog("ACTION CARD RENDER MODE", {
-    updateExisting: actionCardUpdateExisting,
-    targetMessageId: actionCardTargetMessageId || null,
-    actionId: actionCardIdentity.actionId,
-    actionCardId: actionCardIdentity.actionCardId,
-    actionCardVersion: actionCardIdentity.actionCardVersion,
-    skipReactionEmit,
-    skipCriticalCutin
-  });
+  preserveActionCardId: !!(
+    PAYLOAD?.meta?.__preserveActionCardId ||
+    PAYLOAD?.meta?.__actionEditorPreserveIdentity ||
+    actionCardUpdateExisting
+  ),
+
+  preserveVersion: !!(
+    PAYLOAD?.meta?.__preserveActionCardVersion ||
+    actionCardUpdateExisting
+  )
+});
+
+cacLog("ACTION CARD RENDER MODE", {
+  updateExisting: actionCardUpdateExisting,
+  replacementRender: !!PAYLOAD?.meta?.__actionEditorReplacementRender,
+  targetMessageId: actionCardTargetMessageId || null,
+  actionId: actionCardIdentity.actionId,
+  actionCardId: actionCardIdentity.actionCardId,
+  actionCardVersion: actionCardIdentity.actionCardVersion,
+  skipReactionEmit,
+  skipCriticalCutin,
+  suppressActionDeclarationEvents: !!PAYLOAD?.meta?.__suppressActionDeclarationEvents
+});
 
   const passiveGuardExecutionMode = String(
     PAYLOAD?.executionMode ??
