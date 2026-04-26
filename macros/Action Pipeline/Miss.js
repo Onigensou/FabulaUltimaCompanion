@@ -20,6 +20,28 @@ const attackRange   = String(PAYLOAD.attackRange  ?? "—");
 const accTotal      = Number(PAYLOAD.accuracyTotal ?? NaN);
 const defenseUsed   = Number(PAYLOAD.defenseUsed   ?? NaN);
 
+// Preserve upstream action context so the Damage Card batcher can recognize
+// that this Miss belongs to a larger multi-target action.
+const ACTION_CONTEXT =
+  PAYLOAD.actionContext ??
+  PAYLOAD.meta?.actionContext ??
+  null;
+
+const ACTION_CARD_MSG =
+  PAYLOAD.actionCardMsgId ??
+  PAYLOAD.chatMsgId ??
+  PAYLOAD.meta?.actionCardMessageId ??
+  null;
+
+const ACTION_SKILL_TYPE_RAW = String(
+  PAYLOAD.skillTypeRaw ??
+  PAYLOAD.skill_type ??
+  ACTION_CONTEXT?.core?.skillTypeRaw ??
+  ACTION_CONTEXT?.dataCore?.skillTypeRaw ??
+  ACTION_CONTEXT?.meta?.skillTypeRaw ??
+  ""
+).trim();
+
 // ---- Resolve targets (set by Create Action Card before calling this macro) ----
 const foundryTargets = Array.from(game.user?.targets ?? []);
 const selectedTokens = canvas.tokens?.controlled ?? [];
@@ -89,15 +111,27 @@ for (const t of tokens) {
   if (createDmg) {
     await createDmg.execute({
       __AUTO: true,
-      __PAYLOAD: {
-        // ---- core identity (used by the renderer) ----
-        mode: "miss",                 // << tells Create Damage Card to render MISS variant
-        attackerName, attackerUuid,
-        targetName,   targetUuid,
-        sourceType: isSpellish ? "Spell" : "Attack",
-        attackRange,
-        elementType,                  // "physical" | "fire" | ...
-        weaponType: weaponTypeRaw,    // "sword_ef" | "none_ef" | etc.
+     __PAYLOAD: {
+  // ---- core identity (used by the renderer) ----
+  mode: "miss",                 // << tells Create Damage Card to render MISS variant
+  attackerName,
+  attackerUuid,
+  targetName,
+  targetUuid,
+
+  sourceType: isSpellish ? "Spell" : "Attack",
+  attackRange,
+  elementType,
+  weaponType: weaponTypeRaw,
+
+  // ---- batching / downstream context ----
+  // These are important so Miss cards can batch with the later damage cards
+  // from the same original Action Card.
+  actionContext: ACTION_CONTEXT,
+  actionCardMsgId: ACTION_CARD_MSG,
+  skillTypeRaw: ACTION_SKILL_TYPE_RAW || null,
+  skill_type: ACTION_SKILL_TYPE_RAW || null,
+  isSpellish,
 
         // ---- display channels expected by the damage card ----
         valueType: "hp",
