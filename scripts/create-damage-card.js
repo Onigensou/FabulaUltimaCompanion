@@ -2,54 +2,85 @@
 // ──────────────────────────────────────────────────────────
 //  Create Damage Card (module version, speakerless) · V12
 //  Exposes: game.modules.get('fabula-ultima-companion')?.api.createDamageCard(payload)
-//  Change: Speakerless now works for ALL clients via a persistent render hook
+//  NEW: Short-window Damage Card batching / grouping.
+//       Multiple damage cards created very close together are rendered into
+//       ONE Foundry ChatMessage, reducing chat-message spam and performance dips.
 // ──────────────────────────────────────────────────────────
 
 (function initFUCreateDamageCard() {
   // Global namespace
   window.FUCompanion = window.FUCompanion || {};
 
+  // ------------------------- config -------------------------
+  const MODULE_NS = "fabula-ultima-companion";
+  const BATCH_WINDOW_MS = 300; // Tuning knob: larger catches more consecutive cards, smaller feels snappier.
+  const CARD_MARKER = "fu-damage-card"; // Unique marker detected by render hook.
+  const GROUP_MARKER = "fu-damage-card-group";
+
   // ------------------------- helpers -------------------------
-  const S = (v, d="(None)") => { try { const s=(v??"").toString().trim(); return s.length?s:d; } catch { return d; } };
-  const N = (v, d=0) => { const n=Number(v); return Number.isFinite(n)?n:d; };
+  const S = (v, d = "(None)") => {
+    try {
+      const s = (v ?? "").toString().trim();
+      return s.length ? s : d;
+    } catch {
+      return d;
+    }
+  };
+  const N = (v, d = 0) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : d;
+  };
   const FALLBACK_IMG = "icons/svg/mystery-man.svg";
-  const CARD_MARKER  = "fu-damage-card";    // <— unique marker we’ll detect in render hook
+
+  function clone(value, fallback = null) {
+    try {
+      if (foundry?.utils?.deepClone) return foundry.utils.deepClone(value);
+    } catch (_e) {}
+    try {
+      return structuredClone(value);
+    } catch (_e) {}
+    try {
+      return JSON.parse(JSON.stringify(value));
+    } catch (_e) {}
+    return fallback;
+  }
 
   // Prefer the Actor's Profile/Portrait image for cards.
-// Falls back to token texture if the actor image isn't available.
-async function tokenImgFromUuid(uuid) {
-  try {
-    if (!uuid) return FALLBACK_IMG;
+  // Falls back to token texture if the actor image isn't available.
+  async function tokenImgFromUuid(uuid) {
+    try {
+      if (!uuid) return FALLBACK_IMG;
 
-    const doc = await fromUuid(uuid);
+      const doc = await fromUuid(uuid);
 
-    // Normalize to TokenDocument (tok) and Actor (actor)
-    const tok =
-      doc?.isToken ? doc :
-      (doc?.token ?? null);
+      // Normalize to TokenDocument (tok) and Actor (actor)
+      const tok =
+        doc?.isToken ? doc :
+        (doc?.token ?? null);
 
-    const actor =
-      doc?.actor ??
-      tok?.actor ??
-      (doc?.type === "Actor" ? doc : null) ??
-      tok?.document?.actor ??
-      null;
+      const actor =
+        doc?.actor ??
+        tok?.actor ??
+        (doc?.type === "Actor" ? doc : null) ??
+        tok?.document?.actor ??
+        null;
 
-    // 1) Use Actor profile image (portrait) FIRST
-    if (actor?.img) return actor.img;
+      // 1) Use Actor profile image (portrait) FIRST
+      if (actor?.img) return actor.img;
 
-    // 2) Then try the prototype token portrait (static)
-    if (actor?.prototypeToken?.texture?.src) return actor.prototypeToken.texture.src;
+      // 2) Then try the prototype token portrait (static)
+      if (actor?.prototypeToken?.texture?.src) return actor.prototypeToken.texture.src;
 
-    // 3) Finally fall back to whatever the token is using (may be animated)
-    return tok?.texture?.src ||
-           tok?.document?.texture?.src ||
-           tok?.img ||
-           FALLBACK_IMG;
-  } catch {
-    return FALLBACK_IMG;
+      // 3) Finally fall back to whatever the token is using (may be animated)
+      return tok?.texture?.src ||
+             tok?.document?.texture?.src ||
+             tok?.img ||
+             FALLBACK_IMG;
+    } catch {
+      return FALLBACK_IMG;
+    }
   }
-}
+
   async function guessAttackerByName(name) {
     const t = canvas?.tokens?.placeables?.find(t => (t.actor?.name || t.name) === name);
     return t?.document?.uuid ?? "";
@@ -61,85 +92,115 @@ async function tokenImgFromUuid(uuid) {
     const root = htmlJQ?.[0];
     if (!root) return;
 
-    // Only proceed if this message contains our card marker
-    const marker = root.querySelector(`[data-fu-card="${CARD_MARKER}"]`);
-    if (!marker) return;
+    // Only proceed if this message contains at least one damage card marker.
+    const markers = Array.from(root.querySelectorAll(`[data-fu-card="${CARD_MARKER}"]`));
+    if (!markers.length) return;
 
     try {
-      // 1) Speakerless: remove the message header everywhere
-      const header = root.querySelector(".message-header");
-      if (header) header.remove();
-      const content = root.querySelector(".message-content");
-      if (content) { content.style.marginTop = "0"; content.style.paddingTop = "0"; }
+// 1) Speakerless: hide the message header everywhere.
+// IMPORTANT:
+// Do NOT remove the header node completely.
+// Some modules, such as Chat Portrait, expect .message-header to still exist.
+const header = root.querySelector(".message-header");
+if (header) {
+  header.style.display = "none";
+  header.style.height = "0";
+  header.style.minHeight = "0";
+  header.style.margin = "0";
+  header.style.padding = "0";
+  header.style.overflow = "hidden";
+  header.setAttribute("aria-hidden", "true");
+}
 
-      // 2) Interactivity (toggle details + resize keep-open)
-      const shell   = root.querySelector(".fu-shell");
-      const details = root.querySelector(".fu-details");
-      const rollEl  = root.querySelector(".fu-rollnum"); // absent on immune/miss
+const content = root.querySelector(".message-content");
+if (content) {
+  content.style.marginTop = "0";
+  content.style.paddingTop = "0";
+}
 
-      if (!shell || !details) return;
+      // 2) Interactivity: bind EACH shell independently.
+      const shells = Array.from(root.querySelectorAll(".fu-shell"));
+      for (const shell of shells) {
+        if (shell.dataset.fuDamageBound === "1") continue;
+        shell.dataset.fuDamageBound = "1";
 
-      const setOpen = (open) => {
-        shell.dataset.open = open ? "true" : "false";
-        if (open) {
-          const full = details.scrollHeight;
-          details.style.maxHeight = full + "px";
-          details.style.paddingTop = ".35rem";
-          details.style.paddingBottom = ".35rem";
-        } else {
-          details.style.maxHeight = "0px";
-          details.style.paddingTop = "0";
-          details.style.paddingBottom = "0";
-        }
-      };
-      setOpen(false);
+        const details = shell.querySelector(".fu-details");
+        if (!details) continue;
 
-      root.addEventListener("click", (ev) => {
-        const inShell = ev.target.closest(".fu-shell");
-        if (!inShell) return;
-        if (ev.target.closest("a, button")) return;
-        setOpen(shell.dataset.open !== "true");
-      });
-
-      if ("ResizeObserver" in window) {
-        const ro = new ResizeObserver(() => {
-          if (shell.dataset.open === "true") {
-            details.style.maxHeight = details.scrollHeight + "px";
+        const setOpen = (open) => {
+          shell.dataset.open = open ? "true" : "false";
+          if (open) {
+            const full = details.scrollHeight;
+            details.style.maxHeight = full + "px";
+            details.style.paddingTop = ".35rem";
+            details.style.paddingBottom = ".35rem";
+          } else {
+            details.style.maxHeight = "0px";
+            details.style.paddingTop = "0";
+            details.style.paddingBottom = "0";
           }
+        };
+        setOpen(false);
+
+        shell.addEventListener("click", (ev) => {
+          if (ev.target.closest("a, button")) return;
+          setOpen(shell.dataset.open !== "true");
         });
-        ro.observe(details);
+
+        if ("ResizeObserver" in window) {
+          const ro = new ResizeObserver(() => {
+            if (shell.dataset.open === "true") {
+              details.style.maxHeight = details.scrollHeight + "px";
+            }
+          });
+          ro.observe(details);
+        }
       }
 
-      // 3) Number roll-up (skips on immune/miss and prefers-reduced-motion)
-      if (rollEl) {
+      // 3) Number roll-up: animate EACH number in grouped messages.
+      const rollEls = Array.from(root.querySelectorAll(".fu-rollnum"));
+      for (const rollEl of rollEls) {
+        if (rollEl.dataset.fuRollBound === "1") continue;
+        rollEl.dataset.fuRollBound = "1";
+
         const final = Math.max(0, Number(rollEl.dataset.final || 0));
         const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
-        const fmt = (n)=> n.toLocaleString?.() ?? String(n);
-        if (reduce || !final) { rollEl.textContent = fmt(final); }
-        else {
-          let started = false;
-          const dur = 800;
-          const startVal = 1;
-          const run = () => {
-            if (started) return; started = true;
-            const t0 = performance.now();
-            const frame = (now) => {
-              const p = Math.min(1, (now - t0) / dur);
-              const curr = Math.max(startVal, Math.floor(startVal + (final - startVal) * (1 - Math.pow(1 - p, 3)) ));
-              rollEl.textContent = fmt(curr);
-              if (p < 1) requestAnimationFrame(frame);
-              else rollEl.textContent = fmt(final);
-            };
-            requestAnimationFrame(frame);
+        const fmt = (n) => n.toLocaleString?.() ?? String(n);
+
+        if (reduce || !final) {
+          rollEl.textContent = fmt(final);
+          continue;
+        }
+
+        let started = false;
+        const dur = 800;
+        const startVal = 1;
+        const run = () => {
+          if (started) return;
+          started = true;
+          const t0 = performance.now();
+          const frame = (now) => {
+            const p = Math.min(1, (now - t0) / dur);
+            const curr = Math.max(startVal, Math.floor(startVal + (final - startVal) * (1 - Math.pow(1 - p, 3))));
+            rollEl.textContent = fmt(curr);
+            if (p < 1) requestAnimationFrame(frame);
+            else rollEl.textContent = fmt(final);
           };
-          if ("IntersectionObserver" in window) {
-            const io = new IntersectionObserver((entries, obs) => {
-              for (const e of entries) if (e.isIntersecting) { run(); obs.unobserve(e.target); }
-            }, { root: document, rootMargin: "0px", threshold: 0.1 });
-            io.observe(rollEl);
-          } else {
-            run();
-          }
+          requestAnimationFrame(frame);
+        };
+
+        if ("IntersectionObserver" in window) {
+          const io = new IntersectionObserver((entries, obs) => {
+            for (const e of entries) {
+              if (e.isIntersecting) {
+                run();
+                obs.unobserve(e.target);
+              }
+            }
+          }, { root: document, rootMargin: "0px", threshold: 0.1 });
+          io.observe(rollEl);
+        } else {
+          run();
         }
       }
     } catch (e) {
@@ -147,11 +208,11 @@ async function tokenImgFromUuid(uuid) {
     }
   });
 
-  // --------------------- CARD CREATION ---------------------
-  async function createDamageCard(P_in) {
+  // --------------------- SINGLE CARD HTML RENDER ---------------------
+  async function renderDamageCardHTML(P_in) {
     const P = P_in ?? {};
 
-    // Parse payload (unchanged)
+    // Parse payload
     const attackerName  = S(P.attackerName, "System");
     const attackerUuid  = S(P.attackerUuid, "");
     const attackRange   = S(P.attackRange, "(None)");
@@ -177,7 +238,7 @@ async function tokenImgFromUuid(uuid) {
     const noEffectReason= P.noEffectReason ?? null;
 
     const modeMiss = String(P.mode || "").toLowerCase() === "miss" || (!!P.miss);
-    const isMiss   = modeMiss || (P.affected === false && String(P.noEffectReason||"").toLowerCase() === "miss");
+    const isMiss   = modeMiss || (P.affected === false && String(P.noEffectReason || "").toLowerCase() === "miss");
 
     // Images
     const targetImg   = await tokenImgFromUuid(targetUuid);
@@ -211,7 +272,7 @@ async function tokenImgFromUuid(uuid) {
     const glowColor   = isMiss ? GLOW_MISS  : GLOW[colorKey];
 
     const wpnKey      = (weaponType || "").split("_")[0];
-    const wpnNice     = wpnKey && wpnKey !== "none" ? (wpnKey[0].toUpperCase()+wpnKey.slice(1)) : "(None)";
+    const wpnNice     = wpnKey && wpnKey !== "none" ? (wpnKey[0].toUpperCase() + wpnKey.slice(1)) : "(None)";
     const effTag      = effLabel && effLabel !== "Neutral" ? `<span style="font-weight:800;">${effLabel}</span>` : "Neutral";
 
     const isImmune =
@@ -219,8 +280,8 @@ async function tokenImgFromUuid(uuid) {
       /^(im|imm|immune)$/i.test(affinityCode) ||
       (affected === false && /immune/i.test(String(noEffectReason || "")));
 
-    const isSuper     = !isImmune && ( /vuln|weak|super/i.test(effLabel) || /^(v|vu|wk|se)$/i.test(affinityCode) );
-    const isResisted  = !isImmune && ( /resist|half/i.test(effLabel)     || /^(re|rs|rh)$/i.test(affinityCode)   );
+    const isSuper     = !isImmune && (/vuln|weak|super/i.test(effLabel) || /^(v|vu|wk|se)$/i.test(affinityCode));
+    const isResisted  = !isImmune && (/resist|half/i.test(effLabel)     || /^(re|rs|rh)$/i.test(affinityCode));
 
     const numberHTML = isImmune
       ? `<span class="fu-immune" style="font-size:28px;font-weight:900;letter-spacing:.5px;color:#777;text-transform:uppercase;text-shadow:0 0 8px rgba(0,0,0,.06);">IMMUNE</span>`
@@ -287,8 +348,8 @@ async function tokenImgFromUuid(uuid) {
               ? `${targetName}: ${Math.abs(shownAmount)} ${isRecovery ? "healing" : elemNice}.`
               : `No effect on ${targetName}${noEffectReason ? ` (${noEffectReason})` : ""}.`));
 
-    // Add the data-fu-card marker so every client can detect this card
-    const cardHTML = `
+    // Add the data-fu-card marker so every client can detect this card.
+    return `
       <div class="fu-card" data-fu-card="${CARD_MARKER}" style="font-family: Signika, sans-serif; letter-spacing:.2px;">
         <div class="fu-shell" data-open="false"
              style="border:1px solid #cfa057;background:#faf3e4;border-radius:10px;padding:.55rem .65rem;position:relative;overflow:visible;cursor:pointer;">
@@ -303,33 +364,169 @@ async function tokenImgFromUuid(uuid) {
         </div>
       </div>
     `;
+  }
 
-    // Post message (empty alias so there’s never a name even if header stays for some reason)
-    const speaker = { alias: "" };
-   await ChatMessage.create({
+  // --------------------- DAMAGE CARD BATCHER ---------------------
+  const DamageCardBatcher = (() => {
+    let queue = [];
+    let timer = null;
+    let flushing = false;
+
+    function schedule() {
+      if (timer) return;
+      timer = window.setTimeout(() => {
+        timer = null;
+        flush().catch(err => console.error("[FU CreateDamageCard][Batcher] flush failed:", err));
+      }, BATCH_WINDOW_MS);
+    }
+
+    async function postPayloads(payloads) {
+      const safePayloads = payloads.map(p => clone(p, {}) || {});
+      const htmlParts = [];
+
+      for (const p of safePayloads) {
+        try {
+          htmlParts.push(await renderDamageCardHTML(p));
+        } catch (err) {
+          console.warn("[FU CreateDamageCard][Batcher] Failed to render one damage card:", err, p);
+        }
+      }
+
+      if (!htmlParts.length) return { ok: false, reason: "no-rendered-cards" };
+
+      const grouped = htmlParts.length > 1;
+      const content = grouped
+        ? `
+          <div class="${GROUP_MARKER}" data-fu-card-group="${GROUP_MARKER}" style="display:flex;flex-direction:column;gap:.45rem;">
+            ${htmlParts.join("\n")}
+          </div>
+        `
+        : htmlParts[0];
+
+      const speaker = { alias: "" };
+
+     const chatData = {
   user: game.userId,
   speaker,
-  type: CONST.CHAT_MESSAGE_TYPES.OTHER,
-  content: cardHTML,
-
-  // NEW: store the full payload on the message so you can inspect it later
+  content,
   flags: {
-    "fabula-ultima-companion": {
+    [MODULE_NS]: {
       damageCard: {
-        payload: P
-      }
+        payload: safePayloads[0] ?? null,
+        payloads: safePayloads,
+        grouped,
+        count: safePayloads.length,
+        batchWindowMs: BATCH_WINDOW_MS,
+        createdAt: new Date().toISOString()
+      },
+      damageCardGroup: grouped
+        ? {
+            payloads: safePayloads,
+            count: safePayloads.length,
+            batchWindowMs: BATCH_WINDOW_MS
+          }
+        : null
     }
   }
-});
+};
+
+// Foundry V12 renamed ChatMessage "type" into "style".
+// Use the new field to avoid the deprecation warning.
+if (CONST.CHAT_MESSAGE_STYLES?.OTHER !== undefined) {
+  chatData.style = CONST.CHAT_MESSAGE_STYLES.OTHER;
+} else {
+  // Fallback for older Foundry versions.
+  chatData.type = CONST.CHAT_MESSAGE_TYPES.OTHER;
+}
+
+const msg = await ChatMessage.create(chatData);
+
+      return { ok: true, grouped, count: safePayloads.length, messageId: msg?.id ?? null };
+    }
+
+    async function flush() {
+      if (flushing) {
+        schedule();
+        return { ok: true, deferred: true };
+      }
+
+      if (!queue.length) return { ok: true, count: 0 };
+
+      flushing = true;
+      const batch = queue;
+      queue = [];
+
+      try {
+        return await postPayloads(batch);
+      } finally {
+        flushing = false;
+        if (queue.length) schedule();
+      }
+    }
+
+    function enqueue(payload) {
+      queue.push(clone(payload, {}) || {});
+      schedule();
+      return {
+        ok: true,
+        queued: true,
+        pendingCount: queue.length,
+        batchWindowMs: BATCH_WINDOW_MS
+      };
+    }
+
+    async function createImmediate(payloadOrPayloads) {
+      const payloads = Array.isArray(payloadOrPayloads) ? payloadOrPayloads : [payloadOrPayloads];
+      return await postPayloads(payloads.filter(Boolean));
+    }
+
+    return {
+      enqueue,
+      flush,
+      createImmediate,
+      getPendingCount: () => queue.length
+    };
+  })();
+
+  // --------------------- PUBLIC API ---------------------
+  async function createDamageCard(P_in) {
+    const P = P_in ?? {};
+
+    // Escape hatch for debugging: pass { batch: false } or { disableBatch: true }
+    // if you ever need to force old one-message-per-card behavior temporarily.
+    const disableBatch = !!(
+      P?.disableBatch === true ||
+      P?.batch === false ||
+      P?.meta?.disableDamageCardBatch === true
+    );
+
+    if (disableBatch) {
+      return await DamageCardBatcher.createImmediate(P);
+    }
+
+    // Important: return immediately so callers that `await createDamageCard()` do
+    // not serialize the batch window and accidentally prevent grouping.
+    return DamageCardBatcher.enqueue(P);
+  }
+
+  async function createDamageCards(payloads = {}) {
+    const list = Array.isArray(payloads) ? payloads : (Array.isArray(payloads?.payloads) ? payloads.payloads : []);
+    for (const p of list) DamageCardBatcher.enqueue(p);
+    return { ok: true, queued: true, count: list.length, batchWindowMs: BATCH_WINDOW_MS };
   }
 
   // Expose API
   FUCompanion.createDamageCard = createDamageCard;
+  FUCompanion.createDamageCards = createDamageCards;
+  FUCompanion.damageCardBatcher = DamageCardBatcher;
+
   Hooks.once("ready", () => {
-    const mod = game.modules.get("fabula-ultima-companion");
+    const mod = game.modules.get(MODULE_NS);
     if (mod) {
       mod.api = mod.api || {};
       mod.api.createDamageCard = createDamageCard;
+      mod.api.createDamageCards = createDamageCards;
+      mod.api.damageCardBatcher = DamageCardBatcher;
     }
   });
 })();
