@@ -33,16 +33,14 @@ const BATCH_PASSIVE_QUIET_MS = 900;
 // This gives tiny room for immediate miss-trigger passives, but does not feel delayed.
 const BATCH_SINGLE_TARGET_MISS_QUIET_MS = 650;
 
-// Multi-target Miss is different:
-// Miss cards are created before hit damage in the real action pipeline.
-// This long initial hold keeps the queue open long enough for later damage cards.
+// Multi-target all-miss should group quickly.
+// Since there are no later hit damage cards, do not use the long hold.
+const BATCH_ALL_MISS_QUIET_MS = 900;
+
+// Mixed miss + hit needs the long hold because hit damage cards arrive later.
 const BATCH_MULTI_TARGET_MISS_INITIAL_HOLD_MS = 12000;
 
-// After at least one non-miss card joins the same queue,
-// return to normal multi-target timing so the final group posts quickly.
 const BATCH_AFTER_MISS_JOIN_QUIET_MS = 1400;
-
-// Safety cap. If something goes wrong, the Miss card will still eventually post.
 const BATCH_MAX_WAIT_MS = 15000;
 
 const BATCH_DEBUG = true;
@@ -497,6 +495,41 @@ let holdingForPostMissCards = false;
   );
 }
 
+function inferIsAllMissAction(payload = {}) {
+  const p = payload ?? {};
+  const dbg = p.__executionDebug ?? {};
+
+  const hitCount = Math.max(
+    getArrayLength(p.hitUUIDs),
+    getArrayLength(dbg.hitUUIDs)
+  );
+
+  const missCount = Math.max(
+    getArrayLength(p.missUUIDs),
+    getArrayLength(dbg.missUUIDs),
+    getArrayLength(p.targets),
+    getArrayLength(p.targetUUIDs),
+    getArrayLength(p.targetUuids)
+  );
+
+  const savedCount = Math.max(
+    getArrayLength(p.savedTargetUUIDs),
+    getArrayLength(p.originalTargetUUIDs),
+    getArrayLength(dbg.savedUUIDs),
+    inferTargetCount(p)
+  );
+
+  return !!(
+    p.isAllMissAction === true ||
+    (
+      savedCount >= 2 &&
+      missCount >= 2 &&
+      hitCount === 0 &&
+      missCount === savedCount
+    )
+  );
+}
+
   function getBatchProfileForPayload(payload = {}) {
     const targetCount = inferTargetCount(payload);
     const isPassiveOrReaction = inferIsPassiveOrReaction(payload);
@@ -512,6 +545,8 @@ const isMissCard = inferIsMissCard(payload);
 //   hold longer, because Miss cards are generated before later hit/damage cards
 //   in the real action pipeline.
 if (isMissCard) {
+  const isAllMissAction = inferIsAllMissAction(payload);
+
   if (targetCount <= 1) {
     return {
       quietMs: BATCH_SINGLE_TARGET_MISS_QUIET_MS,
@@ -520,6 +555,18 @@ if (isMissCard) {
     };
   }
 
+  // Multi-target all-miss:
+  // group the Miss cards, but do not wait for hit damage cards that will never arrive.
+  if (isAllMissAction) {
+    return {
+      quietMs: BATCH_ALL_MISS_QUIET_MS,
+      maxWaitMs: Math.max(1500, BATCH_ALL_MISS_QUIET_MS + 700),
+      reason: `multi-target-all-miss-fast-${targetCount}`
+    };
+  }
+
+  // Mixed miss + hit:
+  // hold longer so Miss cards can join the later damage cards.
   return {
     quietMs: BATCH_MULTI_TARGET_MISS_INITIAL_HOLD_MS,
     maxWaitMs: BATCH_MAX_WAIT_MS,
