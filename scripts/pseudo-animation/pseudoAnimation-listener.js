@@ -43,24 +43,33 @@
     //
     // NOTE: We intentionally do NOT pass `game` here by default.
     // If you need it later, you can add it explicitly as a parameter.
-const fn = new Function(
-  "ctx",
-  "canvas",
-  "PIXI",
-  "FAudioHelper",
-  "loadTexture",
-  "fromUuid",
-  "wait",
-  "foundry",
-  `
-  "use strict";
-  return (async () => {
-    ${scriptSource}
-  })();
-  `
-);
+globalThis.__ONI_PSEUDO_FN_CACHE__ ??= new Map();
 
-const audio = foundry?.audio?.AudioHelper ?? globalThis.AudioHelper; // fallback just in case
+const cacheKey = scriptSource;
+let fn = globalThis.__ONI_PSEUDO_FN_CACHE__.get(cacheKey);
+
+if (!fn) {
+  fn = new Function(
+    "ctx",
+    "canvas",
+    "PIXI",
+    "FAudioHelper",
+    "loadTexture",
+    "fromUuid",
+    "wait",
+    "foundry",
+    `
+    "use strict";
+    return (async () => {
+      ${scriptSource}
+    })();
+    `
+  );
+
+  globalThis.__ONI_PSEUDO_FN_CACHE__.set(cacheKey, fn);
+}
+
+const audio = foundry?.audio?.AudioHelper ?? globalThis.AudioHelper;
 return await fn(ctx, canvas, PIXI, audio, loadTexture, fromUuid, wait, foundry);
   }
 

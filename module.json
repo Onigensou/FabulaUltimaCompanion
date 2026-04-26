@@ -28,6 +28,7 @@
   "scripts/main.js",
   "scripts/speech-bubble.js",
   "scripts/turn-ui-manager.js",
+  "scripts/action-animation/animation-asset-cache.js",
   "scripts/action-execution-core.js",
   "scripts/gm-executor.js",
   "scripts/action-editor/actionEditor-CardFinder.js",

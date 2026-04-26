@@ -326,7 +326,14 @@ return (async () => {
       let js = htmlToPlain(raw).replace(/\r\n/g, "\n").trim();
       if (!js) return false;
 
-      const fn = new Function("payload", "targets", "\"use strict\";\n" + js);
+      globalThis.__ONI_ACTION_ANIM_FN_CACHE__ ??= new Map();
+
+let fn = globalThis.__ONI_ACTION_ANIM_FN_CACHE__.get(js);
+
+if (!fn) {
+  fn = new Function("payload", "targets", "\"use strict\";\n" + js);
+  globalThis.__ONI_ACTION_ANIM_FN_CACHE__.set(js, fn);
+}
 
       const worker = async () => {
         const gatePromise =
