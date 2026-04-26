@@ -9,11 +9,14 @@
   const DBG_TAG = "[FU CreateDamageCard Shim][DBG]";
   const TRACE_ID = `CDC-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
 
-  const dbg = (label, data) => {
-    try {
-      console.log(`${DBG_TAG} ${label}`, data);
-    } catch (_) {}
-  };
+const DEBUG = false;
+
+const dbg = (label, data) => {
+  if (!DEBUG) return;
+  try {
+    console.log(`${DBG_TAG} ${label}`, data);
+  } catch (_) {}
+};
 
   const nonBlankString = (...values) => {
     for (const value of values) {
@@ -157,7 +160,7 @@
 
     emit("oni:reactionPhase", tracedPayload, { local: true, world: false });
 
-    console.log(`${RUN_TAG} oni:reactionPhase emitted`, tracedPayload);
+    if (DEBUG) console.log(`${RUN_TAG} oni:reactionPhase emitted`, tracedPayload);
 
     dbg("emitReactionPhaseLocalOnGM:done:no-wait", {
       traceId,
@@ -209,6 +212,37 @@
       displayedAmount: payload?.displayedAmount ?? null
     }
   });
+
+  // -----------------------------------------------------------------------------
+// FAST UI QUEUE
+// -----------------------------------------------------------------------------
+// Queue the visual Damage Card BEFORE reaction/passive beacon work.
+// The module API returns immediately because it only enqueues the card.
+// This makes the chat card feel much snappier, while reaction logic can still
+// run afterward.
+let __damageCardQueued = false;
+
+try {
+  dbg("api.createDamageCard:fast-queue-begin", {
+    TRACE_ID,
+    payloadSummary: {
+      mode: payload?.mode ?? null,
+      targetUuid: payload?.targetUuid ?? null,
+      noEffectReason: payload?.noEffectReason ?? null,
+      affected: payload?.affected ?? null,
+      finalValue: payload?.finalValue ?? null,
+      displayedAmount: payload?.displayedAmount ?? null
+    }
+  });
+
+  await api.createDamageCard(payload);
+  __damageCardQueued = true;
+
+  dbg("api.createDamageCard:fast-queue-done", { TRACE_ID });
+} catch (err) {
+  console.error(`${RUN_TAG} Failed to queue Damage Card early:`, err, payload, { TRACE_ID });
+  // Do not return yet. Let the old final call try again as fallback.
+}
 
   // 2b) ONI Reaction Phase beacons: per-target damage resolution / miss resolution
   try {
@@ -638,9 +672,11 @@
     console.warn(`${RUN_TAG} ReactionPhase emit failed (safe to ignore for now):`, err, payload, { TRACE_ID });
   }
 
-  // 3) Call the module’s implementation
+  // 3) Fallback card queue
+// Normally already queued at the top for snappier UI.
+if (!__damageCardQueued) {
   try {
-    dbg("api.createDamageCard:begin", {
+    dbg("api.createDamageCard:fallback-begin", {
       TRACE_ID,
       payloadSummary: {
         mode: payload?.mode ?? null,
@@ -651,10 +687,14 @@
         displayedAmount: payload?.displayedAmount ?? null
       }
     });
+
     await api.createDamageCard(payload);
-    dbg("api.createDamageCard:done", { TRACE_ID });
+    dbg("api.createDamageCard:fallback-done", { TRACE_ID });
   } catch (err) {
     console.error(`${RUN_TAG} Failed to create card:`, err, payload, { TRACE_ID });
     ui.notifications.error("Failed to create Damage Card (see console).");
   }
+} else {
+  dbg("api.createDamageCard:fallback-skipped:already-queued", { TRACE_ID });
+}
 })();

@@ -30,7 +30,7 @@
   API_ROOT.api = API_ROOT.api || {};
 
   const TAG = "[ONI][ActionExecute]";
-  const DEBUG = true; // set false when stable
+  const DEBUG = false; // set true only when debugging action execution
 
   const log = (...a) => DEBUG && console.log(TAG, ...a);
   const warn = (...a) => DEBUG && console.warn(TAG, ...a);

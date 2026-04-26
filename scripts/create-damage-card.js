@@ -25,25 +25,34 @@
 // - 300ms for normal isolated cards
 // - 1400ms quiet window for multi-target action cards
 // - 5000ms max wait so chat never gets held forever
-const BATCH_DEFAULT_QUIET_MS = 300;
-const BATCH_MULTI_TARGET_QUIET_MS = 1400;
-const BATCH_PASSIVE_QUIET_MS = 900;
+// Fast single-card default.
+// This is the main "normal attack feels snappy" tuning knob.
+const BATCH_DEFAULT_QUIET_MS = 120;
 
-// Single-target Miss should feel fast.
-// This gives tiny room for immediate miss-trigger passives, but does not feel delayed.
-const BATCH_SINGLE_TARGET_MISS_QUIET_MS = 650;
+// Keep multi-target timing safer because real AoE pipelines can have gaps
+// between targets due to AE, passive, reaction, and actor updates.
+const BATCH_MULTI_TARGET_QUIET_MS = 1400;
+
+// Passive/reaction follow-ups usually arrive slightly after the source event.
+const BATCH_PASSIVE_QUIET_MS = 700;
+
+// Single-target Miss should be quick.
+// It may split from delayed miss-passives, but it feels much better in play.
+const BATCH_SINGLE_TARGET_MISS_QUIET_MS = 300;
 
 // Multi-target all-miss should group quickly.
-// Since there are no later hit damage cards, do not use the long hold.
-const BATCH_ALL_MISS_QUIET_MS = 900;
+// No need to wait for hit damage that will never arrive.
+const BATCH_ALL_MISS_QUIET_MS = 700;
 
-// Mixed miss + hit needs the long hold because hit damage cards arrive later.
+// Mixed miss + hit still needs the long hold because hit damage arrives later.
 const BATCH_MULTI_TARGET_MISS_INITIAL_HOLD_MS = 12000;
 
 const BATCH_AFTER_MISS_JOIN_QUIET_MS = 1400;
 const BATCH_MAX_WAIT_MS = 15000;
 
-const BATCH_DEBUG = true;
+// Turn this off for real play.
+// Console logging itself can cause visible UI stutter in Foundry.
+const BATCH_DEBUG = false;
   const CARD_MARKER = "fu-damage-card"; // Unique marker detected by render hook.
   const GROUP_MARKER = "fu-damage-card-group";
 
@@ -62,6 +71,8 @@ const BATCH_DEBUG = true;
   };
   const FALLBACK_IMG = "icons/svg/mystery-man.svg";
 
+  const _imgCache = new Map();
+
   function clone(value, fallback = null) {
     try {
       if (foundry?.utils?.deepClone) return foundry.utils.deepClone(value);
@@ -78,38 +89,39 @@ const BATCH_DEBUG = true;
   // Prefer the Actor's Profile/Portrait image for cards.
   // Falls back to token texture if the actor image isn't available.
   async function tokenImgFromUuid(uuid) {
-    try {
-      if (!uuid) return FALLBACK_IMG;
+  try {
+    const key = String(uuid ?? "").trim();
+    if (!key) return FALLBACK_IMG;
 
-      const doc = await fromUuid(uuid);
+    if (_imgCache.has(key)) return _imgCache.get(key);
 
-      // Normalize to TokenDocument (tok) and Actor (actor)
-      const tok =
-        doc?.isToken ? doc :
-        (doc?.token ?? null);
+    const doc = await fromUuid(key);
 
-      const actor =
-        doc?.actor ??
-        tok?.actor ??
-        (doc?.type === "Actor" ? doc : null) ??
-        tok?.document?.actor ??
-        null;
+    const tok =
+      doc?.isToken ? doc :
+      (doc?.token ?? null);
 
-      // 1) Use Actor profile image (portrait) FIRST
-      if (actor?.img) return actor.img;
+    const actor =
+      doc?.actor ??
+      tok?.actor ??
+      (doc?.type === "Actor" ? doc : null) ??
+      tok?.document?.actor ??
+      null;
 
-      // 2) Then try the prototype token portrait (static)
-      if (actor?.prototypeToken?.texture?.src) return actor.prototypeToken.texture.src;
+    const img =
+      actor?.img ||
+      actor?.prototypeToken?.texture?.src ||
+      tok?.texture?.src ||
+      tok?.document?.texture?.src ||
+      tok?.img ||
+      FALLBACK_IMG;
 
-      // 3) Finally fall back to whatever the token is using (may be animated)
-      return tok?.texture?.src ||
-             tok?.document?.texture?.src ||
-             tok?.img ||
-             FALLBACK_IMG;
-    } catch {
-      return FALLBACK_IMG;
-    }
+    _imgCache.set(key, img);
+    return img;
+  } catch {
+    return FALLBACK_IMG;
   }
+}
 
   async function guessAttackerByName(name) {
     const t = canvas?.tokens?.placeables?.find(t => (t.actor?.name || t.name) === name);
@@ -638,15 +650,19 @@ if (isMissCard) {
 
   async function postPayloads(payloads, flushReason = "unknown") {
     const safePayloads = payloads.map(p => clone(p, {}) || {});
-    const htmlParts = [];
 
-    for (const p of safePayloads) {
+const htmlParts = (
+  await Promise.all(
+    safePayloads.map(async (p) => {
       try {
-        htmlParts.push(await renderDamageCardHTML(p));
+        return await renderDamageCardHTML(p);
       } catch (err) {
         warn("Failed to render one damage card:", err, p);
+        return "";
       }
-    }
+    })
+  )
+).filter(Boolean);
 
     if (!htmlParts.length) return { ok: false, reason: "no-rendered-cards" };
 
