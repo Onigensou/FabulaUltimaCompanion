@@ -27,7 +27,7 @@
 // - 5000ms max wait so chat never gets held forever
 // Fast single-card default.
 // This is the main "normal attack feels snappy" tuning knob.
-const BATCH_DEFAULT_QUIET_MS = 120;
+const BATCH_DEFAULT_QUIET_MS = 16;
 
 // Keep multi-target timing safer because real AoE pipelines can have gaps
 // between targets due to AE, passive, reaction, and actor updates.
@@ -38,7 +38,7 @@ const BATCH_PASSIVE_QUIET_MS = 700;
 
 // Single-target Miss should be quick.
 // It may split from delayed miss-passives, but it feels much better in play.
-const BATCH_SINGLE_TARGET_MISS_QUIET_MS = 300;
+const BATCH_SINGLE_TARGET_MISS_QUIET_MS = 16;
 
 // Multi-target all-miss should group quickly.
 // No need to wait for hit damage that will never arrive.
@@ -71,6 +71,10 @@ const BATCH_DEBUG = false;
   };
   const FALLBACK_IMG = "icons/svg/mystery-man.svg";
 
+  function getDamageCardCache() {
+  return globalThis.FUCompanion?.api?.damageCardCache ?? null;
+}
+
   const _imgCache = new Map();
 
   function clone(value, fallback = null) {
@@ -88,14 +92,21 @@ const BATCH_DEBUG = false;
 
   // Prefer the Actor's Profile/Portrait image for cards.
   // Falls back to token texture if the actor image isn't available.
-  async function tokenImgFromUuid(uuid) {
+async function tokenImgFromUuid(uuid) {
   try {
     const key = String(uuid ?? "").trim();
     if (!key) return FALLBACK_IMG;
 
-    if (_imgCache.has(key)) return _imgCache.get(key);
+    const cache = getDamageCardCache();
 
+    // Fast path: session cache.
+    const cachedImg = cache?.getImage?.(key);
+    if (cachedImg) return cachedImg;
+
+    // Fallback path: resolve once, then cache it.
     const doc = await fromUuid(key);
+
+    if (doc) cache?.rememberDoc?.(doc);
 
     const tok =
       doc?.isToken ? doc :
@@ -116,17 +127,33 @@ const BATCH_DEBUG = false;
       tok?.img ||
       FALLBACK_IMG;
 
-    _imgCache.set(key, img);
+    if (key && img) {
+      cache?.rememberInfo?.({
+        tokenUuid: tok?.uuid ?? tok?.document?.uuid ?? null,
+        actorUuid: actor?.uuid ?? null,
+        tokenName: tok?.name ?? tok?.document?.name ?? null,
+        actorName: actor?.name ?? null,
+        img
+      });
+    }
+
     return img;
   } catch {
     return FALLBACK_IMG;
   }
 }
 
-  async function guessAttackerByName(name) {
-    const t = canvas?.tokens?.placeables?.find(t => (t.actor?.name || t.name) === name);
-    return t?.document?.uuid ?? "";
-  }
+async function guessAttackerByName(name) {
+  const cache = getDamageCardCache();
+  const cached = cache?.getInfo?.(name);
+  if (cached?.tokenUuid) return cached.tokenUuid;
+  if (cached?.actorUuid) return cached.actorUuid;
+
+  const t = canvas?.tokens?.placeables?.find(t => (t.actor?.name || t.name) === name);
+  if (t) cache?.rememberTokenObject?.(t);
+
+  return t?.document?.uuid ?? "";
+}
 
   // ------------------ PERSISTENT RENDER HOOK ------------------
   // Runs for every message on every client; only acts on our cards.
@@ -448,6 +475,98 @@ let holdingForPostMissCards = false;
     }
   }
 
+  function arr(value) {
+  return Array.isArray(value) ? value.filter(Boolean).map(String) : [];
+}
+
+function makeLiteActionContext(ctx = null) {
+  if (!ctx || typeof ctx !== "object") return null;
+
+  return {
+    originalTargetUUIDs: arr(ctx.originalTargetUUIDs),
+    targets: arr(ctx.targets),
+    meta: {
+      originalTargetUUIDs: arr(ctx.meta?.originalTargetUUIDs),
+      targets: arr(ctx.meta?.targets),
+      executionMode: ctx.meta?.executionMode ?? null,
+      skillTypeRaw: ctx.meta?.skillTypeRaw ?? null,
+      isSpellish: !!ctx.meta?.isSpellish
+    },
+    core: {
+      skillName: ctx.core?.skillName ?? null,
+      skillTypeRaw: ctx.core?.skillTypeRaw ?? null
+    },
+    dataCore: {
+      skillTypeRaw: ctx.dataCore?.skillTypeRaw ?? null,
+      isSpell: !!ctx.dataCore?.isSpell
+    }
+  };
+}
+
+function makeLiteDamagePayload(p = {}) {
+  const ctx = p.actionContext ?? p.meta?.actionContext ?? null;
+
+  return {
+    // visual identity
+    mode: p.mode ?? null,
+    miss: p.miss ?? null,
+
+    attackerName: p.attackerName ?? null,
+    attackerUuid: p.attackerUuid ?? null,
+    targetName: p.targetName ?? null,
+    targetUuid: p.targetUuid ?? null,
+
+    sourceType: p.sourceType ?? null,
+    attackRange: p.attackRange ?? null,
+
+    // visual damage data
+    valueType: p.valueType ?? null,
+    changeKey: p.changeKey ?? null,
+    elementType: p.elementType ?? null,
+    weaponType: p.weaponType ?? null,
+
+    affinityCode: p.affinityCode ?? null,
+    effectivenessLabel: p.effectivenessLabel ?? null,
+
+    baseValue: p.baseValue ?? null,
+    finalValue: p.finalValue ?? null,
+    displayedAmount: p.displayedAmount ?? null,
+
+    shieldBreak: !!p.shieldBreak,
+    affected: p.affected,
+    noEffectReason: p.noEffectReason ?? null,
+
+    // batch hints
+    targets: arr(p.targets),
+    targetUUIDs: arr(p.targetUUIDs),
+    targetUuids: arr(p.targetUuids),
+    originalTargetUUIDs: arr(p.originalTargetUUIDs),
+    savedTargetUUIDs: arr(p.savedTargetUUIDs),
+    missUUIDs: arr(p.missUUIDs),
+    hitUUIDs: arr(p.hitUUIDs),
+
+    isAllMissAction: !!p.isAllMissAction,
+    isMixedHitMissAction: !!p.isMixedHitMissAction,
+    missTargetCount: Number(p.missTargetCount ?? 0) || 0,
+
+    skillName: p.skillName ?? null,
+    skillTypeRaw: p.skillTypeRaw ?? null,
+    skill_type: p.skill_type ?? null,
+    source: p.source ?? null,
+
+    meta: {
+      executionMode: p.meta?.executionMode ?? null,
+      skillTypeRaw: p.meta?.skillTypeRaw ?? null,
+      disableDamageCardBatch: !!p.meta?.disableDamageCardBatch
+    },
+
+    actionContext: makeLiteActionContext(ctx),
+
+    // small debug only, not full payload
+    __liteDamageCardPayload: true
+  };
+}
+
   function getArrayLength(value) {
     return Array.isArray(value) ? value.filter(Boolean).length : 0;
   }
@@ -649,7 +768,7 @@ if (isMissCard) {
   }
 
   async function postPayloads(payloads, flushReason = "unknown") {
-    const safePayloads = payloads.map(p => clone(p, {}) || {});
+    const safePayloads = payloads.map(p => makeLiteDamagePayload(p ?? {}));
 
 const htmlParts = (
   await Promise.all(
@@ -788,7 +907,7 @@ holdingForPostMissCards = false;
   }
 
 function enqueue(payload) {
-  const safePayload = clone(payload, {}) || {};
+  const safePayload = makeLiteDamagePayload(payload ?? {});
   const profile = getBatchProfileForPayload(safePayload);
 
   const isMissCard = inferIsMissCard(safePayload);
