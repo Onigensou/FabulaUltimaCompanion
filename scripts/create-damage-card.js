@@ -463,62 +463,176 @@
     `;
   }
 
-  async function buildGroupedDamageCardHTML({
-    entries = [],
-    batchId = null,
-    title = "Damage Results",
-    subtitle = "",
-    rootActionContext = null
-  } = {}) {
-    const safeEntries = entries.filter(Boolean);
-    const count = safeEntries.length;
+async function buildGroupedDamageCardHTML({
+  entries = [],
+  batchId = null,
+  title = "Damage Results",
+  subtitle = "",
+  rootActionContext = null,
+  showHeader = null
+} = {}) {
+  const safeEntries = entries.filter(Boolean);
+  const count = safeEntries.length;
 
-    const sourceName =
-      S(rootActionContext?.meta?.attackerName, "") ||
-      S(rootActionContext?.core?.attackerName, "") ||
-      S(safeEntries?.[0]?.attackerName, "System");
+  const firstEntry = safeEntries[0] ?? {};
 
+  function cleanTitle(rawTitle) {
     const skillName =
       S(rootActionContext?.core?.skillName, "") ||
       S(rootActionContext?.dataCore?.skillName, "") ||
-      S(safeEntries?.[0]?.skillName, "");
+      S(firstEntry?.skillName, "") ||
+      S(firstEntry?.actionContext?.core?.skillName, "") ||
+      S(firstEntry?.actionContext?.dataCore?.skillName, "");
 
-    const headerTitle = title || (skillName ? `${skillName} Results` : "Damage Results");
+    let out = S(rawTitle, "") || skillName || "Damage";
 
-    const headerSubtitle = subtitle || [
-      skillName,
-      sourceName,
-      count ? `${count} result${count === 1 ? "" : "s"}` : ""
-    ].filter(Boolean).join(" • ");
+    // Remove redundant wording like:
+    // "Infectious Ray Results" -> "Infectious Ray"
+    // "Absorb MP Result"       -> "Absorb MP"
+    out = out.replace(/\s+results?\s*$/i, "").trim();
 
-    const shells = [];
+    return out || skillName || "Damage";
+  }
 
-    for (let i = 0; i < safeEntries.length; i++) {
-      shells.push(await buildDamageShellHTML(safeEntries[i], {
-        compact: true,
-        index: i
-      }));
-    }
+  function resolveActionIcon() {
+    return (
+      S(rootActionContext?.core?.skillImg, "") ||
+      S(rootActionContext?.dataCore?.skillImg, "") ||
+      S(rootActionContext?.sourceItem?.img, "") ||
+      S(firstEntry?.skillImg, "") ||
+      S(firstEntry?.actionImg, "") ||
+      S(firstEntry?.sourceImg, "") ||
+      S(firstEntry?.actionContext?.core?.skillImg, "") ||
+      S(firstEntry?.actionContext?.dataCore?.skillImg, "") ||
+      S(firstEntry?.actionContext?.sourceItem?.img, "") ||
+      ""
+    );
+  }
 
-    return `
-      <div class="fu-card fu-card-group" data-fu-card="${CARD_MARKER}" data-fu-card-kind="${GROUP_MARKER}" data-batch-id="${escAttr(batchId ?? "")}" style="font-family: Signika, sans-serif; letter-spacing:.2px;">
-        <div class="fu-group-head" style="border:1px solid #cfa057;background:linear-gradient(180deg,#f7ecd9,#ead7b7);border-radius:10px;padding:.5rem .65rem;margin-bottom:.42rem;box-shadow:0 1px 0 rgba(255,255,255,.6) inset;">
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:.5rem;">
-            <div style="min-width:0;">
-              <div style="font-size:14px;font-weight:900;color:#493827;text-transform:uppercase;letter-spacing:.04em;line-height:1.15;">${esc(headerTitle)}</div>
-              ${headerSubtitle ? `<div style="font-size:11px;font-weight:700;color:#6f5b43;opacity:.9;margin-top:.15rem;white-space:normal;line-height:1.25;">${esc(headerSubtitle)}</div>` : ``}
-            </div>
-            <div style="flex:0 0 auto;border:1px solid rgba(122,106,85,.55);background:rgba(255,255,255,.35);border-radius:999px;padding:.16rem .5rem;font-size:11px;font-weight:900;color:#493827;">
-              ${count}x
-            </div>
+  function resolveExecutionMode() {
+    return String(
+      rootActionContext?.meta?.executionMode ??
+      firstEntry?.actionContext?.meta?.executionMode ??
+      firstEntry?.meta?.executionMode ??
+      ""
+    ).trim().toLowerCase();
+  }
+
+  function shouldShowHeader() {
+    if (typeof showHeader === "boolean") return showHeader;
+
+    const executionMode = resolveExecutionMode();
+
+    // Practical rule:
+    // - Hide banner for simple single-result actions.
+    // - Show banner for multi-target grouped results.
+    // - Show banner for auto-passive results, so they are separated from the root action.
+    return count > 1 || executionMode === "autopassive";
+  }
+
+  const sourceName =
+    S(rootActionContext?.meta?.attackerName, "") ||
+    S(rootActionContext?.core?.attackerName, "") ||
+    S(firstEntry?.attackerName, "System");
+
+  const executionMode = resolveExecutionMode();
+
+  const modeLabel =
+    executionMode === "autopassive"
+      ? "Auto Passive"
+      : "Action";
+
+  const headerTitle = cleanTitle(title);
+
+  const headerSubtitle =
+    S(subtitle, "") ||
+    [modeLabel, sourceName].filter(Boolean).join(" • ");
+
+  const icon = resolveActionIcon();
+  const renderHeader = shouldShowHeader();
+
+  const shells = [];
+
+  for (let i = 0; i < safeEntries.length; i++) {
+    shells.push(await buildDamageShellHTML(safeEntries[i], {
+      compact: true,
+      index: i
+    }));
+  }
+
+  const headerHTML = renderHeader ? `
+    <div class="fu-group-head"
+         style="
+           border:1px solid #cfa057;
+           background:linear-gradient(180deg,#f7ecd9,#ead7b7);
+           border-radius:8px;
+           padding:.34rem .45rem;
+           margin-bottom:.28rem;
+           box-shadow:0 1px 0 rgba(255,255,255,.55) inset;
+         ">
+      <div style="display:flex;align-items:center;gap:.38rem;min-width:0;">
+        ${
+          icon
+            ? `<img src="${escAttr(icon)}" alt=""
+                    style="
+                      width:22px;
+                      height:22px;
+                      object-fit:cover;
+                      border-radius:5px;
+                      box-shadow:0 0 0 1px rgba(0,0,0,.22);
+                      flex:0 0 auto;
+                    ">`
+            : ``
+        }
+
+        <div style="min-width:0;line-height:1.1;">
+          <div style="
+            font-size:12px;
+            font-weight:900;
+            color:#493827;
+            text-transform:uppercase;
+            letter-spacing:.035em;
+            white-space:nowrap;
+            overflow:hidden;
+            text-overflow:ellipsis;
+          ">
+            ${esc(headerTitle)}
           </div>
-        </div>
-        <div class="fu-group-body" style="display:flex;flex-direction:column;gap:.25rem;">
-          ${shells.join("\n")}
+
+          ${
+            headerSubtitle
+              ? `<div style="
+                    font-size:10px;
+                    font-weight:700;
+                    color:#6f5b43;
+                    opacity:.9;
+                    margin-top:.12rem;
+                    white-space:nowrap;
+                    overflow:hidden;
+                    text-overflow:ellipsis;
+                  ">
+                    ${esc(headerSubtitle)}
+                 </div>`
+              : ``
+          }
         </div>
       </div>
-    `;
-  }
+    </div>
+  ` : ``;
+
+  return `
+    <div class="fu-card fu-card-group"
+         data-fu-card="${CARD_MARKER}"
+         data-fu-card-kind="${GROUP_MARKER}"
+         data-batch-id="${escAttr(batchId ?? "")}"
+         style="font-family: Signika, sans-serif; letter-spacing:.2px;">
+      ${headerHTML}
+      <div class="fu-group-body" style="display:flex;flex-direction:column;gap:.22rem;">
+        ${shells.join("\n")}
+      </div>
+    </div>
+  `;
+}
 
   async function postDamageChatMessage({
     content,
@@ -577,21 +691,23 @@
       return null;
     }
 
-    const groupPayload = {
-      batchId,
-      title,
-      subtitle,
-      rootActionContext: safeClone(rootActionContext, rootActionContext),
-      entries: safeClone(entries, entries)
-    };
+const groupPayload = {
+  batchId,
+  title,
+  subtitle,
+  showHeader: typeof input?.showHeader === "boolean" ? input.showHeader : null,
+  rootActionContext: safeClone(rootActionContext, rootActionContext),
+  entries: safeClone(entries, entries)
+};
 
-    const html = await buildGroupedDamageCardHTML({
-      entries,
-      batchId,
-      title,
-      subtitle,
-      rootActionContext
-    });
+const html = await buildGroupedDamageCardHTML({
+  entries,
+  batchId,
+  title,
+  subtitle,
+  rootActionContext,
+  showHeader: typeof input?.showHeader === "boolean" ? input.showHeader : null
+});
 
     return await postDamageChatMessage({
       content: html,
