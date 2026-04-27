@@ -13,39 +13,7 @@
 
   // ------------------------- config -------------------------
   const MODULE_NS = "fabula-ultima-companion";
-  // ------------------------- batching config -------------------------
-// The batcher is adaptive:
-//
-// - Single isolated cards still appear fairly quickly.
-// - Multi-target action cards wait longer, because the real action pipeline
-//   may spend time on Miss, Active Effects, Reactions, Passives, and actor updates
-//   between target cards.
-//
-// Recommended for Oni's current Foundry pipeline:
-// - 300ms for normal isolated cards
-// - 1400ms quiet window for multi-target action cards
-// - 5000ms max wait so chat never gets held forever
-const BATCH_DEFAULT_QUIET_MS = 300;
-const BATCH_MULTI_TARGET_QUIET_MS = 1400;
-const BATCH_PASSIVE_QUIET_MS = 900;
-
-// Single-target Miss should feel fast.
-// This gives tiny room for immediate miss-trigger passives, but does not feel delayed.
-const BATCH_SINGLE_TARGET_MISS_QUIET_MS = 650;
-
-// Multi-target Miss is different:
-// Miss cards are created before hit damage in the real action pipeline.
-// This long initial hold keeps the queue open long enough for later damage cards.
-const BATCH_MULTI_TARGET_MISS_INITIAL_HOLD_MS = 12000;
-
-// After at least one non-miss card joins the same queue,
-// return to normal multi-target timing so the final group posts quickly.
-const BATCH_AFTER_MISS_JOIN_QUIET_MS = 1400;
-
-// Safety cap. If something goes wrong, the Miss card will still eventually post.
-const BATCH_MAX_WAIT_MS = 15000;
-
-const BATCH_DEBUG = true;
+  const BATCH_WINDOW_MS = 300; // Tuning knob: larger catches more consecutive cards, smaller feels snappier.
   const CARD_MARKER = "fu-damage-card"; // Unique marker detected by render hook.
   const GROUP_MARKER = "fu-damage-card-group";
 
@@ -398,418 +366,127 @@ if (content) {
     `;
   }
 
-// --------------------- DAMAGE CARD BATCHER ---------------------
-// Debounced batcher:
-// - First card starts a batch.
-// - Every new card resets the quiet timer.
-// - Batch posts after the queue has been quiet long enough.
-// - A max timer prevents the queue from waiting forever.
-//
-// This is better for the real action pipeline because Miss / Hit / Passive cards
-// may be generated several hundred milliseconds apart.
-const DamageCardBatcher = (() => {
-  let queue = [];
-  let quietTimer = null;
-  let maxTimer = null;
-  let flushing = false;
+  // --------------------- DAMAGE CARD BATCHER ---------------------
+  const DamageCardBatcher = (() => {
+    let queue = [];
+    let timer = null;
+    let flushing = false;
 
-let firstQueuedAt = 0;
-let currentQuietMs = BATCH_DEFAULT_QUIET_MS;
-let currentMaxWaitMs = BATCH_MAX_WAIT_MS;
-
-// True when the current batch started with one or more Miss cards.
-// Once a real damage/heal card arrives, we release this hold and use normal timing.
-let holdingForPostMissCards = false;
-
-  const log = (...a) => BATCH_DEBUG && console.log("[FU CreateDamageCard][Batcher]", ...a);
-  const warn = (...a) => BATCH_DEBUG && console.warn("[FU CreateDamageCard][Batcher]", ...a);
-
-  function clearQuietTimer() {
-    if (quietTimer) {
-      clearTimeout(quietTimer);
-      quietTimer = null;
-    }
-  }
-
-  function clearMaxTimer() {
-    if (maxTimer) {
-      clearTimeout(maxTimer);
-      maxTimer = null;
-    }
-  }
-
-  function getArrayLength(value) {
-    return Array.isArray(value) ? value.filter(Boolean).length : 0;
-  }
-
-  function inferTargetCount(payload = {}) {
-    const p = payload ?? {};
-    const ctx = p.actionContext ?? p.meta?.actionContext ?? null;
-
-    return Math.max(
-      getArrayLength(p.originalTargetUUIDs),
-      getArrayLength(p.targets),
-      getArrayLength(p.targetUuids),
-      getArrayLength(p.targetUUIDs),
-      getArrayLength(ctx?.originalTargetUUIDs),
-      getArrayLength(ctx?.targets),
-      getArrayLength(ctx?.meta?.originalTargetUUIDs),
-      getArrayLength(ctx?.meta?.targets)
-    );
-  }
-
-  function inferIsPassiveOrReaction(payload = {}) {
-    const p = payload ?? {};
-    const ctx = p.actionContext ?? p.meta?.actionContext ?? null;
-
-    const raw = [
-      p.skillTypeRaw,
-      p.skill_type,
-      p.sourceType,
-      p.source,
-      p.meta?.skillTypeRaw,
-      p.meta?.executionMode,
-      ctx?.core?.skillTypeRaw,
-      ctx?.dataCore?.skillTypeRaw,
-      ctx?.meta?.skillTypeRaw,
-      ctx?.meta?.executionMode
-    ]
-      .filter(v => v !== null && v !== undefined)
-      .map(v => String(v).trim().toLowerCase());
-
-    return raw.some(v =>
-      v === "passive" ||
-      v === "autopassive" ||
-      v === "autoPassive".toLowerCase() ||
-      v.includes("passive") ||
-      v.includes("reaction")
-    );
-  }
-
-  function inferIsMissCard(payload = {}) {
-  return !!(
-    String(payload?.mode ?? "").trim().toLowerCase() === "miss" ||
-    payload?.miss === true ||
-    (
-      payload?.affected === false &&
-      String(payload?.noEffectReason ?? "").trim().toLowerCase() === "miss"
-    )
-  );
-}
-
-  function getBatchProfileForPayload(payload = {}) {
-    const targetCount = inferTargetCount(payload);
-    const isPassiveOrReaction = inferIsPassiveOrReaction(payload);
-
-const isMissCard = inferIsMissCard(payload);
-
-// Miss timing is dynamic:
-//
-// - Single-target Miss:
-//   show quickly, because there are no later hit cards to wait for.
-//
-// - Multi-target Miss:
-//   hold longer, because Miss cards are generated before later hit/damage cards
-//   in the real action pipeline.
-if (isMissCard) {
-  if (targetCount <= 1) {
-    return {
-      quietMs: BATCH_SINGLE_TARGET_MISS_QUIET_MS,
-      maxWaitMs: Math.max(1000, BATCH_SINGLE_TARGET_MISS_QUIET_MS + 500),
-      reason: "single-target-miss-fast"
-    };
-  }
-
-  return {
-    quietMs: BATCH_MULTI_TARGET_MISS_INITIAL_HOLD_MS,
-    maxWaitMs: BATCH_MAX_WAIT_MS,
-    reason: `multi-target-miss-hold-${targetCount}`
-  };
-}
-
-    // Multi-target actions need the longest quiet window because cards can be
-    // delayed by AE / reaction / passive checks between targets.
-    if (targetCount >= 2) {
-      return {
-        quietMs: BATCH_MULTI_TARGET_QUIET_MS,
-        maxWaitMs: BATCH_MAX_WAIT_MS,
-        reason: `multi-target-${targetCount}`
-      };
+    function schedule() {
+      if (timer) return;
+      timer = window.setTimeout(() => {
+        timer = null;
+        flush().catch(err => console.error("[FU CreateDamageCard][Batcher] flush failed:", err));
+      }, BATCH_WINDOW_MS);
     }
 
-    // Passive/reaction cards often follow the original damage card slightly later.
-    if (isPassiveOrReaction) {
-      return {
-        quietMs: BATCH_PASSIVE_QUIET_MS,
-        maxWaitMs: BATCH_MAX_WAIT_MS,
-        reason: "passive-or-reaction"
-      };
-    }
+    async function postPayloads(payloads) {
+      const safePayloads = payloads.map(p => clone(p, {}) || {});
+      const htmlParts = [];
 
-    // Default: quick single-card display.
-    return {
-      quietMs: BATCH_DEFAULT_QUIET_MS,
-      maxWaitMs: Math.min(BATCH_MAX_WAIT_MS, 1500),
-      reason: "default"
-    };
-  }
-
-  function scheduleQuietFlush() {
-    clearQuietTimer();
-
-    quietTimer = window.setTimeout(() => {
-      quietTimer = null;
-      flush("quiet").catch(err => console.error("[FU CreateDamageCard][Batcher] quiet flush failed:", err));
-    }, currentQuietMs);
-
-    log("quiet timer scheduled", {
-      pending: queue.length,
-      quietMs: currentQuietMs,
-      maxWaitMs: currentMaxWaitMs
-    });
-  }
-
-  function scheduleMaxFlush() {
-    clearMaxTimer();
-
-    const now = Date.now();
-    const elapsed = firstQueuedAt ? Math.max(0, now - firstQueuedAt) : 0;
-    const remaining = Math.max(50, currentMaxWaitMs - elapsed);
-
-    maxTimer = window.setTimeout(() => {
-      maxTimer = null;
-      flush("max-wait").catch(err => console.error("[FU CreateDamageCard][Batcher] max flush failed:", err));
-    }, remaining);
-
-    log("max timer scheduled", {
-      pending: queue.length,
-      elapsed,
-      remaining,
-      maxWaitMs: currentMaxWaitMs
-    });
-  }
-
-  async function postPayloads(payloads, flushReason = "unknown") {
-    const safePayloads = payloads.map(p => clone(p, {}) || {});
-    const htmlParts = [];
-
-    for (const p of safePayloads) {
-      try {
-        htmlParts.push(await renderDamageCardHTML(p));
-      } catch (err) {
-        warn("Failed to render one damage card:", err, p);
-      }
-    }
-
-    if (!htmlParts.length) return { ok: false, reason: "no-rendered-cards" };
-
-    const grouped = htmlParts.length > 1;
-
-    const content = grouped
-      ? `
-        <div class="${GROUP_MARKER}" data-fu-card-group="${GROUP_MARKER}" style="display:flex;flex-direction:column;gap:.45rem;">
-          ${htmlParts.join("\n")}
-        </div>
-      `
-      : htmlParts[0];
-
-    const speaker = { alias: "" };
-
-    const chatData = {
-      user: game.userId,
-      speaker,
-      content,
-      flags: {
-        [MODULE_NS]: {
-          damageCard: {
-            payload: safePayloads[0] ?? null,
-            payloads: safePayloads,
-            grouped,
-            count: safePayloads.length,
-            batchQuietMs: currentQuietMs,
-            batchMaxWaitMs: currentMaxWaitMs,
-            flushReason,
-            createdAt: new Date().toISOString()
-          },
-          damageCardGroup: grouped
-            ? {
-                payloads: safePayloads,
-                count: safePayloads.length,
-                batchQuietMs: currentQuietMs,
-                batchMaxWaitMs: currentMaxWaitMs,
-                flushReason
-              }
-            : null
+      for (const p of safePayloads) {
+        try {
+          htmlParts.push(await renderDamageCardHTML(p));
+        } catch (err) {
+          console.warn("[FU CreateDamageCard][Batcher] Failed to render one damage card:", err, p);
         }
       }
-    };
 
-    // Foundry V12 renamed ChatMessage "type" into "style".
-    // Use the new field to avoid the deprecation warning.
-    if (CONST.CHAT_MESSAGE_STYLES?.OTHER !== undefined) {
-      chatData.style = CONST.CHAT_MESSAGE_STYLES.OTHER;
-    } else {
-      chatData.type = CONST.CHAT_MESSAGE_TYPES.OTHER;
-    }
+      if (!htmlParts.length) return { ok: false, reason: "no-rendered-cards" };
 
-    const msg = await ChatMessage.create(chatData);
+      const grouped = htmlParts.length > 1;
+      const content = grouped
+        ? `
+          <div class="${GROUP_MARKER}" data-fu-card-group="${GROUP_MARKER}" style="display:flex;flex-direction:column;gap:.45rem;">
+            ${htmlParts.join("\n")}
+          </div>
+        `
+        : htmlParts[0];
 
-    log("posted batch", {
-      flushReason,
-      grouped,
-      count: safePayloads.length,
-      messageId: msg?.id ?? null
-    });
+      const speaker = { alias: "" };
 
-    return {
-      ok: true,
-      grouped,
-      count: safePayloads.length,
-      messageId: msg?.id ?? null,
-      flushReason
-    };
-  }
-
-  async function flush(reason = "manual") {
-    if (flushing) {
-      log("flush requested while already flushing; rescheduling", { reason });
-      scheduleQuietFlush();
-      return { ok: true, deferred: true };
-    }
-
-    if (!queue.length) {
-      clearQuietTimer();
-      clearMaxTimer();
-      return { ok: true, count: 0, reason: "empty" };
-    }
-
-    flushing = true;
-
-    clearQuietTimer();
-    clearMaxTimer();
-
-    const batch = queue;
-    queue = [];
-
-    const profileSnapshot = {
-      quietMs: currentQuietMs,
-      maxWaitMs: currentMaxWaitMs,
-      firstQueuedAt
-    };
-
-    // Reset state before posting, so new incoming cards can start a new batch.
-firstQueuedAt = 0;
-currentQuietMs = BATCH_DEFAULT_QUIET_MS;
-currentMaxWaitMs = BATCH_MAX_WAIT_MS;
-holdingForPostMissCards = false;
-
-    try {
-      log("flushing", {
-        reason,
-        count: batch.length,
-        profileSnapshot
-      });
-
-      return await postPayloads(batch, reason);
-    } finally {
-      flushing = false;
-
-      if (queue.length) {
-        log("new cards arrived while flushing; scheduling next batch", {
-          pending: queue.length
-        });
-        scheduleQuietFlush();
-        scheduleMaxFlush();
-      }
+     const chatData = {
+  user: game.userId,
+  speaker,
+  content,
+  flags: {
+    [MODULE_NS]: {
+      damageCard: {
+        payload: safePayloads[0] ?? null,
+        payloads: safePayloads,
+        grouped,
+        count: safePayloads.length,
+        batchWindowMs: BATCH_WINDOW_MS,
+        createdAt: new Date().toISOString()
+      },
+      damageCardGroup: grouped
+        ? {
+            payloads: safePayloads,
+            count: safePayloads.length,
+            batchWindowMs: BATCH_WINDOW_MS
+          }
+        : null
     }
   }
+};
 
-function enqueue(payload) {
-  const safePayload = clone(payload, {}) || {};
-  const profile = getBatchProfileForPayload(safePayload);
-
-  const isMissCard = inferIsMissCard(safePayload);
-
- if (!queue.length) {
-  firstQueuedAt = Date.now();
-  currentQuietMs = profile.quietMs;
-  currentMaxWaitMs = profile.maxWaitMs;
-
-  // Only multi-target Miss cards should hold the queue open for later damage cards.
-  // Single-target Miss cards should post quickly.
-  holdingForPostMissCards =
-    isMissCard &&
-    profile.reason?.startsWith("multi-target-miss-hold");
+// Foundry V12 renamed ChatMessage "type" into "style".
+// Use the new field to avoid the deprecation warning.
+if (CONST.CHAT_MESSAGE_STYLES?.OTHER !== undefined) {
+  chatData.style = CONST.CHAT_MESSAGE_STYLES.OTHER;
 } else {
-    if (holdingForPostMissCards && !isMissCard) {
-      // Important:
-      // The queue started with Miss cards, and now the first real damage/heal card arrived.
-      // Stop using the huge Miss hold and switch to normal multi-target timing.
-      holdingForPostMissCards = false;
-      currentQuietMs = Math.max(
-        profile.quietMs,
-        BATCH_AFTER_MISS_JOIN_QUIET_MS
-      );
-      currentMaxWaitMs = Math.max(currentMaxWaitMs, profile.maxWaitMs);
-    } else {
-      // Normal behavior:
-      // Use the slowest required profile among cards in the current batch.
-      currentQuietMs = Math.max(currentQuietMs, profile.quietMs);
-      currentMaxWaitMs = Math.max(currentMaxWaitMs, profile.maxWaitMs);
-    }
-  }
-
-  queue.push(safePayload);
-
-  log("queued", {
-    pending: queue.length,
-    profile,
-    currentQuietMs,
-    currentMaxWaitMs,
-    holdingForPostMissCards,
-    isMissCard,
-    targetCount: inferTargetCount(safePayload),
-    skillName: safePayload?.skillName ?? safePayload?.actionContext?.core?.skillName ?? null,
-    targetName: safePayload?.targetName ?? null,
-    valueType: safePayload?.valueType ?? null,
-    changeKey: safePayload?.changeKey ?? null
-  });
-
-  scheduleQuietFlush();
-  scheduleMaxFlush();
-
-  return {
-    ok: true,
-    queued: true,
-    pendingCount: queue.length,
-    quietMs: currentQuietMs,
-    maxWaitMs: currentMaxWaitMs,
-    profileReason: profile.reason,
-    holdingForPostMissCards
-  };
+  // Fallback for older Foundry versions.
+  chatData.type = CONST.CHAT_MESSAGE_TYPES.OTHER;
 }
 
-  async function createImmediate(payloadOrPayloads) {
-    const payloads = Array.isArray(payloadOrPayloads) ? payloadOrPayloads : [payloadOrPayloads];
-    return await postPayloads(payloads.filter(Boolean), "immediate");
-  }
+const msg = await ChatMessage.create(chatData);
 
-  return {
-    enqueue,
-    flush,
-    createImmediate,
-    getPendingCount: () => queue.length,
-    getState: () => ({
-      pendingCount: queue.length,
-      firstQueuedAt,
-      currentQuietMs,
-      currentMaxWaitMs,
-      hasQuietTimer: !!quietTimer,
-      hasMaxTimer: !!maxTimer,
-      flushing
-    })
-  };
-})();
+      return { ok: true, grouped, count: safePayloads.length, messageId: msg?.id ?? null };
+    }
+
+    async function flush() {
+      if (flushing) {
+        schedule();
+        return { ok: true, deferred: true };
+      }
+
+      if (!queue.length) return { ok: true, count: 0 };
+
+      flushing = true;
+      const batch = queue;
+      queue = [];
+
+      try {
+        return await postPayloads(batch);
+      } finally {
+        flushing = false;
+        if (queue.length) schedule();
+      }
+    }
+
+    function enqueue(payload) {
+      queue.push(clone(payload, {}) || {});
+      schedule();
+      return {
+        ok: true,
+        queued: true,
+        pendingCount: queue.length,
+        batchWindowMs: BATCH_WINDOW_MS
+      };
+    }
+
+    async function createImmediate(payloadOrPayloads) {
+      const payloads = Array.isArray(payloadOrPayloads) ? payloadOrPayloads : [payloadOrPayloads];
+      return await postPayloads(payloads.filter(Boolean));
+    }
+
+    return {
+      enqueue,
+      flush,
+      createImmediate,
+      getPendingCount: () => queue.length
+    };
+  })();
 
   // --------------------- PUBLIC API ---------------------
   async function createDamageCard(P_in) {
@@ -835,12 +512,7 @@ function enqueue(payload) {
   async function createDamageCards(payloads = {}) {
     const list = Array.isArray(payloads) ? payloads : (Array.isArray(payloads?.payloads) ? payloads.payloads : []);
     for (const p of list) DamageCardBatcher.enqueue(p);
-    return {
-  ok: true,
-  queued: true,
-  count: list.length,
-  pendingCount: DamageCardBatcher.getPendingCount()
-};
+    return { ok: true, queued: true, count: list.length, batchWindowMs: BATCH_WINDOW_MS };
   }
 
   // Expose API
