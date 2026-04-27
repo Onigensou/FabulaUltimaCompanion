@@ -54,24 +54,15 @@ const dbg = (label, data) => {
     return await new Promise(resolve => setTimeout(resolve, ms));
   }
 
-async function resolveUuidDoc(uuid) {
-  try {
-    if (!uuid || typeof uuid !== "string") return null;
-
-    const cache = globalThis.FUCompanion?.api?.damageCardCache ?? null;
-
-    const cached = cache?.getDoc?.(uuid);
-    if (cached) return cached;
-
-    const doc = await fromUuid(uuid);
-    if (doc) cache?.rememberDoc?.(doc);
-
-    return doc ?? null;
-  } catch (err) {
-    dbg("resolveUuidDoc:failed", { TRACE_ID, uuid, error: err?.message ?? String(err) });
-    return null;
+  async function resolveUuidDoc(uuid) {
+    try {
+      if (!uuid || typeof uuid !== "string") return null;
+      return await fromUuid(uuid);
+    } catch (err) {
+      dbg("resolveUuidDoc:failed", { TRACE_ID, uuid, error: err?.message ?? String(err) });
+      return null;
+    }
   }
-}
 
   function isTokenUuid(v) {
     return typeof v === "string" && /\.Token\./.test(v);
@@ -82,10 +73,6 @@ async function resolveUuidDoc(uuid) {
   }
 
   async function resolveTokenDocFromAny(ref, actorRef = null) {
-    const cache = globalThis.FUCompanion?.api?.damageCardCache ?? null;
-    const cachedInfo = cache?.getInfo?.(ref);
-    const cachedTokenDoc = cachedInfo?.tokenUuid ? cache?.getDoc?.(cachedInfo.tokenUuid) : null;
-    if (cachedTokenDoc) return cachedTokenDoc;
     const directDoc = await resolveUuidDoc(ref);
 
     if (directDoc?.documentName === "Token" || directDoc?.documentName === "TokenDocument") {

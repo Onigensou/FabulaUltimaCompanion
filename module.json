@@ -44,7 +44,6 @@
   "scripts/invokeButtons.js",
   "scripts/fu-card-hydrate.js",
   "scripts/action-system/action-card-editor.js",
-  "scripts/damage-card/damage-card-cache.js",
   "scripts/create-damage-card.js",
   "scripts/cutin-receiver.js",
   "scripts/cutin-broadcast.js",
