@@ -45,6 +45,7 @@
   "scripts/fu-card-hydrate.js",
   "scripts/action-system/action-card-editor.js",
   "scripts/create-damage-card.js",
+  "scripts/damage-card/damage-card-batch-manager.js",
   "scripts/cutin-receiver.js",
   "scripts/cutin-broadcast.js",
   "scripts/namecard-receiver.js",

@@ -4,7 +4,7 @@
  * Keeps your existing flow intact while using the module
  * so speakerless rendering works for ALL clients.
  *********************************************************/
-(async () => {
+return (async () => {
   const RUN_TAG = "[FU CreateDamageCard Shim]";
   const DBG_TAG = "[FU CreateDamageCard Shim][DBG]";
   const TRACE_ID = `CDC-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
@@ -652,23 +652,101 @@
     console.warn(`${RUN_TAG} ReactionPhase emit failed (safe to ignore for now):`, err, payload, { TRACE_ID });
   }
 
-  // 3) Call the module’s implementation
-  try {
-    dbg("api.createDamageCard:begin", {
-      TRACE_ID,
-      payloadSummary: {
-        mode: payload?.mode ?? null,
-        targetUuid: payload?.targetUuid ?? null,
-        noEffectReason: payload?.noEffectReason ?? null,
-        affected: payload?.affected ?? null,
-        finalValue: payload?.finalValue ?? null,
-        displayedAmount: payload?.displayedAmount ?? null
-      }
+ // 3) Create or batch-capture the Damage Card
+//
+// Important:
+// - Reaction/passive beacons already emitted above.
+// - This section only controls whether the visual ChatMessage is posted now
+//   or captured into the active Damage Card batch.
+try {
+  const batchApi =
+    globalThis.FUCompanion?.api?.damageCardBatch ??
+    game.modules?.get("fabula-ultima-companion")?.api?.damageCardBatch ??
+    null;
+
+  const damageBatchId = String(
+    payload?.damageBatchId ??
+    payload?.meta?.damageBatchId ??
+    payload?.actionContext?.damageBatchId ??
+    payload?.actionContext?.meta?.damageBatchId ??
+    ""
+  ).trim();
+
+  dbg("damage-card-output:begin", {
+    TRACE_ID,
+    hasBatchApi: !!batchApi,
+    damageBatchId: damageBatchId || null,
+    activeBatchId: batchApi?.getActiveBatchId?.() ?? null,
+    payloadSummary: {
+      mode: payload?.mode ?? null,
+      targetUuid: payload?.targetUuid ?? null,
+      targetName: payload?.targetName ?? null,
+      noEffectReason: payload?.noEffectReason ?? null,
+      affected: payload?.affected ?? null,
+      finalValue: payload?.finalValue ?? null,
+      displayedAmount: payload?.displayedAmount ?? null
+    }
+  });
+
+  // If a batch is open, capture this payload instead of creating a separate
+  // Foundry ChatMessage. This is NOT timing-based; it uses the active batch ID.
+  if (batchApi && typeof batchApi.captureIfOpen === "function") {
+    const captureResult = batchApi.captureIfOpen(payload, {
+      source: "Create Damage Card.js shim"
     });
-    await api.createDamageCard(payload);
-    dbg("api.createDamageCard:done", { TRACE_ID });
-  } catch (err) {
-    console.error(`${RUN_TAG} Failed to create card:`, err, payload, { TRACE_ID });
-    ui.notifications.error("Failed to create Damage Card (see console).");
+
+    if (captureResult?.captured) {
+      dbg("damage-card-output:captured", {
+        TRACE_ID,
+        batchId: captureResult.batchId,
+        entryIndex: captureResult.entryIndex,
+        entries: captureResult.entries
+      });
+
+      return {
+        ok: true,
+        captured: true,
+        batchId: captureResult.batchId,
+        entryIndex: captureResult.entryIndex,
+        traceId: TRACE_ID
+      };
+    }
+
+dbg("damage-card-output:not-captured", {
+  TRACE_ID,
+  reason: captureResult?.reason ?? "unknown",
+  batchId: (captureResult?.batchId ?? damageBatchId) || null
+});
   }
+
+  // Fallback / normal behavior:
+  // If no batch is open, keep the old one-card-per-call behavior.
+  dbg("api.createDamageCard:begin", {
+    TRACE_ID,
+    reason: "no_open_batch"
+  });
+
+  await api.createDamageCard(payload);
+
+  dbg("api.createDamageCard:done", {
+    TRACE_ID
+  });
+
+  return {
+    ok: true,
+    captured: false,
+    posted: true,
+    traceId: TRACE_ID
+  };
+} catch (err) {
+  console.error(`${RUN_TAG} Failed to create/capture card:`, err, payload, { TRACE_ID });
+  ui.notifications.error("Failed to create Damage Card (see console).");
+
+  return {
+    ok: false,
+    reason: "create_or_capture_failed",
+    error: String(err?.message ?? err),
+    traceId: TRACE_ID
+  };
+}
 })();

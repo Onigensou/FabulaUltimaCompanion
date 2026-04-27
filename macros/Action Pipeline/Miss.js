@@ -20,6 +20,20 @@ const attackRange   = String(PAYLOAD.attackRange  ?? "—");
 const accTotal      = Number(PAYLOAD.accuracyTotal ?? NaN);
 const defenseUsed   = Number(PAYLOAD.defenseUsed   ?? NaN);
 
+// Damage Card batching.
+// ActionExecutionCore should pass this in, but we include fallbacks so old/manual
+// miss calls still behave normally.
+const ACTION_CONTEXT = PAYLOAD.actionContext ?? null;
+const ACTION_CARD_MSG = PAYLOAD.actionCardMsgId ?? null;
+
+const DAMAGE_BATCH_ID = String(
+  PAYLOAD.damageBatchId ??
+  PAYLOAD?.meta?.damageBatchId ??
+  ACTION_CONTEXT?.damageBatchId ??
+  ACTION_CONTEXT?.meta?.damageBatchId ??
+  ""
+).trim();
+
 // ---- Resolve targets (set by Create Action Card before calling this macro) ----
 const foundryTargets = Array.from(game.user?.targets ?? []);
 const selectedTokens = canvas.tokens?.controlled ?? [];
@@ -89,7 +103,12 @@ for (const t of tokens) {
   if (createDmg) {
     await createDmg.execute({
       __AUTO: true,
-      __PAYLOAD: {
+            __PAYLOAD: {
+        // Damage Card batch identity.
+        // If a batch is open, Create Damage Card.js will capture this miss payload
+        // instead of posting a separate Foundry ChatMessage.
+        damageBatchId: DAMAGE_BATCH_ID || null,
+
         // ---- core identity (used by the renderer) ----
         mode: "miss",                 // << tells Create Damage Card to render MISS variant
         attackerName, attackerUuid,
@@ -104,6 +123,15 @@ for (const t of tokens) {
         displayedAmount: 0,           // no number roll-up on miss
         affected: false,              // signals no effect
         noEffectReason: "Miss",
+
+        // Preserve upstream action context for reaction/passive systems and debugging.
+        actionContext: ACTION_CONTEXT,
+        actionCardMsgId: ACTION_CARD_MSG,
+
+        // Small explicit meta object for systems that prefer payload.meta access.
+        meta: {
+          damageBatchId: DAMAGE_BATCH_ID || null
+        },
 
         // (optional) show context in details if you want later
         accuracyTotal: Number.isFinite(accTotal)?accTotal:null,

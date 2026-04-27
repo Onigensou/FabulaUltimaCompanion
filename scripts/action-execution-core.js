@@ -57,6 +57,64 @@
     return Number.isFinite(n) ? n : null;
   };
 
+    function getDamageBatchApi() {
+    return (
+      globalThis.FUCompanion?.api?.damageCardBatch ??
+      game.modules?.get(MODULE_NS)?.api?.damageCardBatch ??
+      null
+    );
+  }
+
+  function resolveIncomingDamageBatchId(actionContext = {}, args = {}) {
+    return safeString(
+      actionContext?.meta?.damageBatchId ??
+      actionContext?.damageBatchId ??
+      args?.damageBatchId ??
+      args?.meta?.damageBatchId ??
+
+      // Auto-passive / reaction-chain inheritance.
+      actionContext?.meta?.reaction_phase_payload?.damageBatchId ??
+      actionContext?.reaction_phase_payload?.damageBatchId ??
+      actionContext?.meta?.reaction_phase_payload?.meta?.damageBatchId ??
+      actionContext?.reaction_phase_payload?.meta?.damageBatchId ??
+
+      // Backup sources.
+      actionContext?.meta?.passiveSourceEvent?.damageBatchId ??
+      actionContext?.passiveSourceEvent?.damageBatchId ??
+      ""
+    );
+  }
+
+  function buildDamageBatchTitle(actionContext = {}, executionMode = "manualCard") {
+    const skillName = safeString(
+      actionContext?.core?.skillName ??
+      actionContext?.dataCore?.skillName ??
+      actionContext?.meta?.skillName ??
+      ""
+    );
+
+    if (skillName) return `${skillName} Results`;
+
+    return executionMode === "autoPassive"
+      ? "Passive Damage Results"
+      : "Damage Results";
+  }
+
+  function buildDamageBatchSubtitle(actionContext = {}, executionMode = "manualCard") {
+    const attackerName = safeString(
+      actionContext?.meta?.attackerName ??
+      actionContext?.core?.attackerName ??
+      ""
+    );
+
+    const modeLabel =
+      executionMode === "autoPassive"
+        ? "Auto Passive"
+        : "Action";
+
+    return [modeLabel, attackerName].filter(Boolean).join(" • ");
+  }
+
   function ensurePayloadShape(payload) {
     const p = payload ?? {};
     p.core = p.core || {};
@@ -955,6 +1013,28 @@ async function consumeItemIfNeeded(actionContext, runId) {
       return { ok: false, reason: "missing_payload" };
     }
 
+        // Damage Card batch state for this execution.
+    // We start it later after the passive gate allows execution.
+    const damageBatchApi = getDamageBatchApi();
+    let damageBatchId = resolveIncomingDamageBatchId(payload, args);
+    let damageBatchEntered = false;
+
+    if (!damageBatchId && damageBatchApi?.makeBatchId) {
+      damageBatchId = damageBatchApi.makeBatchId(
+        executionMode === "autoPassive" ? "DMG-AUTO" : "DMG-ACTION"
+      );
+    }
+
+    if (!damageBatchId) {
+      damageBatchId = `DMG-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    }
+
+    payload.damageBatchId = damageBatchId;
+    payload.meta.damageBatchId = damageBatchId;
+
+    args = (args && typeof args === "object") ? args : {};
+    args.damageBatchId = damageBatchId;
+
     const mergedArgs = {
       advMacroName: "AdvanceDamage",
       missMacroName: "Miss",
@@ -1010,22 +1090,59 @@ async function consumeItemIfNeeded(actionContext, runId) {
     });
 
     if (!passiveGateResult?.ok) {
-      warn(runId, "BLOCKED by passive core gate", {
-        executionMode,
-        reason: passiveGateResult?.reason ?? "blocked",
-        rootKey: passiveGateResult?.ctx?.rootKey ?? null,
-        passiveIdentity: passiveGateResult?.ctx?.passiveIdentity ?? null
-      });
       return {
         ok: true,
         skipped: true,
-        reason: `passive_core_gate_${passiveGateResult?.reason ?? "blocked"}`,
+        reason: `passive_gate_${passiveGateResult?.reason || "blocked"}`,
         executionMode,
         chatMsgId: chatMsgId ?? null,
         confirmingUserId: confirmingUserId ?? null,
-        rootKey: passiveGateResult?.ctx?.rootKey ?? null,
+        passiveGateReason: passiveGateResult?.reason ?? null,
         passiveIdentity: passiveGateResult?.ctx?.passiveIdentity ?? null
       };
+    }
+
+    // Begin / enter the Damage Card batch only after passive gate passes.
+    // This prevents blocked auto-passives from opening empty batches.
+    if (damageBatchApi?.begin) {
+      try {
+        const batchBegin = damageBatchApi.begin({
+          batchId: damageBatchId,
+          rootActionId: payload?.meta?.actionId ?? payload?.actionId ?? null,
+          rootActionCardId: payload?.meta?.actionCardId ?? payload?.actionCardId ?? null,
+          rootActionCardMessageId: payload?.meta?.actionCardMessageId ?? payload?.actionCardMessageId ?? chatMsgId ?? null,
+          executionMode,
+          title: buildDamageBatchTitle(payload, executionMode),
+          subtitle: buildDamageBatchSubtitle(payload, executionMode),
+          rootActionContext: payload,
+          enter: true
+        });
+
+        damageBatchEntered = !!batchBegin?.ok;
+
+        if (damageBatchApi?.attachBatchIdToPayload) {
+          damageBatchApi.attachBatchIdToPayload(payload, damageBatchId);
+        }
+
+        log(runId, "DAMAGE BATCH begin", {
+          batchId: damageBatchId,
+          entered: damageBatchEntered,
+          depth: batchBegin?.depth ?? null,
+          entries: batchBegin?.entries ?? null,
+          executionMode
+        });
+      } catch (e) {
+        warn(runId, "DAMAGE BATCH begin failed; continuing without batch.", {
+          batchId: damageBatchId,
+          error: String(e?.message ?? e)
+        });
+
+        damageBatchEntered = false;
+      }
+    } else {
+      log(runId, "DAMAGE BATCH API missing; cards will post normally.", {
+        batchId: damageBatchId
+      });
     }
 
     try {
@@ -1171,6 +1288,7 @@ async function consumeItemIfNeeded(actionContext, runId) {
                 : null;
 
             const missPayload = {
+              damageBatchId,
               attackerName: mergedArgs.attackerName,
               attackerUuid: sourceSnapshot?.tokenUuid ?? mergedArgs.attackerUuid ?? "",
               attackerActorUuid: sourceSnapshot?.actorUuid ?? payload?.meta?.attackerActorUuid ?? null,
@@ -1199,6 +1317,9 @@ async function consumeItemIfNeeded(actionContext, runId) {
 
               actionContext: payload,
               actionCardMsgId: chatMsgId ?? null,
+              meta: {
+                damageBatchId
+              },
               originalTargetUUIDs: cloneArray(payload?.originalTargetUUIDs),
               originalTargetActorUUIDs: cloneArray(payload?.originalTargetActorUUIDs),
 
@@ -1366,6 +1487,7 @@ const latestAdvPayload = {
 
 const advUniversalPayload = {
   ...latestAdvPayload,
+  damageBatchId,
   targetIds: hitIds,
   actionContext: payload,
   actionCardMsgId: chatMsgId ?? null,
@@ -1465,10 +1587,38 @@ await adv.execute({ __AUTO: true, __PAYLOAD: advUniversalPayload });
 
       log(runId, "COMPLETE", summary);
       return summary;
-    } catch (e) {
+        } catch (e) {
       err(runId, "FAILED", e);
       ui.notifications?.error("Action execution failed. See console.");
       return { ok: false, reason: "exception", error: e };
+    } finally {
+      if (damageBatchEntered && damageBatchApi?.end) {
+        try {
+          const endResult = await damageBatchApi.end(damageBatchId, {
+            flushWhenReady: true,
+            reason: "action_execution_complete",
+            title: buildDamageBatchTitle(payload, executionMode),
+            subtitle: buildDamageBatchSubtitle(payload, executionMode)
+          });
+
+          log(runId, "DAMAGE BATCH end", {
+            batchId: damageBatchId,
+            result: {
+              ok: endResult?.ok ?? null,
+              pending: endResult?.pending ?? false,
+              grouped: endResult?.grouped ?? false,
+              entries: endResult?.entries ?? null,
+              reason: endResult?.reason ?? null,
+              messageId: endResult?.messageId ?? null
+            }
+          });
+        } catch (batchEndError) {
+          warn(runId, "DAMAGE BATCH end failed.", {
+            batchId: damageBatchId,
+            error: String(batchEndError?.message ?? batchEndError)
+          });
+        }
+      }
     }
   }
 

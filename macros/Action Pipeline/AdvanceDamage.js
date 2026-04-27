@@ -31,7 +31,7 @@ const SFX = {
   resist    : "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Sound/Soundboard/Parry.ogg",
 };
 
-(async () => {
+return (async () => {
 /* =========================== Safe headless shims ========================== */
 let AUTO, PAYLOAD;
 if (typeof __AUTO !== "undefined") { AUTO = __AUTO; PAYLOAD = __PAYLOAD ?? {}; }
@@ -51,6 +51,17 @@ const EXT_SOURCE_TYPE   = _str(PAYLOAD.sourceType, "None");
 // Optional: full ActionDataComputation payload carried from the Action Card
 const ACTION_CONTEXT   = PAYLOAD.actionContext ?? null;
 const ACTION_CARD_MSG  = PAYLOAD.actionCardMsgId ?? null;
+
+// Damage Card batching.
+// This is created by ActionExecutionCore and passed through AdvanceDamage.
+// Fallbacks are included so old/manual calls still behave normally.
+const DAMAGE_BATCH_ID = String(
+  PAYLOAD.damageBatchId ??
+  PAYLOAD?.meta?.damageBatchId ??
+  ACTION_CONTEXT?.damageBatchId ??
+  ACTION_CONTEXT?.meta?.damageBatchId ??
+  ""
+).trim();
 
 // Helpful: attackerUuid for portrait resolution / traceability
 const ACTION_ATTACKER_UUID =
@@ -666,12 +677,17 @@ async function APPLY(opts) {
 
     // ---------- Hand off to "Create Damage Card" per target ----------
     if (CREATE_CARD) {
-      const cardPayload = {
-        // Attacker / context
-        attackerName: sourceName,
-        attackerUuid: attackerUuid || ACTION_ATTACKER_UUID,
-        attackRange : EXT_ATTACK_RANGE,
-        sourceType  : EXT_SOURCE_TYPE,
+const cardPayload = {
+  // Damage Card batch identity.
+  // If a batch is open, Create Damage Card.js will capture this payload
+  // instead of posting a separate Foundry ChatMessage.
+  damageBatchId: DAMAGE_BATCH_ID || null,
+
+  // Attacker / context
+  attackerName: sourceName,
+  attackerUuid: attackerUuid || ACTION_ATTACKER_UUID,
+  attackRange : EXT_ATTACK_RANGE,
+  sourceType  : EXT_SOURCE_TYPE,
 
         // Preserve original action typing explicitly for downstream systems.
         // This is the flattened copy that Create Damage Card / reaction payloads can read
@@ -680,9 +696,14 @@ async function APPLY(opts) {
         skill_type   : ACTION_SKILL_TYPE_RAW || null,
         isSpellish   : ACTION_IS_SPELLISH,
 
-        // keep full upstream payload for inspection / fallback consumers
-        actionContext : ACTION_CONTEXT,
-        actionCardMsgId: ACTION_CARD_MSG,
+// keep full upstream payload for inspection / fallback consumers
+actionContext : ACTION_CONTEXT,
+actionCardMsgId: ACTION_CARD_MSG,
+
+// Small explicit meta object for systems that prefer payload.meta access.
+meta: {
+  damageBatchId: DAMAGE_BATCH_ID || null
+},
 
         // NEW: debug math breakdown
         preAffinityBreakdown,
