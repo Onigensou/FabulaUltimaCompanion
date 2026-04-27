@@ -121,59 +121,73 @@
     return null;
   }
 
- async function emitReactionPhaseLocalOnGM(payload, traceId = TRACE_ID) {
-  dbg("emitReactionPhaseLocalOnGM:begin", {
-    traceId,
-    isGM: !!game.user?.isGM,
-    userId: game.user?.id ?? null,
-    userName: game.user?.name ?? null,
-    oniPresent: !!globalThis.ONI,
-    hasEmitFn: typeof globalThis.ONI?.emit === "function",
-    trigger: payload?.trigger ?? null,
-    kind: payload?.kind ?? null
-  });
+  async function emitReactionPhaseLocalOnGM(payload, traceId = TRACE_ID) {
+    dbg("emitReactionPhaseLocalOnGM:begin", {
+      traceId,
+      isGM: !!game.user?.isGM,
+      userId: game.user?.id ?? null,
+      userName: game.user?.name ?? null,
+      oniPresent: !!globalThis.ONI,
+      hasEmitFn: typeof globalThis.ONI?.emit === "function",
+      trigger: payload?.trigger ?? null,
+      kind: payload?.kind ?? null
+    });
 
-  try {
-    if (!game.user?.isGM) {
-      dbg("emitReactionPhaseLocalOnGM:abort:not-gm", { traceId, payload });
-      return false;
-    }
+    try {
+      if (!game.user?.isGM) {
+        dbg("emitReactionPhaseLocalOnGM:abort:not-gm", { traceId, payload });
+        return false;
+      }
 
-    const emit = globalThis.ONI?.emit;
-    if (typeof emit !== "function") {
-      console.warn(`${RUN_TAG} ONI.emit unavailable; reaction signal skipped`, {
-        traceId,
-        payload
+      const emit = globalThis.ONI?.emit;
+      if (typeof emit !== "function") {
+        console.warn(`${RUN_TAG} ONI.emit unavailable; reaction signal skipped`, { traceId, payload });
+        return false;
+      }
+
+      let observedSync = false;
+      let observedAsync = false;
+      const hookId = Hooks.on("oni:reactionPhase", observedPayload => {
+        if (observedPayload?.__debugTraceId !== traceId) return;
+        observedAsync = true;
+        dbg("emitReactionPhaseLocalOnGM:hook-observed", {
+          traceId,
+          observedPayload
+        });
       });
+
+      try {
+        emit("oni:reactionPhase", payload, { local: true, world: false });
+        observedSync = true;
+        console.log(`${RUN_TAG} oni:reactionPhase emitted`, payload);
+        dbg("emitReactionPhaseLocalOnGM:after-emit", {
+          traceId,
+          observedSync,
+          observedAsync
+        });
+        await wait(50);
+        dbg("emitReactionPhaseLocalOnGM:post-wait", {
+          traceId,
+          waitMs: 50,
+          observedSync,
+          observedAsync
+        });
+        return true;
+      } finally {
+        try {
+          Hooks.off("oni:reactionPhase", hookId);
+        } catch (err) {
+          dbg("emitReactionPhaseLocalOnGM:hook-off-failed", {
+            traceId,
+            error: err?.message ?? String(err)
+          });
+        }
+      }
+    } catch (err) {
+      console.error(`${RUN_TAG} Failed to emit oni:reactionPhase`, err, { traceId, payload });
       return false;
     }
-
-    // Add trace id directly to the emitted payload.
-    // This keeps debug visibility without needing a temporary hook + 50ms wait.
-    const tracedPayload = {
-      ...payload,
-      __debugTraceId: traceId
-    };
-
-    emit("oni:reactionPhase", tracedPayload, { local: true, world: false });
-
-    console.log(`${RUN_TAG} oni:reactionPhase emitted`, tracedPayload);
-
-    dbg("emitReactionPhaseLocalOnGM:done:no-wait", {
-      traceId,
-      trigger: tracedPayload?.trigger ?? null,
-      kind: tracedPayload?.kind ?? null
-    });
-
-    return true;
-  } catch (err) {
-    console.error(`${RUN_TAG} Failed to emit oni:reactionPhase`, err, {
-      traceId,
-      payload
-    });
-    return false;
   }
-}
 
   // 1) Require module + API
   const mod = game.modules.get("fabula-ultima-companion");
