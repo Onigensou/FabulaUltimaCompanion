@@ -42,41 +42,6 @@ const ACTION_SKILL_TYPE_RAW = String(
   ""
 ).trim();
 
-const EXECUTION_DEBUG = PAYLOAD.__executionDebug ?? {};
-
-const ACTION_HIT_UUIDS =
-  Array.isArray(PAYLOAD.hitUUIDs) ? PAYLOAD.hitUUIDs.filter(Boolean).map(String) :
-  Array.isArray(EXECUTION_DEBUG.hitUUIDs) ? EXECUTION_DEBUG.hitUUIDs.filter(Boolean).map(String) :
-  [];
-
-const ACTION_MISS_UUIDS =
-  Array.isArray(PAYLOAD.missUUIDs) ? PAYLOAD.missUUIDs.filter(Boolean).map(String) :
-  Array.isArray(EXECUTION_DEBUG.missUUIDs) ? EXECUTION_DEBUG.missUUIDs.filter(Boolean).map(String) :
-  [];
-
-const ACTION_SAVED_UUIDS =
-  Array.isArray(PAYLOAD.savedTargetUUIDs) ? PAYLOAD.savedTargetUUIDs.filter(Boolean).map(String) :
-  Array.isArray(PAYLOAD.originalTargetUUIDs) ? PAYLOAD.originalTargetUUIDs.filter(Boolean).map(String) :
-  Array.isArray(EXECUTION_DEBUG.savedUUIDs) ? EXECUTION_DEBUG.savedUUIDs.filter(Boolean).map(String) :
-  [];
-
-const IS_ALL_MISS_ACTION = !!(
-  PAYLOAD.isAllMissAction === true ||
-  (
-    ACTION_SAVED_UUIDS.length >= 2 &&
-    ACTION_MISS_UUIDS.length === ACTION_SAVED_UUIDS.length &&
-    ACTION_HIT_UUIDS.length === 0
-  )
-);
-
-const IS_MIXED_HIT_MISS_ACTION = !!(
-  PAYLOAD.isMixedHitMissAction === true ||
-  (
-    ACTION_MISS_UUIDS.length > 0 &&
-    ACTION_HIT_UUIDS.length > 0
-  )
-);
-
 // ---- Resolve targets (set by Create Action Card before calling this macro) ----
 const foundryTargets = Array.from(game.user?.targets ?? []);
 const selectedTokens = canvas.tokens?.controlled ?? [];
@@ -162,23 +127,11 @@ for (const t of tokens) {
   // ---- batching / downstream context ----
   // These are important so Miss cards can batch with the later damage cards
   // from the same original Action Card.
-actionContext: ACTION_CONTEXT,
-actionCardMsgId: ACTION_CARD_MSG,
-skillTypeRaw: ACTION_SKILL_TYPE_RAW || null,
-skill_type: ACTION_SKILL_TYPE_RAW || null,
-isSpellish,
-
-// ---- batching timing hints ----
-// These help create-damage-card.js choose the correct timing:
-// - single miss = fast
-// - mixed miss/hit = hold for later hit damage
-// - all miss = fast grouped miss cards
-savedTargetUUIDs: ACTION_SAVED_UUIDS,
-missUUIDs: ACTION_MISS_UUIDS,
-hitUUIDs: ACTION_HIT_UUIDS,
-isAllMissAction: IS_ALL_MISS_ACTION,
-isMixedHitMissAction: IS_MIXED_HIT_MISS_ACTION,
-missTargetCount: tokens.length,
+  actionContext: ACTION_CONTEXT,
+  actionCardMsgId: ACTION_CARD_MSG,
+  skillTypeRaw: ACTION_SKILL_TYPE_RAW || null,
+  skill_type: ACTION_SKILL_TYPE_RAW || null,
+  isSpellish,
 
         // ---- display channels expected by the damage card ----
         valueType: "hp",

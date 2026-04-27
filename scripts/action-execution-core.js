@@ -1158,97 +1158,19 @@ async function consumeItemIfNeeded(actionContext, runId) {
         }
 
         if (missUUIDs.length && miss) {
-  const missTargetSnapshots = await buildTargetSnapshots(missUUIDs);
-  const missIds = missTargetSnapshots
-    .map(s => s?.tokenId ?? null)
-    .filter(Boolean);
+          const missTargetSnapshots = await buildTargetSnapshots(missUUIDs);
+          const missIds = missTargetSnapshots
+            .map(s => s?.tokenId ?? null)
+            .filter(Boolean);
 
-  if (missIds.length) {
-    const sourceSnapshot = await buildSourceSnapshot(payload, mergedArgs);
-    const missDefenseUsed =
-      (missUUIDs.length === 1)
-        ? await defenseForUuid(missUUIDs[0], !!mergedArgs.isSpellish)
-        : null;
+          if (missIds.length) {
+            const sourceSnapshot = await buildSourceSnapshot(payload, mergedArgs);
+            const missDefenseUsed =
+              (missUUIDs.length === 1)
+                ? await defenseForUuid(missUUIDs[0], !!mergedArgs.isSpellish)
+                : null;
 
-    const isAllMissAction =
-      savedUUIDs.length > 0 &&
-      missUUIDs.length === savedUUIDs.length &&
-      hitUUIDs.length === 0;
-
-    // -----------------------------------------------------------------------
-    // ALL-MISS ANIMATION FIX
-    // -----------------------------------------------------------------------
-    // Old behavior:
-    // - ActionAnimationHandler only ran inside the hit branch.
-    // - If every target missed, hitUUIDs.length was 0, so no skill animation ran.
-    //
-    // New behavior:
-    // - If this is a full all-miss action, play the skill animation against
-    //   the missed targets before showing Miss cards.
-    // - This preserves JRPG feedback: the attack still visually happens,
-    //   then everyone dodges/misses.
-    // -----------------------------------------------------------------------
-    if (isAllMissAction) {
-      const animScriptRaw =
-        safeString(mergedArgs.advPayload?.animationScriptRaw) ||
-        safeString(payload?.meta?.animationScriptRaw) ||
-        safeString(mergedArgs.advPayload?.animationScript) ||
-        safeString(payload?.meta?.animationScript);
-
-      const animTimingOpt =
-        mergedArgs.advPayload?.animation_damage_timing_options ??
-        payload?.meta?.animation_damage_timing_options ??
-        "default";
-
-      const animTimingOffset =
-        Number(
-          mergedArgs.advPayload?.animation_damage_timing_offset ??
-          payload?.meta?.animation_damage_timing_offset ??
-          0
-        ) || 0;
-
-      log(runId, "ALL-MISS VFX branch", {
-        animFound: !!anim,
-        macro: mergedArgs.animMacroName,
-        hasAnimScriptRaw: !!animScriptRaw,
-        timingOpt: animTimingOpt,
-        timingOffset: animTimingOffset,
-        targetsUuidCount: missUUIDs.length
-      });
-
-      if (anim) {
-        const allMissVfxPayload = {
-          ...mergedArgs.advPayload,
-          attackerUuid: mergedArgs.attackerUuid,
-          targets: missUUIDs,
-          hitTargets: [],
-          missTargets: missUUIDs,
-          savedTargetUUIDs: savedUUIDs,
-          isAllMissAction: true,
-          animationPurpose: "vfx_only",
-          animationScriptRaw: animScriptRaw,
-          animation_damage_timing_options: animTimingOpt,
-          animation_damage_timing_offset: animTimingOffset,
-          actionContext: payload,
-          actionCardMsgId: chatMsgId ?? null
-        };
-
-        const used = await anim.execute({
-          __AUTO: true,
-          __PAYLOAD: allMissVfxPayload
-        });
-
-        log(runId, "ActionAnimationHandler all-miss done", {
-          used: !!used
-        });
-      } else {
-        warn(runId, "ALL-MISS VFX animation macro not found; skipping", {
-          macro: mergedArgs.animMacroName
-        });
-      }
-    }
-
-    const missPayload = {
+            const missPayload = {
               attackerName: mergedArgs.attackerName,
               attackerUuid: sourceSnapshot?.tokenUuid ?? mergedArgs.attackerUuid ?? "",
               attackerActorUuid: sourceSnapshot?.actorUuid ?? payload?.meta?.attackerActorUuid ?? null,
@@ -1279,17 +1201,6 @@ async function consumeItemIfNeeded(actionContext, runId) {
               actionCardMsgId: chatMsgId ?? null,
               originalTargetUUIDs: cloneArray(payload?.originalTargetUUIDs),
               originalTargetActorUUIDs: cloneArray(payload?.originalTargetActorUUIDs),
-
-              // Useful for downstream Miss card timing.
-              // This lets the Damage Card batcher know whether this is:
-              // - single-target miss
-              // - multi-target mixed miss/hit
-              // - multi-target all miss
-              savedTargetUUIDs: [...savedUUIDs],
-              missUUIDs: [...missUUIDs],
-              hitUUIDs: [...hitUUIDs],
-              isAllMissAction,
-              isMixedHitMissAction: missUUIDs.length > 0 && hitUUIDs.length > 0,
 
               // Small explicit debug packet for miss-path tracing
               __executionDebug: {
