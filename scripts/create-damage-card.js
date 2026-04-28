@@ -112,6 +112,105 @@
     return [];
   }
 
+  // ------------------ DAMAGE CARD ROLL-UP HELPERS ------------------
+  // Shared roll-up system for Damage Cards.
+  // Important:
+  // - CreateActionCard has its own roll-up system.
+  // - Damage Card should not rely on el.__rolled because that belongs to the Action Card binder.
+  // - Use __fuDamageRolled / data-fu-damage-rolled instead.
+  const damageRollReduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+  const damageRollFmt = (n) => n.toLocaleString?.() ?? String(n);
+  const damageRollEaseOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+
+  let sharedDamageRollObserver = null;
+
+  function isDamageRollNumber(el) {
+    if (!el) return false;
+    return !!el.closest?.(`[data-fu-card="${CARD_MARKER}"]`);
+  }
+
+  function animateDamageRollNumber(rollEl) {
+    if (!rollEl || !isDamageRollNumber(rollEl)) return;
+
+    // Damage-card-specific guard.
+    // Do not use rollEl.__rolled here; CreateActionCard uses that flag.
+    if (rollEl.__fuDamageRolled || rollEl.dataset.fuDamageRolled === "true") return;
+
+    rollEl.__fuDamageRolled = true;
+    rollEl.dataset.fuDamageRolled = "true";
+
+    const final = Math.max(0, Number(rollEl.dataset.final || 0));
+
+    if (!Number.isFinite(final) || final <= 0 || damageRollReduceMotion) {
+      rollEl.textContent = damageRollFmt(final);
+      return;
+    }
+
+    const dur = 800;
+    const startVal = 1;
+    const t0 = performance.now();
+
+    let lastText = "";
+
+    const frame = (now) => {
+      // If Foundry rerenders/removes the chat element mid-animation, stop safely.
+      if (!rollEl.isConnected) return;
+
+      const p = Math.min(1, (now - t0) / dur);
+      const curr = Math.max(
+        startVal,
+        Math.floor(startVal + (final - startVal) * damageRollEaseOutCubic(p))
+      );
+
+      const nextText = damageRollFmt(curr);
+
+      // Avoid writing to the DOM if the visible number did not change this frame.
+      if (nextText !== lastText) {
+        rollEl.textContent = nextText;
+        lastText = nextText;
+      }
+
+      if (p < 1) {
+        requestAnimationFrame(frame);
+      } else {
+        const finalText = damageRollFmt(final);
+        if (rollEl.textContent !== finalText) rollEl.textContent = finalText;
+      }
+    };
+
+    requestAnimationFrame(frame);
+  }
+
+  function getSharedDamageRollObserver() {
+    if (!("IntersectionObserver" in window)) return null;
+    if (sharedDamageRollObserver) return sharedDamageRollObserver;
+
+    sharedDamageRollObserver = new IntersectionObserver((entries, obs) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+
+        animateDamageRollNumber(entry.target);
+        obs.unobserve(entry.target);
+      }
+    }, {
+      root: null,
+      rootMargin: "0px",
+      threshold: 0.1
+    });
+
+    return sharedDamageRollObserver;
+  }
+
+  function observeDamageRollNumber(rollEl) {
+    if (!rollEl || !isDamageRollNumber(rollEl)) return;
+    if (rollEl.__fuDamageRolled || rollEl.dataset.fuDamageRolled === "true") return;
+
+    const observer = getSharedDamageRollObserver();
+
+    if (observer) observer.observe(rollEl);
+    else animateDamageRollNumber(rollEl);
+  }
+
   // ------------------ PERSISTENT RENDER HOOK ------------------
   Hooks.on("renderChatMessage", (_msg, htmlJQ) => {
     const root = htmlJQ?.[0];
@@ -170,61 +269,7 @@
         }
       }
 
-      const rollEls = Array.from(root.querySelectorAll(".fu-rollnum"));
-      for (const rollEl of rollEls) {
-        if (!rollEl || rollEl.dataset.fuRolled === "true") continue;
-        rollEl.dataset.fuRolled = "true";
-
-        const final = Math.max(0, Number(rollEl.dataset.final || 0));
-        const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
-        const fmt = (n) => n.toLocaleString?.() ?? String(n);
-
-        if (reduce || !final) {
-          rollEl.textContent = fmt(final);
-          continue;
-        }
-
-        let started = false;
-        const dur = 800;
-        const startVal = 1;
-
-        const run = () => {
-          if (started) return;
-          started = true;
-
-          const t0 = performance.now();
-
-          const frame = (now) => {
-            const p = Math.min(1, (now - t0) / dur);
-            const curr = Math.max(
-              startVal,
-              Math.floor(startVal + (final - startVal) * (1 - Math.pow(1 - p, 3)))
-            );
-
-            rollEl.textContent = fmt(curr);
-
-            if (p < 1) requestAnimationFrame(frame);
-            else rollEl.textContent = fmt(final);
-          };
-
-          requestAnimationFrame(frame);
-        };
-
-        if ("IntersectionObserver" in window) {
-          const io = new IntersectionObserver((entries, obs) => {
-            for (const e of entries) {
-              if (e.isIntersecting) {
-                run();
-                obs.unobserve(e.target);
-              }
-            }
-          }, { root: document, rootMargin: "0px", threshold: 0.1 });
-
-          io.observe(rollEl);
-        } else {
-          run();
-        }
-      }
+      root.querySelectorAll(".fu-rollnum").forEach(observeDamageRollNumber);
     } catch (e) {
       warn("render hook error:", e);
     }
