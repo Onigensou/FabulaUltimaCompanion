@@ -158,14 +158,49 @@ const MAGIC_ICON_URL  = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/F
     for (const e of ents) if (e.isIntersecting) { animateRollNumber(e.target); obs.unobserve(e.target); }
   }, { threshold: 0.1 }) : null;
 
-  document.querySelectorAll(".fu-rollnum").forEach(n => io ? io.observe(n) : animateRollNumber(n));
+  // Only let CreateActionCard animate Action Card preview numbers.
+  // Damage Cards have their own roll-up system in create-damage-card.js.
+  function isActionCardRollNumber(el) {
+    if (!el) return false;
+
+    // Damage Card / grouped Damage Card numbers must be ignored here.
+    // Otherwise both CreateActionCard and CreateDamageCard animate the same number.
+    if (el.closest?.('[data-fu-card="fu-damage-card"]')) return false;
+    if (el.closest?.('[data-fu-card-kind="fu-damage-card-group"]')) return false;
+    if (el.closest?.(".fu-damage-card")) return false;
+    if (el.closest?.(".fu-damage-card-group")) return false;
+
+    // Keep this watcher scoped to Action Cards.
+    const msg = el.closest?.(".chat-message, .message");
+    if (!msg) return false;
+
+    return !!(
+      msg.querySelector?.("[data-fu-confirm]") ||
+      msg.querySelector?.("[data-fu-invoke-trait]") ||
+      msg.querySelector?.("[data-fu-invoke-bond]")
+    );
+  }
+
+  function observeActionRollNumber(el) {
+    if (!isActionCardRollNumber(el)) return;
+
+    if (io) io.observe(el);
+    else animateRollNumber(el);
+  }
+
+  document.querySelectorAll(".fu-rollnum").forEach(observeActionRollNumber);
 
   const chatRoot = document.getElementById("chat-log") || document.body;
   const mo = new MutationObserver((muts)=>{
     for (const m of muts) {
       m.addedNodes?.forEach?.(node => {
         if (!(node instanceof HTMLElement)) return;
-        node.querySelectorAll?.(".fu-rollnum").forEach(n => io ? io.observe(n) : animateRollNumber(n));
+
+        if (node.matches?.(".fu-rollnum")) {
+          observeActionRollNumber(node);
+        }
+
+        node.querySelectorAll?.(".fu-rollnum").forEach(observeActionRollNumber);
       });
     }
   });
