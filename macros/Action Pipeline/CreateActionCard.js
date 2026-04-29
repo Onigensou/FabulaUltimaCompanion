@@ -1242,7 +1242,18 @@ const effectHTML = !hasEffect ? "" : `
               hasAccuracy: !!accuracy,
               accuracyTotal: (accuracy && Number.isFinite(Number(accuracy.total))) ? Number(accuracy.total) : null,
 
-              autoHit: !!(accuracy?.isCrit || advPayload?.autoHit),
+              autoHit: !!(
+              (accuracy?.isCrit || advPayload?.autoHit) &&
+              !(accuracy?.isFumble || accuracy?.forceMiss || advPayload?.isFumble || advPayload?.forceMiss)
+              ),
+
+              forceMiss: !!(
+              accuracy?.forceMiss ||
+              accuracy?.isFumble ||
+              advPayload?.forceMiss ||
+              advPayload?.isFumble ||
+              meta?.forceMiss
+              ),
 
               weaponType: core?.weaponType || "",
               attackRange: meta?.attackRange ?? (meta?.listType?.match(/Range/i) ? "Range" : "Melee"),

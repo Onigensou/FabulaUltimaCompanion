@@ -235,7 +235,13 @@ function buildSafeExecutionArgsFromFlaggedPayload(flagged, incomingArgs = {}, ch
       accuracy?.isCrit
     ),
 
-    forceMiss: !!(accuracy?.forceMiss ?? meta.forceMiss),
+    forceMiss: !!(
+  accuracy?.forceMiss ||
+  accuracy?.isFumble ||
+  meta.forceMiss ||
+  adv.forceMiss ||
+  adv.isFumble
+),
 
     targets: savedTargets,
     originalTargetUUIDs: savedTargets,

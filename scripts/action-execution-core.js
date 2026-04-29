@@ -1216,38 +1216,56 @@ async function consumeItemIfNeeded(actionContext, runId) {
       const isHealing = /^(heal|healing|recovery|restore|restoration)$/i.test(elemKey);
       const accTotal = mergedArgs.hasAccuracy ? Number(mergedArgs.accuracyTotal) : NaN;
 
-      const explicitAutoHit =
-        (mergedArgs.autoHit === true) ||
-        (mergedArgs.advPayload?.autoHit === true) ||
-        (mergedArgs.advPayload?.isCrit === true) ||
-        (payload?.accuracy?.isCrit === true);
+      const explicitForceMiss = !!(
+  mergedArgs.forceMiss === true ||
+  mergedArgs.advPayload?.forceMiss === true ||
+  mergedArgs.advPayload?.isFumble === true ||
+  payload?.accuracy?.forceMiss === true ||
+  payload?.accuracy?.isFumble === true ||
+  payload?.meta?.forceMiss === true
+);
 
-      const treatAutoHit = (!mergedArgs.hasAccuracy) || explicitAutoHit;
+const explicitAutoHit = !!(
+  !explicitForceMiss &&
+  (
+    mergedArgs.autoHit === true ||
+    mergedArgs.advPayload?.autoHit === true ||
+    mergedArgs.advPayload?.isCrit === true ||
+    payload?.accuracy?.isCrit === true
+  )
+);
 
-      const missUUIDs = [];
-      const hitUUIDs = [];
+const treatAutoHit = (!mergedArgs.hasAccuracy) || explicitAutoHit;
 
-      if (!isHealing && !treatAutoHit) {
-        for (const u of savedUUIDs) {
-          const usedDefense = await defenseForUuid(u, !!mergedArgs.isSpellish);
-          const isHit = Number.isFinite(usedDefense) && Number.isFinite(accTotal)
-            ? (accTotal >= usedDefense)
-            : true;
-          if (isHit) hitUUIDs.push(u);
-          else missUUIDs.push(u);
-        }
-      } else {
-        hitUUIDs.push(...savedUUIDs);
-      }
+const missUUIDs = [];
+const hitUUIDs = [];
 
-      log(runId, "HIT/MISS split", {
-        savedCount: savedUUIDs.length,
-        hitCount: hitUUIDs.length,
-        missCount: missUUIDs.length,
-        isHealing,
-        treatAutoHit,
-        accTotal
-      });
+// Fumble / forceMiss wins before Accuracy vs Defense.
+// This means even if accTotal >= defense, the action still routes to Miss.
+if (explicitForceMiss) {
+  missUUIDs.push(...savedUUIDs);
+} else if (!isHealing && !treatAutoHit) {
+  for (const u of savedUUIDs) {
+    const usedDefense = await defenseForUuid(u, !!mergedArgs.isSpellish);
+    const isHit = Number.isFinite(usedDefense) && Number.isFinite(accTotal)
+      ? (accTotal >= usedDefense)
+      : true;
+    if (isHit) hitUUIDs.push(u);
+    else missUUIDs.push(u);
+  }
+} else {
+  hitUUIDs.push(...savedUUIDs);
+}
+
+log(runId, "HIT/MISS split", {
+  savedCount: savedUUIDs.length,
+  hitCount: hitUUIDs.length,
+  missCount: missUUIDs.length,
+  isHealing,
+  treatAutoHit,
+  explicitForceMiss,
+  accTotal
+});
 
       const prevTargets = Array.from(game.user?.targets ?? []).map(t => t.id);
 

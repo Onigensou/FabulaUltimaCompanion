@@ -1013,10 +1013,13 @@ const totalFlatBonus =
       attackRange,
       sourceType,
 
-      isCrit   : _isCritFinal,
-      isFumble : _isFumbleFinal,
-      hr       : ignoreHR ? null : (accRoll?.hr ?? null),
-      autoHit  : _isCritFinal === true
+isCrit    : _isCritFinal,
+isFumble  : _isFumbleFinal,
+forceMiss : _isFumbleFinal === true,
+hr        : ignoreHR ? null : (accRoll?.hr ?? null),
+
+// Critical can auto-hit, but never if the same roll is a fumble.
+autoHit   : (_isCritFinal === true && _isFumbleFinal !== true)
     };
 
     const cardPayload = {
@@ -1072,15 +1075,17 @@ const totalFlatBonus =
         hasCustomLogicAction,
         hasCustomLogicResolution
       },
-      accuracy: {
-        ...accRoll,
-        isCrit   : _isCritFinal,
-        isFumble : _isFumbleFinal,
-        A1: dataCore.rolledAtr1,
-        A2: dataCore.rolledAtr2,
-        checkBonus: dataCore.checkBonus,
-        hrUsed: ignoreHR ? null : accRoll?.hr
-      },
+accuracy: {
+  ...accRoll,
+  isCrit    : _isCritFinal,
+  isFumble  : _isFumbleFinal,
+  forceMiss : _isFumbleFinal === true,
+  autoHit   : (_isCritFinal === true && _isFumbleFinal !== true),
+  A1: dataCore.rolledAtr1,
+  A2: dataCore.rolledAtr2,
+  checkBonus: dataCore.checkBonus,
+  hrUsed: ignoreHR ? null : accRoll?.hr
+},
       advPayload,
       targets: targetsSeed,
 
