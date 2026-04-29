@@ -679,10 +679,23 @@ const choice = await new Promise((resolve) => new Dialog({
       const btnTrait = ev.target.closest?.("[data-fu-trait]");
       const btnBond  = btnTrait ? null : ev.target.closest?.("[data-fu-bond]"); // avoid double hits
 
-      if (!btnTrait && !btnBond) return;
+if (!btnTrait && !btnBond) return;
 
-      const btn = btnTrait || btnBond;
-      if (lock(btn)) return;
+const btn = btnTrait || btnBond;
+
+// Visual-lock guard.
+// New fumble cards still render Invoke buttons, but they are marked as locked.
+// This catches the click immediately and gives the player a clear reason.
+if (btn?.dataset?.fuInvokeLocked === "fumble") {
+  ui.notifications?.warn(
+    btnTrait
+      ? "Invoke Trait cannot be used on a Fumble."
+      : "Invoke Bond cannot be used on a Fumble."
+  );
+  return;
+}
+
+if (lock(btn)) return;
 
       try {
         // Locate message (both buttons share same lookup)

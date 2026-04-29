@@ -1277,31 +1277,101 @@ const effectHTML = !hasEffect ? "" : `
        Confirm
     </button>`;
 
-    // Fumble lock:
-  // In Fabula, Invoke Trait / Invoke Bond cannot be used to reroll or modify a Fumble.
-  // So if this action is already marked as Fumble, the buttons are not rendered at all.
-  const isFumbleAction = !!(
-    accuracy?.isFumble === true ||
-    advPayload?.isFumble === true ||
-    PAYLOAD?.meta?.isFumble === true ||
-    PAYLOAD?.meta?.invokeLockedByFumble === true
-  );
+// Fumble lock:
+// In Fabula, Invoke Trait / Invoke Bond cannot be used to reroll or modify a Fumble.
+// Instead of hiding the buttons, show them as visibly locked.
+const isFumbleAction = !!(
+  accuracy?.isFumble === true ||
+  advPayload?.isFumble === true ||
+  PAYLOAD?.meta?.isFumble === true ||
+  PAYLOAD?.meta?.invokeLockedByFumble === true
+);
 
-  PAYLOAD.meta.invokeLockedByFumble = isFumbleAction;
+PAYLOAD.meta.invokeLockedByFumble = isFumbleAction;
 
-  const invokeTraitBtnHTML = isFumbleAction ? "" : `
-    <button type="button" class="fu-btn" data-fu-trait
-            title="Invoke Trait (reroll up to two accuracy dice)"
-            style="flex:0 0 auto; padding:.35rem .6rem; border-radius:8px; border:1px solid #cfa057; background:#f7ecd9; color:#8a4b22; font-weight:700;">
-      🎭 Invoke Trait
+function buildInvokeButtonHTML({
+  kind = "trait",
+  icon = "🎭",
+  label = "Invoke Trait",
+  normalTitle = "Invoke Trait",
+  lockedTitle = "Locked: Invoke cannot be used on a Fumble."
+} = {}) {
+  const dataAttr = kind === "bond" ? "data-fu-bond" : "data-fu-trait";
+
+  const lockedAttrs = isFumbleAction
+    ? `data-fu-invoke-locked="fumble" aria-disabled="true"`
+    : `data-fu-invoke-locked="0" aria-disabled="false"`;
+
+  const title = isFumbleAction ? lockedTitle : normalTitle;
+
+  const baseStyle = `
+    flex:0 0 auto;
+    position:relative;
+    overflow:hidden;
+    padding:.35rem .6rem;
+    border-radius:8px;
+    border:1px solid #cfa057;
+    background:#f7ecd9;
+    color:#8a4b22;
+    font-weight:700;
+  `;
+
+  const lockedStyle = isFumbleAction ? `
+    opacity:.62;
+    filter:grayscale(1) saturate(.45);
+    cursor:not-allowed;
+    border-color:#9c8d7a;
+    background:#ddd4c8;
+    color:#6f6258;
+    box-shadow:inset 0 0 0 1px rgba(0,0,0,.08);
+  ` : "";
+
+  const lockOverlay = isFumbleAction ? `
+    <span class="fu-invoke-lock-overlay"
+          aria-hidden="true"
+          style="
+            position:absolute;
+            inset:0;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            background:rgba(25,20,18,.22);
+            color:#fff;
+            font-size:15px;
+            text-shadow:0 1px 3px rgba(0,0,0,.75);
+            pointer-events:none;
+          ">
+      <i class="fa-solid fa-lock"></i>
+    </span>
+  ` : "";
+
+  return `
+    <button type="button"
+            class="fu-btn ${isFumbleAction ? "fu-invoke-locked" : ""}"
+            ${dataAttr}
+            ${lockedAttrs}
+            title="${esc(title)}"
+            style="${baseStyle} ${lockedStyle}">
+      <span style="${isFumbleAction ? "visibility:hidden;" : ""}">${icon} ${esc(label)}</span>
+      ${lockOverlay}
     </button>`;
+}
 
-  const invokeBondBtnHTML = isFumbleAction ? "" : `
-    <button type="button" class="fu-btn" data-fu-bond
-            title="Invoke Bond (add your Bond bonus)"
-            style="flex:0 0 auto; padding:.35rem .6rem; border-radius:8px; border:1px solid #cfa057; background:#f7ecd9; color:#8a4b22; font-weight:700;">
-      🤝 Invoke Bond
-    </button>`;
+const invokeTraitBtnHTML = buildInvokeButtonHTML({
+  kind: "trait",
+  icon: "🎭",
+  label: "Invoke Trait",
+  normalTitle: "Invoke Trait (reroll up to two accuracy dice)",
+  lockedTitle: "Locked: Invoke Trait cannot be used on a Fumble."
+});
+
+const invokeBondBtnHTML = buildInvokeButtonHTML({
+  kind: "bond",
+  icon: "🤝",
+  label: "Invoke Bond",
+  normalTitle: "Invoke Bond (add your Bond bonus)",
+  lockedTitle: "Locked: Invoke Bond cannot be used on a Fumble."
+});
 
   // ============ card HTML ============
   const titleIconHTML = skillImg ? `<img src="${skillImg}" alt="" style="width:28px;height:28px; object-fit:cover; border-radius:4px; box-shadow: 0 1px 0 rgba(0,0,0,.2), inset 0 0 0 1px rgba(0,0,0,.25); margin-right:.35rem; vertical-align:-3px;">` : "";
