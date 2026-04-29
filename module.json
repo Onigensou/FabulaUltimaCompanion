@@ -114,6 +114,7 @@
   "scripts/fabula-initiative/fabula-initiative-controller.js",
   "scripts/fabula-initiative/fabula-initiative-round-announcer.js",
   "scripts/fabula-initiative/fabula-initiative-autoUntarget.js",
+  "scripts/fabula-initiative/fabula-initiative-turn-emitter.js",
   "scripts/gacha-system/gacha-socket-banner.js",
   "scripts/treasure-chest-system/treasureChest-configUI.js",
   "scripts/treasure-chest-system/treasureChest-core.js",
