@@ -76,6 +76,22 @@
   return allow;
 }
 
+function isInvokeLockedByFumble(payload = {}) {
+  return !!(
+    payload?.accuracy?.isFumble === true ||
+    payload?.advPayload?.isFumble === true ||
+    payload?.meta?.isFumble === true ||
+    payload?.meta?.invokeLockedByFumble === true
+  );
+}
+
+function blockInvokeIfFumble(payload = {}, label = "Invoke") {
+  if (!isInvokeLockedByFumble(payload)) return false;
+
+  ui.notifications?.warn(`${label} cannot be used on a Fumble.`);
+  return true;
+}
+
   function lock(btn) {
     if (!btn) return true;
     if (btn.dataset.fuLock === "1") return true;
@@ -333,9 +349,11 @@ async function chooseBondDialog(bondCandidates, attacker) {
 }
 
   // ---------- actions ----------
-  async function handleInvokeTrait(btn, chatMsg) {
+   async function handleInvokeTrait(btn, chatMsg) {
     const payload = await getPayload(chatMsg);
     if (!payload) return ui.notifications?.error("Invoke Trait: Missing payload on the card.");
+
+    if (blockInvokeIfFumble(payload, "Invoke Trait")) return;
 
     const invoked = payload?.meta?.invoked ?? { trait:false, bond:false };
     if (invoked.trait) return ui.notifications?.warn("Trait already invoked for this action.");
@@ -571,9 +589,11 @@ const choice = await new Promise((resolve) => new Dialog({
     await rebuildCard(next, chatMsg);
   }
 
-  async function handleInvokeBond(btn, chatMsg) {
+    async function handleInvokeBond(btn, chatMsg) {
   const payload = await getPayload(chatMsg);
   if (!payload) return ui.notifications?.error("Invoke Bond: Missing payload on the card.");
+
+  if (blockInvokeIfFumble(payload, "Invoke Bond")) return;
 
   const invoked = payload?.meta?.invoked ?? { trait:false, bond:false };
   if (invoked.bond) return ui.notifications?.warn("Bond already invoked for this action.");

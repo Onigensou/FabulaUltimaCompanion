@@ -1277,14 +1277,26 @@ const effectHTML = !hasEffect ? "" : `
        Confirm
     </button>`;
 
-  const invokeTraitBtnHTML = `
+    // Fumble lock:
+  // In Fabula, Invoke Trait / Invoke Bond cannot be used to reroll or modify a Fumble.
+  // So if this action is already marked as Fumble, the buttons are not rendered at all.
+  const isFumbleAction = !!(
+    accuracy?.isFumble === true ||
+    advPayload?.isFumble === true ||
+    PAYLOAD?.meta?.isFumble === true ||
+    PAYLOAD?.meta?.invokeLockedByFumble === true
+  );
+
+  PAYLOAD.meta.invokeLockedByFumble = isFumbleAction;
+
+  const invokeTraitBtnHTML = isFumbleAction ? "" : `
     <button type="button" class="fu-btn" data-fu-trait
             title="Invoke Trait (reroll up to two accuracy dice)"
             style="flex:0 0 auto; padding:.35rem .6rem; border-radius:8px; border:1px solid #cfa057; background:#f7ecd9; color:#8a4b22; font-weight:700;">
       🎭 Invoke Trait
     </button>`;
 
-  const invokeBondBtnHTML = `
+  const invokeBondBtnHTML = isFumbleAction ? "" : `
     <button type="button" class="fu-btn" data-fu-bond
             title="Invoke Bond (add your Bond bonus)"
             style="flex:0 0 auto; padding:.35rem .6rem; border-radius:8px; border:1px solid #cfa057; background:#f7ecd9; color:#8a4b22; font-weight:700;">
