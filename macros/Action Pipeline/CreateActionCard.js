@@ -1316,15 +1316,19 @@ function buildInvokeButtonHTML({
     font-weight:700;
   `;
 
-  const lockedStyle = isFumbleAction ? `
-    opacity:.62;
-    filter:grayscale(1) saturate(.45);
-    cursor:not-allowed;
-    border-color:#9c8d7a;
-    background:#ddd4c8;
-    color:#6f6258;
-    box-shadow:inset 0 0 0 1px rgba(0,0,0,.08);
-  ` : "";
+const lockedStyle = isFumbleAction ? `
+  opacity:1;
+  filter:grayscale(1) saturate(.15);
+  cursor:not-allowed;
+  border-color:#080808;
+  background:linear-gradient(180deg, #2a2a2a 0%, #141414 100%);
+  color:#d8d8d8;
+  box-shadow:
+    inset 0 0 0 1px rgba(255,255,255,.06),
+    inset 0 2px 4px rgba(255,255,255,.04),
+    inset 0 -3px 8px rgba(0,0,0,.55),
+    0 1px 2px rgba(0,0,0,.35);
+` : "";
 
   const lockOverlay = isFumbleAction ? `
     <span class="fu-invoke-lock-overlay"
@@ -1335,9 +1339,9 @@ function buildInvokeButtonHTML({
             display:flex;
             align-items:center;
             justify-content:center;
-            background:rgba(25,20,18,.22);
-            color:#fff;
-            font-size:15px;
+            background:rgba(0,0,0,.48);
+            color:#f2f2f2;
+            font-size:16px;
             text-shadow:0 1px 3px rgba(0,0,0,.75);
             pointer-events:none;
           ">
