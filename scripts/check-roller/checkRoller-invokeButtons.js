@@ -124,6 +124,20 @@
     return { isCrit, isFumble };
   };
 
+    const isInvokeLockedByFumble = (payload = {}) => {
+    return !!(
+      payload?.result?.isFumble === true ||
+      payload?.meta?.invokeLockedByFumble === true
+    );
+  };
+
+  const blockInvokeIfFumble = (payload = {}, label = "Invoke") => {
+    if (!isInvokeLockedByFumble(payload)) return false;
+
+    ui.notifications?.warn(`${label} cannot be used on a Fumble.`);
+    return true;
+  };
+
   // ---------------------------------------------------------------------------
   // Card builder (copied pattern from CreateCard so message.update is consistent)
   // ---------------------------------------------------------------------------
@@ -205,10 +219,37 @@
       : `<div class="oni-cr-modblock" style="opacity:0.65;">(no modifiers)</div>`;
 
     // invoke area (CardHydrate shows/hides + disables)
+    // Fumble lock mirrors the main CreateCard renderer.
+    const locked = isFumble;
+    meta.invokeLockedByFumble = locked;
+
+    const lockedAttrs = locked
+      ? `data-oni-cr-invoke-locked="fumble" aria-disabled="true"`
+      : `data-oni-cr-invoke-locked="0" aria-disabled="false"`;
+
+    const overlay = locked
+      ? `<span class="oni-cr-lock-overlay" aria-hidden="true"><i class="fa-solid fa-lock"></i></span>`
+      : "";
+
     const invokeArea = `
       <div class="oni-cr-invoke" style="display:none;">
-        <button type="button" class="oni-cr-btn" data-oni-cr-trait>Invoke Trait</button>
-        <button type="button" class="oni-cr-btn" data-oni-cr-bond>Invoke Bond</button>
+        <button type="button"
+                class="oni-cr-btn ${locked ? "oni-cr-btn-locked" : ""}"
+                data-oni-cr-trait
+                ${lockedAttrs}
+                title="${locked ? "Locked: Invoke Trait cannot be used on a Fumble." : "Invoke Trait"}">
+          <span class="oni-cr-btn-label">🎭 Invoke Trait</span>
+          ${overlay}
+        </button>
+
+        <button type="button"
+                class="oni-cr-btn ${locked ? "oni-cr-btn-locked" : ""}"
+                data-oni-cr-bond
+                ${lockedAttrs}
+                title="${locked ? "Locked: Invoke Bond cannot be used on a Fumble." : "Invoke Bond"}">
+          <span class="oni-cr-btn-label">🤝 Invoke Bond</span>
+          ${overlay}
+        </button>
       </div>
     `;
 
@@ -621,9 +662,11 @@ const promptTraitReroll = async ({ attrA, attrB, dieA, dieB, rollA, rollB }) => 
   // ---------------------------------------------------------------------------
   // Apply invoke: Trait
   // ---------------------------------------------------------------------------
-  const applyInvokeTrait = async (message) => {
+    const applyInvokeTrait = async (message) => {
     const payload = getPayload(message);
     if (!payload) return;
+
+    if (blockInvokeIfFumble(payload, "Invoke Trait")) return;
 
     payload.meta = payload.meta || {};
     payload.meta.invoked = payload.meta.invoked || { trait: false, bond: false };
@@ -719,6 +762,8 @@ const newB = (choice === "B" || choice === "AB")
     const payload = getPayload(message);
     if (!payload) return;
 
+    if (blockInvokeIfFumble(payload, "Invoke Bond")) return;
+
     payload.meta = payload.meta || {};
     payload.meta.invoked = payload.meta.invoked || { trait: false, bond: false };
 
@@ -792,6 +837,13 @@ const newB = (choice === "B" || choice === "AB")
   const clickTrait = async (ev) => {
     try {
       ev.preventDefault();
+
+      const btn = ev.currentTarget;
+      if (btn?.dataset?.oniCrInvokeLocked === "fumble") {
+        ui.notifications?.warn("Invoke Trait cannot be used on a Fumble.");
+        return;
+      }
+
       const msg = getMessageFromClick(ev);
       if (!msg || !isCheckRollerMessage(msg)) return;
       await applyInvokeTrait(msg);
@@ -803,6 +855,13 @@ const newB = (choice === "B" || choice === "AB")
   const clickBond = async (ev) => {
     try {
       ev.preventDefault();
+
+      const btn = ev.currentTarget;
+      if (btn?.dataset?.oniCrInvokeLocked === "fumble") {
+        ui.notifications?.warn("Invoke Bond cannot be used on a Fumble.");
+        return;
+      }
+
       const msg = getMessageFromClick(ev);
       if (!msg || !isCheckRollerMessage(msg)) return;
       await applyInvokeBond(msg);

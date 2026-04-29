@@ -291,6 +291,45 @@
         color:#8a4b22 !important;
         font-weight:800 !important;
         cursor:pointer !important;
+        position:relative !important;
+        overflow:hidden !important;
+        min-height:38px;
+      }
+
+      .oni-cr-btn-label{
+        position:relative;
+        z-index:1;
+      }
+
+      .oni-cr-btn-locked{
+        cursor:not-allowed !important;
+        border-color:#080808 !important;
+        background:linear-gradient(180deg, #2a2a2a 0%, #141414 100%) !important;
+        color:#d8d8d8 !important;
+        filter:grayscale(1) saturate(.15) !important;
+        box-shadow:
+          inset 0 0 0 1px rgba(255,255,255,.06),
+          inset 0 2px 4px rgba(255,255,255,.04),
+          inset 0 -3px 8px rgba(0,0,0,.55),
+          0 1px 2px rgba(0,0,0,.35) !important;
+      }
+
+      .oni-cr-btn-locked .oni-cr-btn-label{
+        visibility:hidden;
+      }
+
+      .oni-cr-lock-overlay{
+        position:absolute;
+        inset:0;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        background:rgba(0,0,0,.48);
+        color:#f2f2f2;
+        font-size:16px;
+        text-shadow:0 1px 3px rgba(0,0,0,.75);
+        pointer-events:none;
+        z-index:2;
       }
 
       .oni-cr-details{
@@ -350,7 +389,9 @@
   // Build Card HTML (mirrors UI TESTER structure, but with real payload data)
   // ---------------------------------------------------------------------------
   const buildCardHtml = (payload) => {
-    const meta = payload?.meta || {};
+    payload.meta = payload.meta || {};
+
+    const meta = payload.meta;
     const check = payload?.check || {};
     const res = payload?.result || {};
 
@@ -388,6 +429,11 @@
     // Crit/Fumble badge (visual only)
     const isFumble = Boolean(res.isFumble);
     const isCrit = (!isFumble && Boolean(res.isCrit)); // fumble always wins
+
+    // Fumble lock:
+    // Check Roller Invoke Trait / Invoke Bond cannot be used on a Fumble.
+    // Store this on meta so CardHydrate + InvokeButtons can also respect it.
+    meta.invokeLockedByFumble = isFumble;
 
     const critBadgeHtml = isFumble
       ? `<div class="oni-cr-critBadge oni-cr-critBadge--fumble">FUMBLE</div>`
@@ -506,8 +552,36 @@
           </div>
 
           <div class="oni-cr-buttons oni-cr-invoke">
-            <button type="button" class="fu-btn oni-cr-btn" data-oni-cr-trait>🎭 Invoke Trait</button>
-            <button type="button" class="fu-btn oni-cr-btn" data-oni-cr-bond>🤝 Invoke Bond</button>
+            ${(() => {
+              const locked = isFumble;
+              const lockedAttrs = locked
+                ? `data-oni-cr-invoke-locked="fumble" aria-disabled="true"`
+                : `data-oni-cr-invoke-locked="0" aria-disabled="false"`;
+
+              const overlay = locked
+                ? `<span class="oni-cr-lock-overlay" aria-hidden="true"><i class="fa-solid fa-lock"></i></span>`
+                : "";
+
+              return `
+                <button type="button"
+                        class="fu-btn oni-cr-btn ${locked ? "oni-cr-btn-locked" : ""}"
+                        data-oni-cr-trait
+                        ${lockedAttrs}
+                        title="${locked ? "Locked: Invoke Trait cannot be used on a Fumble." : "Invoke Trait"}">
+                  <span class="oni-cr-btn-label">🎭 Invoke Trait</span>
+                  ${overlay}
+                </button>
+
+                <button type="button"
+                        class="fu-btn oni-cr-btn ${locked ? "oni-cr-btn-locked" : ""}"
+                        data-oni-cr-bond
+                        ${lockedAttrs}
+                        title="${locked ? "Locked: Invoke Bond cannot be used on a Fumble." : "Invoke Bond"}">
+                  <span class="oni-cr-btn-label">🤝 Invoke Bond</span>
+                  ${overlay}
+                </button>
+              `;
+            })()}
           </div>
 
           <div class="oni-cr-details">

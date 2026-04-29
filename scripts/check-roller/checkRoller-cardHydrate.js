@@ -69,6 +69,11 @@
     const traitUsed = Boolean(invoked.trait);
     const bondUsed = Boolean(invoked.bond);
 
+    const fumbleLocked = !!(
+      payload?.result?.isFumble === true ||
+      payload?.meta?.invokeLockedByFumble === true
+    );
+
     const invokeHost =
       rootEl.querySelector(".oni-cr-invoke") ||
       rootEl.querySelector(".oni-cr-buttons");
@@ -78,21 +83,50 @@
     const traitBtn = invokeHost.querySelector("[data-oni-cr-trait]");
     const bondBtn = invokeHost.querySelector("[data-oni-cr-bond]");
 
-    if (traitBtn) {
-      traitBtn.disabled = traitUsed;
-      traitBtn.setAttribute("data-disabled", traitUsed ? "1" : "0");
-      traitBtn.textContent = traitUsed ? "🎭 Invoke Trait (Used)" : "🎭 Invoke Trait";
-      traitBtn.style.opacity = traitUsed ? "0.55" : "";
-      traitBtn.style.cursor = traitUsed ? "not-allowed" : "";
+    const renderLocked = (btn, label, title) => {
+      if (!btn) return;
+
+      // Important:
+      // Do NOT set disabled=true here.
+      // Disabled buttons do not reliably fire click events, so the player would not get a warning.
+      btn.disabled = false;
+      btn.setAttribute("data-disabled", "0");
+      btn.setAttribute("data-oni-cr-invoke-locked", "fumble");
+      btn.setAttribute("aria-disabled", "true");
+      btn.title = title;
+
+      btn.classList.add("oni-cr-btn-locked");
+      btn.style.opacity = "";
+      btn.style.cursor = "not-allowed";
+
+      btn.innerHTML = `
+        <span class="oni-cr-btn-label">${label}</span>
+        <span class="oni-cr-lock-overlay" aria-hidden="true"><i class="fa-solid fa-lock"></i></span>
+      `;
+    };
+
+    const renderNormal = (btn, label, used) => {
+      if (!btn) return;
+
+      btn.classList.remove("oni-cr-btn-locked");
+      btn.removeAttribute("data-oni-cr-invoke-locked");
+      btn.setAttribute("aria-disabled", used ? "true" : "false");
+
+      btn.disabled = used;
+      btn.setAttribute("data-disabled", used ? "1" : "0");
+      btn.textContent = used ? `${label} (Used)` : label;
+      btn.style.opacity = used ? "0.55" : "";
+      btn.style.cursor = used ? "not-allowed" : "";
+    };
+
+    if (fumbleLocked) {
+      renderLocked(traitBtn, "🎭 Invoke Trait", "Locked: Invoke Trait cannot be used on a Fumble.");
+      renderLocked(bondBtn, "🤝 Invoke Bond", "Locked: Invoke Bond cannot be used on a Fumble.");
+      return;
     }
 
-    if (bondBtn) {
-      bondBtn.disabled = bondUsed;
-      bondBtn.setAttribute("data-disabled", bondUsed ? "1" : "0");
-      bondBtn.textContent = bondUsed ? "🤝 Invoke Bond (Used)" : "🤝 Invoke Bond";
-      bondBtn.style.opacity = bondUsed ? "0.55" : "";
-      bondBtn.style.cursor = bondUsed ? "not-allowed" : "";
-    }
+    renderNormal(traitBtn, "🎭 Invoke Trait", traitUsed);
+    renderNormal(bondBtn, "🤝 Invoke Bond", bondUsed);
   };
 
   // ----------------------------------------------------------------------------
