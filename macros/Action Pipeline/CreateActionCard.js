@@ -17,14 +17,221 @@ const MODULE_NS       = "fabula-ultima-companion";
 const CAC_DEBUG       = true;
 const CAC_TAG         = "[ONI][CreateActionCard]";
 
+// ============================================================================
+// TEMP DEBUGGER: CreateActionCard Roll/Rerender Debugger
+// Remove after diagnosis.
+// ============================================================================
+const CAC_ROLL_DEBUG_ENABLED = true;
+const CAC_ROLL_DEBUG_KEY = "ONI_CAC_ROLL_DEBUG";
+const CAC_ROLL_DEBUG_VERSION = "0.1.0-cac-internal-roll-probe";
+
+(function installCreateActionCardRollDebugger() {
+  if (!CAC_ROLL_DEBUG_ENABLED) return;
+
+  const existing = window[CAC_ROLL_DEBUG_KEY];
+  if (existing?.version === CAC_ROLL_DEBUG_VERSION) return;
+
+  const state = {
+    version: CAC_ROLL_DEBUG_VERSION,
+    installedAt: performance.now(),
+    events: [],
+    maxEvents: 20000
+  };
+
+  function now() {
+    return Math.round((performance.now() - state.installedAt) * 100) / 100;
+  }
+
+  function safeClone(v, fallback = null) {
+    try { return foundry?.utils?.deepClone ? foundry.utils.deepClone(v) : JSON.parse(JSON.stringify(v)); }
+    catch { return fallback; }
+  }
+
+  function shortStack() {
+    try {
+      return String(new Error("CAC roll debug stack").stack || "")
+        .split("\n")
+        .slice(2, 9)
+        .map(s => s.trim())
+        .filter(Boolean)
+        .join("\n");
+    } catch {
+      return "";
+    }
+  }
+
+  function record(type, data = {}, options = {}) {
+    const ev = {
+      t: now(),
+      type,
+      ...safeClone(data, data)
+    };
+
+    if (options.stack) ev.stack = shortStack();
+
+    state.events.push(ev);
+    if (state.events.length > state.maxEvents) {
+      state.events.splice(0, state.events.length - state.maxEvents);
+    }
+
+    if (options.console !== false) {
+      console.log("[ONI][CACRollDebug]", type, ev);
+    }
+
+    return ev;
+  }
+
+  function countBy(list, keyFn) {
+    const map = new Map();
+    for (const item of list) {
+      const key = keyFn(item);
+      map.set(key, (map.get(key) ?? 0) + 1);
+    }
+    return Array.from(map.entries())
+      .map(([key, count]) => ({ key, count }))
+      .sort((a, b) => b.count - a.count);
+  }
+
+  function summarize() {
+    const events = safeClone(state.events, []) || [];
+
+    const rollEvents = events.filter(e => String(e.type).startsWith("roll."));
+    const animateStarts = events.filter(e => e.type === "roll.animate.start");
+    const animateSkipSeen = events.filter(e => e.type === "roll.animate.skipSeen");
+    const snapFinal = events.filter(e => e.type === "roll.snapFinal");
+    const observeSeen = events.filter(e => e.type === "roll.observe.seen");
+    const observeNew = events.filter(e => e.type === "roll.observe.new");
+    const mutationRolls = events.filter(e => e.type === "mutation.rollAdded");
+    const renderHooks = events.filter(e => e.type === "renderChatMessage.fuCardInit");
+
+    const byRollKey = countBy(
+      rollEvents.filter(e => e.rollKey),
+      e => e.rollKey
+    );
+
+    const byActionCardId = countBy(
+      rollEvents.filter(e => e.actionCardId),
+      e => e.actionCardId
+    );
+
+    const suspiciousKeys = byRollKey
+      .filter(row => row.count >= 4)
+      .map(row => {
+        const related = rollEvents.filter(e => e.rollKey === row.key);
+        return {
+          rollKey: row.key,
+          totalEvents: row.count,
+          animateStarts: related.filter(e => e.type === "roll.animate.start").length,
+          skipSeen: related.filter(e => e.type === "roll.animate.skipSeen").length,
+          snapFinal: related.filter(e => e.type === "roll.snapFinal").length,
+          observeSeen: related.filter(e => e.type === "roll.observe.seen").length,
+          observeNew: related.filter(e => e.type === "roll.observe.new").length,
+          actionCardIds: Array.from(new Set(related.map(e => e.actionCardId).filter(Boolean))),
+          explicitKeys: Array.from(new Set(related.map(e => e.explicitRollKey).filter(Boolean))),
+          finals: Array.from(new Set(related.map(e => e.final).filter(v => v !== undefined && v !== null)))
+        };
+      });
+
+    const report = {
+      version: CAC_ROLL_DEBUG_VERSION,
+      totalEvents: events.length,
+      counts: {
+        rollEvents: rollEvents.length,
+        animateStarts: animateStarts.length,
+        animateSkipSeen: animateSkipSeen.length,
+        snapFinal: snapFinal.length,
+        observeSeen: observeSeen.length,
+        observeNew: observeNew.length,
+        mutationRolls: mutationRolls.length,
+        renderHooks: renderHooks.length
+      },
+      byRollKey,
+      byActionCardId,
+      suspiciousKeys,
+      events
+    };
+
+    console.log("[ONI][CACRollDebug] REPORT", report);
+    console.table(suspiciousKeys);
+    console.table(byRollKey.slice(0, 20));
+    console.table(events.filter(e =>
+      e.type === "roll.animate.start" ||
+      e.type === "roll.animate.skipSeen" ||
+      e.type === "roll.observe.seen" ||
+      e.type === "roll.observe.new" ||
+      e.type === "roll.snapFinal" ||
+      e.type === "mutation.rollAdded" ||
+      e.type === "renderChatMessage.fuCardInit"
+    ));
+
+    return report;
+  }
+
+  async function copyReport() {
+    const report = summarize();
+    const text = JSON.stringify(report, null, 2);
+
+    try {
+      await navigator.clipboard.writeText(text);
+      ui.notifications?.info?.("CAC roll debug report copied.");
+    } catch {
+      console.log(text);
+      ui.notifications?.warn?.("Clipboard failed. Report printed to console.");
+    }
+
+    return report;
+  }
+
+  window[CAC_ROLL_DEBUG_KEY] = {
+    version: CAC_ROLL_DEBUG_VERSION,
+    state,
+    record,
+    report: summarize,
+    copyReport,
+    clear() {
+      state.events = [];
+      record("debug.clear");
+    }
+  };
+
+  record("debug.installed", {
+    version: CAC_ROLL_DEBUG_VERSION,
+    existingFuCardUIBound: !!window.__fuCardUIBound,
+    existingFuCardUIBoundVersion: window.__fuCardUIBoundVersion ?? null,
+    existingRollMemorySize: window.__fuActionCardRollMemory?.size ?? null
+  });
+})();
+
+function cacRollDebug(type, data = {}, options = {}) {
+  try {
+    if (!CAC_ROLL_DEBUG_ENABLED) return;
+    window[CAC_ROLL_DEBUG_KEY]?.record?.(type, data, options);
+  } catch (_) {}
+}
+
 // --- icons for defense targeting (Strike/Magic) ---
 const STRIKE_ICON_URL = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Fabula%20Ultima/UI/fu-icon/physical_icon.png";
 const MAGIC_ICON_URL  = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/Fabula%20Ultima/UI/fu-icon/magical_icon.png";
 
 // ---------- one-time global UI binder (idempotent) ----------
 (function fuBindGlobalOnce(){
-  if (window.__fuCardUIBound) return;
+  const CAC_ROLL_BINDER_VERSION = "0.1.0-cac-roll-debug-binder";
+
+  if (window.__fuCardUIBound) {
+    cacRollDebug("binder.skip.alreadyBound", {
+      existingVersion: window.__fuCardUIBoundVersion ?? null,
+      wantedVersion: CAC_ROLL_BINDER_VERSION,
+      message: "If this appears after saving the debugger patch, hard reload Foundry. The old roll binder is still active."
+    });
+    return;
+  }
+
   window.__fuCardUIBound = true;
+  window.__fuCardUIBoundVersion = CAC_ROLL_BINDER_VERSION;
+
+  cacRollDebug("binder.install", {
+    version: CAC_ROLL_BINDER_VERSION
+  });
 
   // Global tooltip node
   const TT_ID = "fu-global-tooltip";
@@ -201,32 +408,86 @@ function getActionRollKey(el) {
   return `message::${msgId}::fu-rollnum::${index}::${final}`;
 }
 
+function getActionRollDebugInfo(el) {
+  const msg = getActionRollMessageEl(el);
+  const card = el?.closest?.("[data-fu-action-card-id], [data-fu-action-id]") ?? null;
+
+  return {
+    rollKey: getActionRollKey(el),
+    explicitRollKey: String(el?.dataset?.fuRollKey ?? "").trim() || null,
+    actionId: String(card?.dataset?.fuActionId ?? "").trim() || null,
+    actionCardId: String(card?.dataset?.fuActionCardId ?? "").trim() || null,
+    actionCardVersion: String(card?.dataset?.fuActionCardVersion ?? "").trim() || null,
+    messageId:
+      String(msg?.dataset?.messageId ?? msg?.getAttribute?.("data-message-id") ?? msg?.id ?? "").trim() || null,
+    final: String(el?.dataset?.final ?? "").trim() || null,
+    text: String(el?.textContent ?? "").trim(),
+    index: getActionRollIndex(el),
+    hasFuRollKey: !!String(el?.dataset?.fuRollKey ?? "").trim(),
+    hasActionCardWrapper: !!card,
+    hasConfirm: !!msg?.querySelector?.("[data-fu-confirm]"),
+    isConnected: !!el?.isConnected,
+    memorySize: ACTION_ROLL_MEMORY?.size ?? null
+  };
+}
+
 function setRollNumberFinal(el) {
   if (!el) return;
 
+  const beforeText = String(el.textContent ?? "").trim();
   const final = Number(el.dataset.final || "0");
+
   if (Number.isFinite(final)) {
     el.textContent = fmt(final);
   }
+
+  cacRollDebug("roll.snapFinal", {
+    beforeText,
+    afterText: String(el.textContent ?? "").trim(),
+    ...getActionRollDebugInfo(el)
+  });
 }
 
 function hasSeenActionRoll(el) {
   cleanupActionRollMemory();
   const key = getActionRollKey(el);
-  return ACTION_ROLL_MEMORY.has(key);
+  const seen = ACTION_ROLL_MEMORY.has(key);
+
+  cacRollDebug("roll.memory.hasSeen", {
+    seen,
+    ...getActionRollDebugInfo(el)
+  }, { console: false });
+
+  return seen;
 }
 
 function markSeenActionRoll(el) {
   const key = getActionRollKey(el);
   ACTION_ROLL_MEMORY.set(key, Date.now());
+
+  cacRollDebug("roll.memory.markSeen", {
+    ...getActionRollDebugInfo(el)
+  });
 }
 
 function animateRollNumber(el) {
-  if (!el || el.__rolled) return;
+  if (!el) {
+    cacRollDebug("roll.animate.abort.noElement");
+    return;
+  }
 
-  // If this same Action Card number already rolled before, do not replay.
-  // Just snap it to the final value after Foundry re-renders the message.
+  if (el.__rolled) {
+    cacRollDebug("roll.animate.abort.elementAlreadyRolled", {
+      ...getActionRollDebugInfo(el)
+    });
+    return;
+  }
+
   if (hasSeenActionRoll(el)) {
+    cacRollDebug("roll.animate.skipSeen", {
+      ...getActionRollDebugInfo(el)
+    });
+
     el.__rolled = true;
     setRollNumberFinal(el);
     return;
@@ -238,21 +499,57 @@ function animateRollNumber(el) {
   const final = Number(el.dataset.final || "0");
   const start = Math.min(1, final > 0 ? 1 : 0);
 
+  cacRollDebug("roll.animate.start", {
+    final,
+    start,
+    reduceMotion,
+    ...getActionRollDebugInfo(el)
+  }, { stack: true });
+
   if (!Number.isFinite(final) || final <= 0 || reduceMotion) {
     el.textContent = fmt(final);
+
+    cacRollDebug("roll.animate.instantFinal", {
+      reason: !Number.isFinite(final) ? "final_not_finite" : final <= 0 ? "final_zero_or_less" : "reduce_motion",
+      ...getActionRollDebugInfo(el)
+    });
+
     return;
   }
 
   const dur = clamp(800, 500, 900);
   const t0 = performance.now();
+  let frameCount = 0;
+  let firstFrameLogged = false;
 
   function frame(now) {
+    frameCount++;
+
     const p = clamp((now - t0) / dur, 0, 1);
     const v = Math.max(start, Math.floor(start + (final - start) * easeOutCubic(p)));
     el.textContent = fmt(v);
 
-    if (p < 1) requestAnimationFrame(frame);
-    else el.textContent = fmt(final);
+    if (!firstFrameLogged) {
+      firstFrameLogged = true;
+      cacRollDebug("roll.animate.firstFrame", {
+        frameCount,
+        progress: p,
+        value: v,
+        ...getActionRollDebugInfo(el)
+      });
+    }
+
+    if (p < 1) {
+      requestAnimationFrame(frame);
+    } else {
+      el.textContent = fmt(final);
+
+      cacRollDebug("roll.animate.end", {
+        frameCount,
+        final,
+        ...getActionRollDebugInfo(el)
+      });
+    }
   }
 
   requestAnimationFrame(frame);
@@ -284,30 +581,56 @@ function animateRollNumber(el) {
     );
   }
 
-function observeActionRollNumber(el) {
-  if (!isActionCardRollNumber(el)) return;
+function observeActionRollNumber(el, source = "unknown") {
+  if (!el) {
+    cacRollDebug("roll.observe.abort.noElement", { source });
+    return;
+  }
 
-  // If this Action Card preview already rolled once, never replay it.
-  // This covers:
-  // - Confirm button press re-render
-  // - Damage Card creation re-render
-  // - Chat log refresh/repaint
-  if (hasSeenActionRoll(el)) {
+  if (!isActionCardRollNumber(el)) {
+    cacRollDebug("roll.observe.abort.notActionCardRoll", {
+      source,
+      className: String(el?.className ?? ""),
+      text: String(el?.textContent ?? "").trim()
+    }, { console: false });
+    return;
+  }
+
+  const seen = hasSeenActionRoll(el);
+
+  if (seen) {
+    cacRollDebug("roll.observe.seen", {
+      source,
+      ...getActionRollDebugInfo(el)
+    });
+
     el.__rolled = true;
     el.__fuActionRollObserverBound = true;
     setRollNumberFinal(el);
     return;
   }
 
-  // Avoid binding the same live DOM element multiple times.
-  if (el.__fuActionRollObserverBound) return;
+  if (el.__fuActionRollObserverBound) {
+    cacRollDebug("roll.observe.abort.alreadyObserverBound", {
+      source,
+      ...getActionRollDebugInfo(el)
+    });
+    return;
+  }
+
+  cacRollDebug("roll.observe.new", {
+    source,
+    usingIntersectionObserver: !!io,
+    ...getActionRollDebugInfo(el)
+  });
+
   el.__fuActionRollObserverBound = true;
 
   if (io) io.observe(el);
   else animateRollNumber(el);
 }
 
-  document.querySelectorAll(".fu-rollnum").forEach(observeActionRollNumber);
+  document.querySelectorAll(".fu-rollnum").forEach(el => observeActionRollNumber(el, "initial-scan"));
 
   const chatRoot = document.getElementById("chat-log") || document.body;
   const mo = new MutationObserver((muts)=>{
@@ -315,11 +638,21 @@ function observeActionRollNumber(el) {
       m.addedNodes?.forEach?.(node => {
         if (!(node instanceof HTMLElement)) return;
 
-        if (node.matches?.(".fu-rollnum")) {
-          observeActionRollNumber(node);
-        }
+if (node.matches?.(".fu-rollnum")) {
+  cacRollDebug("mutation.rollAdded", {
+    source: "direct-node",
+    ...getActionRollDebugInfo(node)
+  });
+  observeActionRollNumber(node, "mutation-direct-node");
+}
 
-        node.querySelectorAll?.(".fu-rollnum").forEach(observeActionRollNumber);
+node.querySelectorAll?.(".fu-rollnum").forEach(el => {
+  cacRollDebug("mutation.rollAdded", {
+    source: "querySelectorAll",
+    ...getActionRollDebugInfo(el)
+  });
+  observeActionRollNumber(el, "mutation-querySelectorAll");
+});
       });
     }
   });
@@ -1299,9 +1632,10 @@ const actionCostEffectHTML = actionCostText
         <div class="fu-dmg-row" style="display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:.5rem;">
           <div style="font-weight:800;">${declaresHealing ? "Heal" : "Damage"}</div>
           <div style="text-align:left;">
-<span class="fu-rollnum fu-tip-host"
+<span class="fu-action-rollnum fu-tip-host"
       data-final="${finalForCard}"
       data-fu-roll-key="${esc(`${actionCardIdentity.actionCardId}:damage-preview:${finalForCard}`)}"
+      data-fu-roll-scope="action-preview"
       data-tip="${encodeURIComponent(tipHTML)}"
       style="font-size:32px; font-weight:900; font-style:italic; color:${dmgColor}; text-shadow:0 0 15px ${glowColor}; margin-left:2.9rem; will-change: contents;">
   ${finalForCard}
@@ -1614,14 +1948,183 @@ ${attackerBox}
     });
   }
 
-  Hooks.on("renderChatMessage", async function fuCardInit(chatMsg, htmlEl) {
-    if (chatMsg.id !== posted.id) return;
+    // Dedicated Action Card preview roll system.
+  // This intentionally uses .fu-action-rollnum, NOT .fu-rollnum.
+  // Damage Cards still use .fu-rollnum.
+  const FU_ACTION_PREVIEW_ROLL_MEMORY =
+    globalThis.__fuActionPreviewRollMemory ??= new Map();
 
-    const root = htmlEl?.[0];
-    if (!root) return;
+  const FU_ACTION_PREVIEW_ROLL_TTL_MS = 10 * 60 * 1000;
 
-    if (root.dataset.fuPrepped === "1") return;
-    root.dataset.fuPrepped = "1";
+  function cleanupActionPreviewRollMemory() {
+    const now = Date.now();
+
+    for (const [key, value] of FU_ACTION_PREVIEW_ROLL_MEMORY.entries()) {
+      const t = Number(value?.time ?? value ?? 0);
+      if (now - t > FU_ACTION_PREVIEW_ROLL_TTL_MS) {
+        FU_ACTION_PREVIEW_ROLL_MEMORY.delete(key);
+      }
+    }
+  }
+
+  function getActionPreviewRollKey(el) {
+    const explicit = String(el?.dataset?.fuRollKey ?? "").trim();
+    if (explicit) return `explicit::${explicit}`;
+
+    const card = el?.closest?.("[data-fu-action-card-id], [data-fu-action-id]");
+    const actionCardId = String(card?.dataset?.fuActionCardId ?? "").trim();
+    const actionId = String(card?.dataset?.fuActionId ?? "").trim();
+    const final = String(el?.dataset?.final ?? el?.textContent ?? "0").trim();
+
+    if (actionCardId) return `action-card::${actionCardId}::damage-preview::${final}`;
+    if (actionId) return `action::${actionId}::damage-preview::${final}`;
+
+    return `unknown::damage-preview::${final}`;
+  }
+
+  function formatActionPreviewNumber(n) {
+    return Number(n).toLocaleString?.() ?? String(n);
+  }
+
+  function setActionPreviewRollFinal(el) {
+    if (!el) return;
+
+    const final = Number(el.dataset.final || "0");
+    if (Number.isFinite(final)) {
+      el.textContent = formatActionPreviewNumber(final);
+    }
+  }
+
+  function animateActionPreviewRoll(el) {
+    if (!el) return;
+
+    cleanupActionPreviewRollMemory();
+
+    const key = getActionPreviewRollKey(el);
+    const final = Number(el.dataset.final || "0");
+
+    if (!Number.isFinite(final) || final <= 0) {
+      setActionPreviewRollFinal(el);
+      return;
+    }
+
+    // Already animated before: snap to final, do not replay.
+    if (FU_ACTION_PREVIEW_ROLL_MEMORY.has(key)) {
+      setActionPreviewRollFinal(el);
+
+      cacRollDebug?.("actionPreviewRoll.snapSeen", {
+        key,
+        final,
+        text: String(el.textContent ?? "").trim()
+      }, { console: false });
+
+      return;
+    }
+
+    // Mark BEFORE animation starts.
+    // This protects against re-render during the animation.
+    FU_ACTION_PREVIEW_ROLL_MEMORY.set(key, {
+      time: Date.now(),
+      final
+    });
+
+    cacRollDebug?.("actionPreviewRoll.start", {
+      key,
+      final
+    });
+
+    const start = Math.min(1, final > 0 ? 1 : 0);
+    const duration = 800;
+    const t0 = performance.now();
+
+    function easeOutCubicLocal(t) {
+      return 1 - Math.pow(1 - t, 3);
+    }
+
+    function clampLocal(n, a, b) {
+      return Math.min(Math.max(n, a), b);
+    }
+
+    function frame(now) {
+      // If Foundry removed/replaced this DOM node, stop animating this old node.
+      if (!el.isConnected) return;
+
+      const p = clampLocal((now - t0) / duration, 0, 1);
+      const value = Math.max(
+        start,
+        Math.floor(start + (final - start) * easeOutCubicLocal(p))
+      );
+
+      el.textContent = formatActionPreviewNumber(value);
+
+      if (p < 1) {
+        requestAnimationFrame(frame);
+      } else {
+        setActionPreviewRollFinal(el);
+
+        cacRollDebug?.("actionPreviewRoll.end", {
+          key,
+          final
+        }, { console: false });
+      }
+    }
+
+    requestAnimationFrame(frame);
+  }
+
+  function initActionPreviewRolls(root) {
+    const rolls = Array.from(root?.querySelectorAll?.(".fu-action-rollnum") ?? []);
+
+    for (const el of rolls) {
+      animateActionPreviewRoll(el);
+    }
+  }
+
+// Keep only one render hook per Action Card message.
+// This prevents stacked render hooks if the same card is rebuilt/updated.
+globalThis.__fuActionCardRenderHooks = globalThis.__fuActionCardRenderHooks || new Map();
+
+const oldRenderHook = globalThis.__fuActionCardRenderHooks.get(String(posted.id));
+if (oldRenderHook) {
+  try {
+    Hooks.off("renderChatMessage", oldRenderHook);
+  } catch (_e) {}
+}
+
+const fuCardInit = async function fuCardInit(chatMsg, htmlEl) {
+  if (chatMsg.id !== posted.id) return;
+
+  const root = htmlEl?.[0];
+  if (!root) return;
+
+  const actionCard = root.querySelector?.("[data-fu-action-card-id], [data-fu-action-id]");
+  const rolls = Array.from(root.querySelectorAll?.(".fu-rollnum, .fu-action-rollnum") ?? []).map(el => {
+    try { return getActionRollDebugInfo(el); }
+    catch { return { text: String(el.textContent ?? "").trim(), final: el.dataset?.final ?? null }; }
+  });
+
+  cacRollDebug("renderChatMessage.fuCardInit", {
+    messageId: chatMsg.id,
+    alreadyPrepped: root.dataset.fuPrepped === "1",
+    actionId: actionCard?.dataset?.fuActionId ?? null,
+    actionCardId: actionCard?.dataset?.fuActionCardId ?? null,
+    actionCardVersion: actionCard?.dataset?.fuActionCardVersion ?? null,
+    rollCount: rolls.length,
+    rolls
+  });
+
+    if (root.dataset.fuPrepped === "1") {
+    cacRollDebug("renderChatMessage.fuCardInit.skipAlreadyPrepped", {
+      messageId: chatMsg.id
+    });
+    return;
+  }
+
+  root.dataset.fuPrepped = "1";
+
+  // Action Card damage preview roll-up.
+  // Uses .fu-action-rollnum so it cannot be picked up by old .fu-rollnum observers.
+  initActionPreviewRolls(root);
 
     if (!game.user?.isGM) {
       root.querySelectorAll("[data-gm-only]").forEach(el => { el.style.display = "none"; });
@@ -1640,16 +2143,27 @@ ${attackerBox}
       } catch {}
     }
 
-    // --- INIT: Half-open preview for this card's Effect body ---
-    try {
-      const eff   = root.querySelector(".fu-effect");
-      const body  = eff?.querySelector(".fu-effect-body");
-      const inner = eff?.querySelector(".fu-effect-inner");
-      const hint  = eff?.querySelector(".fu-effect-hint");
-      const fade  = eff?.querySelector(".fu-fade");
-      if (!eff || !body || !inner || !fade) throw new Error("Effect DOM missing");
+   // --- INIT: Half-open preview for this card's Effect body ---
+try {
+  const eff = root.querySelector(".fu-effect");
 
-      const PREVIEW_LINES = 8;
+  // Some Action Cards do not have an Effect section. That is normal.
+  // In that case, do nothing and do not print an error.
+  if (!eff) {
+    cacRollDebug?.("renderChatMessage.fuCardInit.noEffectSection", {
+      messageId: chatMsg?.id ?? null
+    }, { console: false });
+  } else {
+    const body  = eff.querySelector(".fu-effect-body");
+    const inner = eff.querySelector(".fu-effect-inner");
+    const hint  = eff.querySelector(".fu-effect-hint");
+    const fade  = eff.querySelector(".fu-fade");
+
+    if (!body || !inner || !fade) {
+      throw new Error("Effect DOM incomplete");
+    }
+
+    const PREVIEW_LINES = 8;
       const cs = getComputedStyle(inner);
       const lineH = parseFloat(cs.lineHeight) || 16;
       const padT  = parseFloat(cs.paddingTop) || 0;
@@ -1691,23 +2205,34 @@ ${attackerBox}
       fade.style.background = fadeOverlay;
 
       if (hint) hint.textContent = "(click to expand)";
+  }
     } catch (e) {
       console.warn("Effect preview init failed:", e);
     }
 
-        // --- Persist payload WITHOUT re-rendering the message ---
-    PAYLOAD.meta.actionCardMessageId = chatMsg?.id ? String(chatMsg.id) : (PAYLOAD?.meta?.actionCardMessageId ?? null);
+           // --- Keep payload synchronized locally, but DO NOT write flags here. ---
+    //
+    // Important:
+    // renderChatMessage can be called many times whenever Foundry updates flags.
+    // If this hook writes chatMsg.update(...) or chatMsg.setFlag(...), it can
+    // trigger another renderChatMessage, which recreates the Action Card DOM and
+    // can replay the roll-up animation.
+    PAYLOAD.meta.actionCardMessageId = chatMsg?.id
+      ? String(chatMsg.id)
+      : (PAYLOAD?.meta?.actionCardMessageId ?? null);
+
     PAYLOAD.actionCardMessageId = PAYLOAD.meta.actionCardMessageId;
 
-    try {
-      await chatMsg.update(
-        { [`flags.${MODULE_NS}.actionCard`]: buildActionCardFlagData(PAYLOAD, chatMsg?.id ?? null) },
-        { render: false }
-      );
-    } catch (e1) {
-      try { await chatMsg.setFlag(MODULE_NS, "actionCard", buildActionCardFlagData(PAYLOAD, chatMsg?.id ?? null)); } catch (e2) {}
-    }
-  });
+    cacRollDebug?.("renderChatMessage.fuCardInit.noFlagWrite", {
+      messageId: chatMsg?.id ?? null,
+      actionId: PAYLOAD?.meta?.actionId ?? PAYLOAD?.actionId ?? null,
+      actionCardId: PAYLOAD?.meta?.actionCardId ?? PAYLOAD?.actionCardId ?? null,
+      actionCardVersion: PAYLOAD?.meta?.actionCardVersion ?? PAYLOAD?.actionCardVersion ?? null
+    }, { console: false });
+    };
+
+globalThis.__fuActionCardRenderHooks.set(String(posted.id), fuCardInit);
+Hooks.on("renderChatMessage", fuCardInit);
 
     cacLog("Posted with canonical targets:", {
     count: originalTargetUUIDs.length,
