@@ -23,21 +23,62 @@ return (async () => {
     return "";
   };
 
-  const buildReactionActionContext = (ctx) => {
-    if (!ctx || typeof ctx !== "object") return null;
+    const resolveDamageBatchIdFromPayload = (p = {}) => {
+    return nonBlankString(
+      p?.damageBatchId,
+      p?.meta?.damageBatchId,
+      p?.actionContext?.damageBatchId,
+      p?.actionContext?.meta?.damageBatchId,
+      p?.rootActionContext?.damageBatchId,
+      p?.rootActionContext?.meta?.damageBatchId
+    );
+  };
+
+  const buildReactionActionContext = (ctx, inherited = {}) => {
+    if (!ctx || typeof ctx !== "object") {
+      return inherited?.damageBatchId
+        ? {
+            meta: {
+              damageBatchId: inherited.damageBatchId,
+              rootDamageBatchId: inherited.damageBatchId
+            }
+          }
+        : null;
+    }
+
+    const inheritedDamageBatchId = nonBlankString(
+      inherited?.damageBatchId,
+      ctx?.damageBatchId,
+      ctx?.meta?.damageBatchId
+    );
+
     return {
       core: {
-        skillTypeRaw: ctx?.core?.skillTypeRaw ?? null
+        skillTypeRaw: ctx?.core?.skillTypeRaw ?? null,
+        skillName: ctx?.core?.skillName ?? null
       },
       dataCore: {
         skillTypeRaw: ctx?.dataCore?.skillTypeRaw ?? null,
+        skillName: ctx?.dataCore?.skillName ?? null,
         isSpell: !!ctx?.dataCore?.isSpell
       },
       meta: {
         skillTypeRaw: ctx?.meta?.skillTypeRaw ?? null,
-        isSpellish: !!ctx?.meta?.isSpellish
+        isSpellish: !!ctx?.meta?.isSpellish,
+
+        // Batch inheritance for passive/reaction chains.
+        damageBatchId: inheritedDamageBatchId || null,
+        rootDamageBatchId: inheritedDamageBatchId || null,
+
+        // Useful identity carry-through for future grouping/debug.
+        actionId: ctx?.meta?.actionId ?? ctx?.actionId ?? null,
+        actionCardId: ctx?.meta?.actionCardId ?? ctx?.actionCardId ?? null,
+        actionCardMessageId: ctx?.meta?.actionCardMessageId ?? ctx?.actionCardMessageId ?? null,
+        executionMode: ctx?.meta?.executionMode ?? null
       },
       sourceItem: {
+        name: ctx?.sourceItem?.name ?? null,
+        img: ctx?.sourceItem?.img ?? null,
         system: {
           props: {
             skill_type: ctx?.sourceItem?.system?.props?.skill_type ?? null
@@ -199,8 +240,26 @@ return (async () => {
     );
   }
 
-  // 2) Gather payload from your established convention
+    // 2) Gather payload from your established convention
   const payload = (typeof __PAYLOAD === "object" && __PAYLOAD) ? __PAYLOAD : {};
+
+  // Damage Card batch identity.
+  // This must exist before reaction/passive beacons are emitted so auto-passives
+  // can inherit the same root batch.
+  const DAMAGE_BATCH_ID = resolveDamageBatchIdFromPayload(payload);
+
+  if (DAMAGE_BATCH_ID) {
+    payload.meta = payload.meta || {};
+    payload.damageBatchId = DAMAGE_BATCH_ID;
+    payload.meta.damageBatchId = DAMAGE_BATCH_ID;
+
+    if (payload.actionContext && typeof payload.actionContext === "object") {
+      payload.actionContext.meta = payload.actionContext.meta || {};
+      payload.actionContext.damageBatchId = DAMAGE_BATCH_ID;
+      payload.actionContext.meta.damageBatchId = DAMAGE_BATCH_ID;
+    }
+  }
+
   dbg("start", {
     TRACE_ID,
     isGM: !!game.user?.isGM,
@@ -220,7 +279,8 @@ return (async () => {
       hasActionContext: !!payload?.actionContext,
       elementType: payload?.elementType ?? null,
       finalValue: payload?.finalValue ?? null,
-      displayedAmount: payload?.displayedAmount ?? null
+      displayedAmount: payload?.displayedAmount ?? null,
+      damageBatchId: DAMAGE_BATCH_ID || null
     }
   });
 
@@ -268,7 +328,9 @@ return (async () => {
         actionContext
       } = payload;
 
-      const reactionActionContext = buildReactionActionContext(actionContext);
+      const reactionActionContext = buildReactionActionContext(actionContext, {
+        damageBatchId: DAMAGE_BATCH_ID || null
+      });
 
       const resolvedSkillTypeRaw = nonBlankString(
         skillTypeRaw,
@@ -405,10 +467,26 @@ return (async () => {
         targetActorUuid
       });
 
-      const commonPayload = {
+        const commonPayload = {
         timestamp: Date.now(),
         __debugTraceId: TRACE_ID,
         __debugSource: "CreateDamageCardShim",
+
+        // Damage Card batch identity.
+        // Auto-passives/reactions triggered from this result should inherit this,
+        // so their Damage Cards can be captured into the same grouped ChatMessage.
+        damageBatchId: DAMAGE_BATCH_ID || null,
+        rootDamageBatchId: DAMAGE_BATCH_ID || null,
+        meta: {
+          damageBatchId: DAMAGE_BATCH_ID || null,
+          rootDamageBatchId: DAMAGE_BATCH_ID || null,
+          sourceDamageCardTraceId: TRACE_ID,
+
+          actionId: actionContext?.meta?.actionId ?? actionContext?.actionId ?? null,
+          actionCardId: actionContext?.meta?.actionCardId ?? actionContext?.actionCardId ?? null,
+          actionCardMessageId: actionContext?.meta?.actionCardMessageId ?? actionContext?.actionCardMessageId ?? payload?.actionCardMsgId ?? null,
+          executionMode: actionContext?.meta?.executionMode ?? null
+        },
 
         // Subject / source creature
         attackerUuid: subjectTokenUuid,
@@ -664,13 +742,7 @@ try {
     game.modules?.get("fabula-ultima-companion")?.api?.damageCardBatch ??
     null;
 
-  const damageBatchId = String(
-    payload?.damageBatchId ??
-    payload?.meta?.damageBatchId ??
-    payload?.actionContext?.damageBatchId ??
-    payload?.actionContext?.meta?.damageBatchId ??
-    ""
-  ).trim();
+  const damageBatchId = DAMAGE_BATCH_ID || resolveDamageBatchIdFromPayload(payload);
 
   dbg("damage-card-output:begin", {
     TRACE_ID,
