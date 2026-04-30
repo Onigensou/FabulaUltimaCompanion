@@ -47,9 +47,73 @@
 
   const DEFAULT_TTL_MS = 120000;
 
+// Plan 1: deferred grouped Damage Card render.
+// This does NOT affect grouping logic.
+// It only waits briefly after the batch is finalized before rendering the card,
+// giving the browser a chance to paint first and reducing same-frame stutter.
+const DEFAULT_FLUSH_DEFER_FRAMES = 2;
+
   function nowMs() {
     return Date.now();
   }
+
+  function clampInt(value, min, max, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(n)));
+}
+
+function waitAfterNextPaint() {
+  return new Promise(resolve => {
+    // requestAnimationFrame runs before the browser paints.
+    // setTimeout inside rAF lets the paint happen first, then continues after.
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => {
+        setTimeout(resolve, 0);
+      });
+      return;
+    }
+
+    setTimeout(resolve, 0);
+  });
+}
+
+async function deferGroupedCardRender(options = {}) {
+  if (options?.deferRender === false) {
+    return {
+      deferred: false,
+      frames: 0,
+      waitMs: 0
+    };
+  }
+
+  const frames = clampInt(
+    options?.deferFrames ?? options?.renderDeferFrames,
+    0,
+    8,
+    DEFAULT_FLUSH_DEFER_FRAMES
+  );
+
+  if (frames <= 0) {
+    return {
+      deferred: false,
+      frames: 0,
+      waitMs: 0
+    };
+  }
+
+  const start = nowMs();
+
+  for (let i = 0; i < frames; i++) {
+    await waitAfterNextPaint();
+  }
+
+  return {
+    deferred: true,
+    frames,
+    waitMs: nowMs() - start
+  };
+}
 
   function str(v, d = "") {
     const s = String(v ?? "").trim();
@@ -718,25 +782,45 @@ stampEntryDamageSourceMeta(entry, batch);
     const subtitle = str(options?.subtitle, batch.subtitle || "");
 
     const groupedApi = getGroupedRendererApi();
-    const singleApi = getSingleRendererApi();
+const singleApi = getSingleRendererApi();
 
-    try {
-      let message = null;
-      let fallbackMode = false;
+let renderDeferInfo = {
+  deferred: false,
+  frames: 0,
+  waitMs: 0
+};
 
-      if (typeof groupedApi === "function") {
-  message = await groupedApi({
-    batchId,
-    title,
-    subtitle,
-    rootActionContext: batch.rootActionContext,
-    entries,
+try {
+  let message = null;
+  let fallbackMode = false;
 
-    // Let the renderer decide:
-    // - one source: no banner
-    // - multiple sources: section banners
-    showHeader: false
-  });
+  // Plan 1 optimization:
+  // The batch is already finalized here. Before creating the grouped ChatMessage,
+  // wait a couple of browser frames so actor updates / passive chain cleanup
+  // are not competing with the big card render in the same frame.
+  renderDeferInfo = await deferGroupedCardRender(options);
+
+  if (renderDeferInfo.deferred) {
+    log("FLUSH render deferred.", {
+      batchId,
+      frames: renderDeferInfo.frames,
+      waitMs: renderDeferInfo.waitMs
+    });
+  }
+
+  if (typeof groupedApi === "function") {
+    message = await groupedApi({
+      batchId,
+      title,
+      subtitle,
+      rootActionContext: batch.rootActionContext,
+      entries,
+
+      // Let the renderer decide:
+      // - one source: no banner
+      // - multiple sources: section banners
+      showHeader: false
+    });
 } else if (typeof singleApi === "function") {
         // Safety fallback: never lose results if grouped renderer is missing.
         fallbackMode = true;
@@ -761,15 +845,18 @@ stampEntryDamageSourceMeta(entry, batch);
         messageId: message?.id ?? null
       });
 
-      return {
-        ok: true,
-        batchId,
-        entries: entries.length,
-        grouped: !fallbackMode,
-        fallbackMode,
-        messageId: message?.id ?? null,
-        message
-      };
+return {
+  ok: true,
+  batchId,
+  entries: entries.length,
+  grouped: !fallbackMode,
+  fallbackMode,
+  deferredRender: renderDeferInfo.deferred,
+  deferredRenderFrames: renderDeferInfo.frames,
+  deferredRenderWaitMs: renderDeferInfo.waitMs,
+  messageId: message?.id ?? null,
+  message
+};
     } catch (e) {
       err("FLUSH failed.", {
         batchId,

@@ -134,26 +134,115 @@ const MAGIC_ICON_URL  = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/F
     }
   }, { capture:false });
 
-  // Roll-up numbers
-  const reduceMotion = matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
-  const clamp=(n,a,b)=>Math.min(Math.max(n,a),b), fmt=(n)=>n.toLocaleString?.() ?? String(n), easeOutCubic=t=>1-Math.pow(1-t,3);
-  function animateRollNumber(el) {
-    if (!el || el.__rolled) return;
-    el.__rolled = true;
-    const final = Number(el.dataset.final || "0");
-    const start = Math.min(1, final>0?1:0);
-    if (!Number.isFinite(final) || final <= 0 || reduceMotion) { el.textContent = fmt(final); return; }
-    const dur = clamp(800, 500, 900);
-    const t0 = performance.now();
-    function frame(now){
-      const p = clamp((now - t0)/dur, 0, 1);
-      const v = Math.max(start, Math.floor(start + (final - start) * easeOutCubic(p)));
-      el.textContent = fmt(v);
-      if (p < 1) requestAnimationFrame(frame);
-      else el.textContent = fmt(final);
+// Roll-up numbers
+const reduceMotion = matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+const clamp=(n,a,b)=>Math.min(Math.max(n,a),b), fmt=(n)=>n.toLocaleString?.() ?? String(n), easeOutCubic=t=>1-Math.pow(1-t,3);
+
+// Persistent memory for Action Card roll-up numbers.
+// Important:
+// el.__rolled only survives while the exact DOM element exists.
+// If Foundry re-renders the chat message, the element is replaced.
+// This memory prevents the same Action Card preview number from rolling again.
+const ACTION_ROLL_MEMORY_KEY = "__fuActionCardRollMemory";
+const ACTION_ROLL_MEMORY = window[ACTION_ROLL_MEMORY_KEY] ??= new Map();
+const ACTION_ROLL_MEMORY_TTL_MS = 10 * 60 * 1000;
+
+function cleanupActionRollMemory() {
+  const now = Date.now();
+  for (const [key, time] of ACTION_ROLL_MEMORY.entries()) {
+    if (now - Number(time || 0) > ACTION_ROLL_MEMORY_TTL_MS) {
+      ACTION_ROLL_MEMORY.delete(key);
     }
-    requestAnimationFrame(frame);
   }
+}
+
+function getActionRollMessageEl(el) {
+  return el?.closest?.(".chat-message, .message") ?? null;
+}
+
+function getActionRollMessageId(el) {
+  const msg = getActionRollMessageEl(el);
+  return String(
+    msg?.dataset?.messageId ??
+    msg?.getAttribute?.("data-message-id") ??
+    msg?.id ??
+    ""
+  ).trim();
+}
+
+function getActionRollIndex(el) {
+  const msg = getActionRollMessageEl(el);
+  if (!msg) return 0;
+
+  const nums = Array.from(msg.querySelectorAll(".fu-rollnum"));
+  const idx = nums.indexOf(el);
+  return idx >= 0 ? idx : 0;
+}
+
+function getActionRollKey(el) {
+  const msgId = getActionRollMessageId(el) || "no-message-id";
+  const index = getActionRollIndex(el);
+  const final = String(el?.dataset?.final ?? el?.textContent ?? "0").trim();
+
+  return `${msgId}::fu-rollnum::${index}::${final}`;
+}
+
+function setRollNumberFinal(el) {
+  if (!el) return;
+
+  const final = Number(el.dataset.final || "0");
+  if (Number.isFinite(final)) {
+    el.textContent = fmt(final);
+  }
+}
+
+function hasSeenActionRoll(el) {
+  cleanupActionRollMemory();
+  const key = getActionRollKey(el);
+  return ACTION_ROLL_MEMORY.has(key);
+}
+
+function markSeenActionRoll(el) {
+  const key = getActionRollKey(el);
+  ACTION_ROLL_MEMORY.set(key, Date.now());
+}
+
+function animateRollNumber(el) {
+  if (!el || el.__rolled) return;
+
+  // If this same Action Card number already rolled before, do not replay.
+  // Just snap it to the final value after Foundry re-renders the message.
+  if (hasSeenActionRoll(el)) {
+    el.__rolled = true;
+    setRollNumberFinal(el);
+    return;
+  }
+
+  el.__rolled = true;
+  markSeenActionRoll(el);
+
+  const final = Number(el.dataset.final || "0");
+  const start = Math.min(1, final > 0 ? 1 : 0);
+
+  if (!Number.isFinite(final) || final <= 0 || reduceMotion) {
+    el.textContent = fmt(final);
+    return;
+  }
+
+  const dur = clamp(800, 500, 900);
+  const t0 = performance.now();
+
+  function frame(now) {
+    const p = clamp((now - t0) / dur, 0, 1);
+    const v = Math.max(start, Math.floor(start + (final - start) * easeOutCubic(p)));
+    el.textContent = fmt(v);
+
+    if (p < 1) requestAnimationFrame(frame);
+    else el.textContent = fmt(final);
+  }
+
+  requestAnimationFrame(frame);
+}
   const io = "IntersectionObserver" in window ? new IntersectionObserver((ents, obs) => {
     for (const e of ents) if (e.isIntersecting) { animateRollNumber(e.target); obs.unobserve(e.target); }
   }, { threshold: 0.1 }) : null;
@@ -181,12 +270,24 @@ const MAGIC_ICON_URL  = "https://assets.forge-vtt.com/610d918102e7ac281373ffcb/F
     );
   }
 
-  function observeActionRollNumber(el) {
-    if (!isActionCardRollNumber(el)) return;
+function observeActionRollNumber(el) {
+  if (!isActionCardRollNumber(el)) return;
 
-    if (io) io.observe(el);
-    else animateRollNumber(el);
+  // If Foundry re-rendered this Action Card and the number has already rolled,
+  // snap to final value immediately instead of replaying the animation.
+  if (hasSeenActionRoll(el)) {
+    el.__rolled = true;
+    setRollNumberFinal(el);
+    return;
   }
+
+  // Avoid binding the same live DOM element multiple times.
+  if (el.__fuActionRollObserverBound) return;
+  el.__fuActionRollObserverBound = true;
+
+  if (io) io.observe(el);
+  else animateRollNumber(el);
+}
 
   document.querySelectorAll(".fu-rollnum").forEach(observeActionRollNumber);
 
