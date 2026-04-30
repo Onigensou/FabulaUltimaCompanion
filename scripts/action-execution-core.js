@@ -51,6 +51,60 @@
     return s.length ? s : d;
   };
 
+  function plainTextForAnimationPrecheck(raw = "") {
+  return String(raw ?? "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>\s*<p>/gi, "\n")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .trim();
+}
+
+function getRunnableAnimationPrecheck(...candidates) {
+  let raw = "";
+
+  for (const value of candidates) {
+    const s = safeString(value);
+    if (s) {
+      raw = s;
+      break;
+    }
+  }
+
+  const plain = plainTextForAnimationPrecheck(raw);
+
+  if (!plain) {
+    return {
+      hasRunnableScript: false,
+      reason: "empty_animation_script",
+      rawScript: raw,
+      plainScript: plain,
+      rawLength: raw.length,
+      plainLength: plain.length
+    };
+  }
+
+  if (/insert your sequencer animation here/i.test(plain)) {
+    return {
+      hasRunnableScript: false,
+      reason: "placeholder_animation_script",
+      rawScript: raw,
+      plainScript: plain,
+      rawLength: raw.length,
+      plainLength: plain.length
+    };
+  }
+
+  return {
+    hasRunnableScript: true,
+    reason: "has_animation_script",
+    rawScript: raw,
+    plainScript: plain,
+    rawLength: raw.length,
+    plainLength: plain.length
+  };
+}
+
   const cloneArray = (a) => Array.isArray(a) ? [...a] : [];
   const numberish = (v) => {
     const n = Number(v);
@@ -1659,53 +1713,72 @@ log(runId, "AdvanceDamage begin", {
 await adv.execute({ __AUTO: true, __PAYLOAD: advUniversalPayload });
               log(runId, "AdvanceDamage done");
             } else {
-              const animScriptRaw =
-                safeString(mergedArgs.advPayload?.animationScriptRaw) ||
-                safeString(payload?.meta?.animationScriptRaw) ||
-                safeString(mergedArgs.advPayload?.animationScript) ||
-                safeString(payload?.meta?.animationScript);
+              const animPrecheck = getRunnableAnimationPrecheck(
+  mergedArgs.advPayload?.animationScriptRaw,
+  payload?.animationScriptRaw,
+  payload?.meta?.animationScriptRaw,
+  mergedArgs.advPayload?.animationScript,
+  payload?.animationScript,
+  payload?.meta?.animationScript
+);
 
-              const animTimingOpt =
-                mergedArgs.advPayload?.animation_damage_timing_options ??
-                payload?.meta?.animation_damage_timing_options ??
-                "default";
+const animScriptRaw = animPrecheck.rawScript;
 
-              const animTimingOffset =
-                Number(
-                  mergedArgs.advPayload?.animation_damage_timing_offset ??
-                  payload?.meta?.animation_damage_timing_offset ??
-                  0
-                ) || 0;
+const animTimingOpt =
+  mergedArgs.advPayload?.animation_damage_timing_options ??
+  payload?.meta?.animation_damage_timing_options ??
+  "default";
 
-              log(runId, "VFX-only branch", {
-                animFound: !!anim,
-                macro: mergedArgs.animMacroName,
-                hasAnimScriptRaw: !!animScriptRaw,
-                timingOpt: animTimingOpt,
-                timingOffset: animTimingOffset,
-                targetsUuidCount: hitUUIDs.length
-              });
+const animTimingOffset =
+  Number(
+    mergedArgs.advPayload?.animation_damage_timing_offset ??
+    payload?.meta?.animation_damage_timing_offset ??
+    0
+  ) || 0;
 
-              if (anim) {
-                const vfxPayload = {
-                  ...mergedArgs.advPayload,
-                  attackerUuid: mergedArgs.attackerUuid,
-                  targets: hitUUIDs,
-                  animationPurpose: "vfx_only",
-                  animationScriptRaw: animScriptRaw,
-                  animation_damage_timing_options: animTimingOpt,
-                  animation_damage_timing_offset: animTimingOffset,
-                  actionContext: payload,
-                  actionCardMsgId: chatMsgId ?? null
-                };
+log(runId, "VFX-only branch", {
+  animFound: !!anim,
+  macro: mergedArgs.animMacroName,
+  hasRunnableAnimationScript: animPrecheck.hasRunnableScript,
+  animationPrecheckReason: animPrecheck.reason,
+  rawLength: animPrecheck.rawLength,
+  plainLength: animPrecheck.plainLength,
+  timingOpt: animTimingOpt,
+  timingOffset: animTimingOffset,
+  targetsUuidCount: hitUUIDs.length
+});
 
-                const used = await anim.execute({ __AUTO: true, __PAYLOAD: vfxPayload });
-                log(runId, "ActionAnimationHandler done", { used: !!used });
-              } else {
-                warn(runId, "VFX-only animation macro not found; skipping", {
-                  macro: mergedArgs.animMacroName
-                });
-              }
+if (!animPrecheck.hasRunnableScript) {
+  log(runId, "VFX-only animation skipped by pre-check.", {
+    reason: animPrecheck.reason,
+    macro: mergedArgs.animMacroName
+  });
+} else if (anim) {
+  const vfxPayload = {
+    ...mergedArgs.advPayload,
+    attackerUuid: mergedArgs.attackerUuid,
+    targets: hitUUIDs,
+    animationPurpose: "vfx_only",
+    animationScriptRaw: animScriptRaw,
+    animation_damage_timing_options: animTimingOpt,
+    animation_damage_timing_offset: animTimingOffset,
+    actionContext: payload,
+    actionCardMsgId: chatMsgId ?? null
+  };
+
+  const used = await anim.execute({
+    __AUTO: true,
+    __PAYLOAD: vfxPayload
+  });
+
+  log(runId, "ActionAnimationHandler done", {
+    used: !!used
+  });
+} else {
+  warn(runId, "VFX-only animation macro not found; skipping", {
+    macro: mergedArgs.animMacroName
+  });
+}
             }
           }
         }

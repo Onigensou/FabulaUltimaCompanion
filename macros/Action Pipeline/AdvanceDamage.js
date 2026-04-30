@@ -114,6 +114,78 @@ const ACTION_IS_SPELLISH = !!(
   PAYLOAD.isSpellish
 );
 
+// Animation pre-check.
+// Purpose:
+// - Avoid calling ActionAnimationHandler when there is no real animation script.
+// - This saves a macro execution and target normalization work for normal/basic actions.
+function plainTextForAnimationPrecheck(raw = "") {
+  return String(raw ?? "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>\s*<p>/gi, "\n")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .trim();
+}
+
+function getAnimationScriptRawForPrecheck(payload = {}, actionContext = null) {
+  const candidates = [
+    payload?.animationScriptRaw,
+    payload?.animationScript,
+
+    payload?.advPayload?.animationScriptRaw,
+    payload?.advPayload?.animationScript,
+
+    payload?.meta?.animationScriptRaw,
+    payload?.meta?.animationScript,
+
+    actionContext?.animationScriptRaw,
+    actionContext?.animationScript,
+
+    actionContext?.advPayload?.animationScriptRaw,
+    actionContext?.advPayload?.animationScript,
+
+    actionContext?.meta?.animationScriptRaw,
+    actionContext?.meta?.animationScript
+  ];
+
+  for (const value of candidates) {
+    const raw = String(value ?? "").trim();
+    if (raw) return raw;
+  }
+
+  return "";
+}
+
+function getAnimationPrecheck(payload = {}, actionContext = null) {
+  const raw = getAnimationScriptRawForPrecheck(payload, actionContext);
+  const plain = plainTextForAnimationPrecheck(raw);
+
+  if (!plain) {
+    return {
+      hasRunnableScript: false,
+      reason: "empty_animation_script",
+      rawLength: raw.length,
+      plainLength: plain.length
+    };
+  }
+
+  if (/insert your sequencer animation here/i.test(plain)) {
+    return {
+      hasRunnableScript: false,
+      reason: "placeholder_animation_script",
+      rawLength: raw.length,
+      plainLength: plain.length
+    };
+  }
+
+  return {
+    hasRunnableScript: true,
+    reason: "has_animation_script",
+    rawLength: raw.length,
+    plainLength: plain.length
+  };
+}
+
 
 // NEW: Accuracy (store as string; '-' if this action has no accuracy check)
 const EXT_ACCURACY = (() => {
@@ -155,20 +227,41 @@ if (!targets || targets.length === 0) {
 let fuSkillAnimationUsed = false;
 
 // If this call came from the Action System (AUTO), delegate animation handling
-// to the external "ActionAnimationHandler" macro.
+// to the external "ActionAnimationHandler" macro — but only if the action
+// actually has a runnable animation script.
 if (AUTO) {
-  const ACTION_ANIM_MACRO = game.macros.getName(ACTION_ANIM_MACRO_NAME);
-  if (!ACTION_ANIM_MACRO) {
-    console.warn(`[AdvanceDamage] Animation macro "${ACTION_ANIM_MACRO_NAME}" not found. Using default FX/timing.`);
+  const animPrecheck = getAnimationPrecheck(PAYLOAD, ACTION_CONTEXT);
+
+  if (!animPrecheck.hasRunnableScript) {
+    console.debug("[AdvanceDamage] Animation pre-check skipped ActionAnimationHandler.", {
+      reason: animPrecheck.reason,
+      rawLength: animPrecheck.rawLength,
+      plainLength: animPrecheck.plainLength,
+      skillName:
+        PAYLOAD?.skillName ??
+        ACTION_CONTEXT?.core?.skillName ??
+        ACTION_CONTEXT?.dataCore?.skillName ??
+        null
+    });
   } else {
-    try {
-      const animResult = await ACTION_ANIM_MACRO.execute({
-        __AUTO   : true,
-        __PAYLOAD: { ...PAYLOAD, targets }
-      });
-      fuSkillAnimationUsed = !!animResult;
-    } catch (err) {
-      console.error("[AdvanceDamage] Error while running ActionAnimationHandler:", err);
+    const ACTION_ANIM_MACRO = game.macros.getName(ACTION_ANIM_MACRO_NAME);
+
+    if (!ACTION_ANIM_MACRO) {
+      console.warn(`[AdvanceDamage] Animation macro "${ACTION_ANIM_MACRO_NAME}" not found. Using default FX/timing.`);
+    } else {
+      try {
+        const animResult = await ACTION_ANIM_MACRO.execute({
+          __AUTO: true,
+          __PAYLOAD: {
+            ...PAYLOAD,
+            targets
+          }
+        });
+
+        fuSkillAnimationUsed = !!animResult;
+      } catch (err) {
+        console.error("[AdvanceDamage] Error while running ActionAnimationHandler:", err);
+      }
     }
   }
 }
