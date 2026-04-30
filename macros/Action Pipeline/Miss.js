@@ -34,6 +34,29 @@ const DAMAGE_BATCH_ID = String(
   ""
 ).trim();
 
+// BattleLog batching.
+// Uses the same ID as Damage Card batching so miss logs flush together with
+// the final grouped Damage Card.
+const BATTLE_LOG_BATCH_ID = String(
+  PAYLOAD.battleLogBatchId ??
+  PAYLOAD.damageBatchId ??
+  PAYLOAD?.meta?.battleLogBatchId ??
+  PAYLOAD?.meta?.damageBatchId ??
+  ACTION_CONTEXT?.battleLogBatchId ??
+  ACTION_CONTEXT?.damageBatchId ??
+  ACTION_CONTEXT?.meta?.battleLogBatchId ??
+  ACTION_CONTEXT?.meta?.damageBatchId ??
+  ""
+).trim();
+
+function getBattleLogBatchApi() {
+  return (
+    globalThis.FUCompanion?.api?.battleLogBatch ??
+    game.modules?.get?.("fabula-ultima-companion")?.api?.battleLogBatch ??
+    null
+  );
+}
+
 // ---- Resolve targets (set by Create Action Card before calling this macro) ----
 const foundryTargets = Array.from(game.user?.targets ?? []);
 const selectedTokens = canvas.tokens?.controlled ?? [];
@@ -42,44 +65,88 @@ const tokens = (foundryTargets.length ? foundryTargets : selectedTokens);
 if (!tokens.length) { ui.notifications.error("Select/target token(s) before applying Miss."); return; }
 
 // ---- 1) Battle Log -------------------------------------------------------------
-(async () => {
-  const logger = game.macros.getName(LOGGER_MACRO_NAME);
-  if (!logger) { console.warn(`[Miss] Logger macro "${LOGGER_MACRO_NAME}" not found.`); return; }
+const rows = [];
+const entries = [];
 
-  const rows = [];
-  const entries = [];
+for (const t of tokens) {
+  const targetName = t.actor?.name ?? t.name ?? "Target";
 
-  for (const t of tokens) {
-    const targetName = t.actor?.name ?? t.name ?? "Target";
+  entries.push({
+    ts: new Date().toISOString(),
+    dealer: {
+      name: attackerName,
+      disposition: "?",
+      range: attackRange,
+      sourceType: isSpellish ? "Spell" : "Attack"
+    },
+    target: {
+      name: targetName,
+      disposition: "?"
+    },
+    inputs: {
+      accuracy: Number.isFinite(accTotal) ? accTotal : null,
+      defense: Number.isFinite(defenseUsed) ? defenseUsed : null,
+      isSpell: isSpellish,
+      elementType,
+      weaponType: weaponTypeRaw
+    },
+    miss: true,
+    summary: `${attackerName} misses ${targetName}`
+  });
 
-    entries.push({
-      ts: new Date().toISOString(),
-      dealer: { name: attackerName, disposition: "?", range: attackRange, sourceType: isSpellish ? "Spell" : "Attack" },
-      target: { name: targetName, disposition: "?" },
-      inputs: { accuracy: Number.isFinite(accTotal)?accTotal:null, defense:Number.isFinite(defenseUsed)?defenseUsed:null,
-                isSpell: isSpellish, elementType, weaponType: weaponTypeRaw },
-      miss: true,
-      summary: `${attackerName} misses ${targetName}`
-    });
+  rows.push({
+    $deleted: false,
+    attacker: attackerName,
+    attack_target: targetName,
+    value: "—",
+    value_type: "HP",
+    apply_mode: "Miss",
+    damage_type: elementType.toUpperCase(),
+    affinity: "—",
+    efficiency: "—",
+    weapon_type: (weaponTypeRaw && weaponTypeRaw !== "none_ef")
+      ? String(weaponTypeRaw).split("_")[0].toUpperCase()
+      : "—",
+    range: attackRange
+  });
+}
 
-    rows.push({
-      $deleted: false,
-      attacker: attackerName,
-      attack_target: targetName,
-      value: "—",
-      value_type: "HP",
-      apply_mode: "Miss",
-      damage_type: elementType.toUpperCase(),
-      affinity: "—",
-      efficiency: "—",
-      weapon_type: (weaponTypeRaw && weaponTypeRaw !== "none_ef")
-        ? String(weaponTypeRaw).split("_")[0].toUpperCase() : "—",
-      range: attackRange
-    });
+try {
+  if (entries.length || rows.length) {
+    const battleLogBatchApi = getBattleLogBatchApi();
+
+    if (battleLogBatchApi?.captureOrAppend) {
+      const result = await battleLogBatchApi.captureOrAppend({
+        batchId: BATTLE_LOG_BATCH_ID || null,
+        damageBatchId: DAMAGE_BATCH_ID || null,
+        entries,
+        rows,
+        source: "Miss",
+        immediateIfNoBatch: true
+      });
+
+      if (!result?.ok) {
+        console.warn("[Miss] BattleLog batch capture/append failed.", result);
+      }
+    } else {
+      const logger = game.macros.getName(LOGGER_MACRO_NAME);
+
+      if (!logger) {
+        console.warn(`[Miss] Logger macro "${LOGGER_MACRO_NAME}" not found.`);
+      } else {
+        await logger.execute({
+          __AUTO: true,
+          __PAYLOAD: {
+            entries,
+            rows
+          }
+        });
+      }
+    }
   }
-
-  await logger.execute({ __AUTO: true, __PAYLOAD: { entries, rows } });
-})().catch(e => console.warn("[Miss] logger failed:", e));
+} catch (e) {
+  console.warn("[Miss] logger failed:", e);
+}
 
 // ---- 2) FX/SFX -----------------------------------------------------------------
 for (const t of tokens) {

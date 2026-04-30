@@ -63,6 +63,29 @@ const DAMAGE_BATCH_ID = String(
   ""
 ).trim();
 
+// BattleLog batching.
+// Uses the same ID as Damage Card batching so the visual card and BattleLog
+// flush together at the end of the full action/passive/reaction chain.
+const BATTLE_LOG_BATCH_ID = String(
+  PAYLOAD.battleLogBatchId ??
+  PAYLOAD.damageBatchId ??
+  PAYLOAD?.meta?.battleLogBatchId ??
+  PAYLOAD?.meta?.damageBatchId ??
+  ACTION_CONTEXT?.battleLogBatchId ??
+  ACTION_CONTEXT?.damageBatchId ??
+  ACTION_CONTEXT?.meta?.battleLogBatchId ??
+  ACTION_CONTEXT?.meta?.damageBatchId ??
+  ""
+).trim();
+
+function getBattleLogBatchApi() {
+  return (
+    globalThis.FUCompanion?.api?.battleLogBatch ??
+    game.modules?.get?.("fabula-ultima-companion")?.api?.battleLogBatch ??
+    null
+  );
+}
+
 // Helpful: attackerUuid for portrait resolution / traceability
 const ACTION_ATTACKER_UUID =
   _str(ACTION_CONTEXT?.meta?.attackerUuid ?? PAYLOAD.attackerUuid ?? "", "");
@@ -747,16 +770,47 @@ meta: {
     }
   } // for targets
 
-  // Persist once via the centralized logger macro
+  // Persist BattleLog.
+  // If this AdvanceDamage call belongs to a Damage Card batch, capture the log
+  // and let battle-log-batch-manager flush it once at the end of the full chain.
+  // If this is a manual/standalone AdvanceDamage call with no batchId, fall back
+  // to immediate BattleLog: Append behavior.
   try {
-    const LOGGER = game.macros.getName("BattleLog: Append");
-    if (!LOGGER) {
-      console.warn("[ADV-DMG] Logger not found. Is the macro named exactly 'BattleLog: Append'?");
-    } else if (battleLogEntries.length || tableRows.length) {
-      await LOGGER.execute({ __AUTO: true, __PAYLOAD: { entries: battleLogEntries, rows: tableRows } });
+    if (battleLogEntries.length || tableRows.length) {
+      const battleLogBatchApi = getBattleLogBatchApi();
+
+      if (battleLogBatchApi?.captureOrAppend) {
+        const result = await battleLogBatchApi.captureOrAppend({
+          batchId: BATTLE_LOG_BATCH_ID || null,
+          damageBatchId: DAMAGE_BATCH_ID || null,
+          entries: battleLogEntries,
+          rows: tableRows,
+          source: "AdvanceDamage",
+          immediateIfNoBatch: true
+        });
+
+        if (!result?.ok) {
+          console.warn("[ADV-DMG] BattleLog batch capture/append failed.", result);
+        }
+      } else {
+        // Safety fallback if the module API is missing.
+        const LOGGER = game.macros.getName("BattleLog: Append");
+
+        if (!LOGGER) {
+          console.warn("[ADV-DMG] Logger not found. Is the macro named exactly 'BattleLog: Append'?");
+        } else {
+          await LOGGER.execute({
+            __AUTO: true,
+            __PAYLOAD: {
+              entries: battleLogEntries,
+              rows: tableRows
+            }
+          });
+        }
+      }
     }
   } catch (err) {
-    console.warn("[ADV-DMG] Failed to call BattleLog: Append:", err);
+    console.warn("[ADV-DMG] Failed to capture/append BattleLog:", err);
   }
 } // APPLY
 

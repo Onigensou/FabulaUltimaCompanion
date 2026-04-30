@@ -310,6 +310,78 @@ function stampEntryDamageSourceMeta(entry = {}, batch = null) {
     );
   }
 
+  function getBattleLogBatchApi() {
+  return (
+    globalThis.FUCompanion?.api?.battleLogBatch ??
+    game.modules?.get?.(MODULE_ID)?.api?.battleLogBatch ??
+    null
+  );
+}
+
+async function flushBattleLogBatchForDamageBatch(batchId, options = {}) {
+  const id = str(batchId);
+
+  if (!id) {
+    return {
+      ok: false,
+      flushed: false,
+      reason: "missing_batch_id"
+    };
+  }
+
+  const api = getBattleLogBatchApi();
+  const flushFn = api?.flushForDamageBatch ?? api?.flush ?? null;
+
+  if (typeof flushFn !== "function") {
+    log("BattleLog batch flush skipped; API missing.", {
+      batchId: id,
+      hasGlobalApi: !!globalThis.FUCompanion?.api?.battleLogBatch,
+      hasModuleApi: !!game.modules?.get?.(MODULE_ID)?.api?.battleLogBatch
+    });
+
+    return {
+      ok: true,
+      flushed: false,
+      skipped: true,
+      reason: "battle_log_batch_api_missing",
+      batchId: id
+    };
+  }
+
+  try {
+    log("BattleLog batch flush begin.", {
+      batchId: id,
+      reason: options?.reason ?? "damage_card_batch_flush"
+    });
+
+    const result = await flushFn.call(api, {
+      batchId: id,
+      damageBatchId: id,
+      reason: options?.reason ?? "damage_card_batch_flush"
+    });
+
+    log("BattleLog batch flush result.", {
+      batchId: id,
+      result
+    });
+
+    return result;
+  } catch (error) {
+    warn("BattleLog batch flush failed.", {
+      batchId: id,
+      error: String(error?.message ?? error)
+    });
+
+    return {
+      ok: false,
+      flushed: false,
+      reason: "battle_log_flush_failed",
+      batchId: id,
+      error: String(error?.message ?? error)
+    };
+  }
+}
+
   function getSingleRendererApi() {
     return (
       globalThis.FUCompanion?.api?.createDamageCard ??
@@ -762,21 +834,28 @@ stampEntryDamageSourceMeta(entry, batch);
 
     removeFromStack(batchId);
 
-    if (!entries.length) {
-      STATE.batches.delete(batchId);
+if (!entries.length) {
+  const battleLogFlushResult = await flushBattleLogBatchForDamageBatch(batchId, {
+    reason: "damage_card_batch_empty"
+  });
 
-      log("FLUSH empty batch.", {
-        batchId,
-        reason: options?.reason ?? null
-      });
+  STATE.batches.delete(batchId);
+  removeFromStack(batchId);
 
-      return {
-        ok: true,
-        batchId,
-        empty: true,
-        entries: 0
-      };
-    }
+  log("FLUSH empty batch.", {
+    batchId,
+    reason: options?.reason ?? null,
+    battleLogFlushResult
+  });
+
+  return {
+    ok: true,
+    batchId,
+    empty: true,
+    entries: 0,
+    battleLogFlushResult
+  };
+}
 
     const title = str(options?.title, batch.title || "Damage Results");
     const subtitle = str(options?.subtitle, batch.subtitle || "");
@@ -845,6 +924,10 @@ try {
         messageId: message?.id ?? null
       });
 
+const battleLogFlushResult = await flushBattleLogBatchForDamageBatch(batchId, {
+  reason: "damage_card_batch_flushed"
+});
+
 return {
   ok: true,
   batchId,
@@ -854,6 +937,7 @@ return {
   deferredRender: renderDeferInfo.deferred,
   deferredRenderFrames: renderDeferInfo.frames,
   deferredRenderWaitMs: renderDeferInfo.waitMs,
+  battleLogFlushResult,
   messageId: message?.id ?? null,
   message
 };
@@ -891,17 +975,48 @@ return {
     STATE.batches.delete(batchId);
     removeFromStack(batchId);
 
+    // Also cancel the matching BattleLog batch.
+    // Damage Card batch ID and BattleLog batch ID are intentionally the same.
+    let battleLogCancelResult = null;
+
+    try {
+      const battleLogApi = getBattleLogBatchApi();
+
+      if (battleLogApi?.cancel) {
+        battleLogCancelResult = battleLogApi.cancel(
+          {
+            batchId,
+            damageBatchId: batchId
+          },
+          "damage_card_batch_cancelled"
+        );
+      }
+    } catch (error) {
+      warn("BattleLog batch cancel failed.", {
+        batchId,
+        error: String(error?.message ?? error)
+      });
+
+      battleLogCancelResult = {
+        ok: false,
+        reason: "battle_log_cancel_failed",
+        error: String(error?.message ?? error)
+      };
+    }
+
     log("CANCEL batch", {
       batchId,
       entries,
-      reason: options?.reason ?? null
+      reason: options?.reason ?? null,
+      battleLogCancelResult
     });
 
     return {
       ok: true,
       cancelled: true,
       batchId,
-      entries
+      entries,
+      battleLogCancelResult
     };
   }
 

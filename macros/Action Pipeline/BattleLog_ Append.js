@@ -1,101 +1,239 @@
 // ──────────────────────────────────────────────────────────
-// BattleLog: Append  (Foundry V12) — instrumented
+// BattleLog: Append  (Foundry V12)
+// Optimized version:
+// - Resolves DB actor once
+// - Reads existing battle_log and battle_log_table once
+// - Performs ONE dbActor.update(...) for both fields
+// - Returns the async chain so callers can await it properly
 // ──────────────────────────────────────────────────────────
-(async () => {
+
+return (async () => {
   const MAX = 30;
+  const TAG = "[BL-APPEND]";
 
-  // 0) Inputs
-  const entries   = Array.isArray(__PAYLOAD.entries) ? __PAYLOAD.entries : [];
-  const rows      = Array.isArray(__PAYLOAD.rows)    ? __PAYLOAD.rows    : [];
+  const payload =
+    typeof __PAYLOAD === "object" && __PAYLOAD
+      ? __PAYLOAD
+      : {};
 
-  console.debug("[BL-APPEND] start. entries:", entries.length, "rows:", rows.length, "user:", game.user?.name, "isGM:", game.user?.isGM);
+  const entries = Array.isArray(payload.entries)
+    ? payload.entries.filter(Boolean)
+    : [];
 
-  // 1) Resolve DB actor
+  const rows = Array.isArray(payload.rows)
+    ? payload.rows.filter(Boolean)
+    : [];
+
+  console.debug(TAG, "start.", {
+    entries: entries.length,
+    rows: rows.length,
+    user: game.user?.name,
+    isGM: game.user?.isGM,
+    batchId: payload?.batchId ?? payload?.battleLogBatchId ?? null,
+    source: payload?.source ?? null
+  });
+
+  if (!entries.length && !rows.length) {
+    console.debug(TAG, "nothing to append.");
+    return {
+      ok: true,
+      appended: false,
+      reason: "empty"
+    };
+  }
+
+  function duplicateSafe(value, fallback) {
+    try {
+      if (foundry?.utils?.duplicate) return foundry.utils.duplicate(value);
+    } catch (_e) {}
+
+    try {
+      if (foundry?.utils?.deepClone) return foundry.utils.deepClone(value);
+    } catch (_e) {}
+
+    try {
+      return structuredClone(value);
+    } catch (_e) {}
+
+    try {
+      return JSON.parse(JSON.stringify(value));
+    } catch (_e) {}
+
+    return fallback;
+  }
+
+  function parseExistingBattleLog(raw) {
+    const existingRaw = String(raw ?? "").trim();
+
+    if (!existingRaw) return [];
+
+    if (existingRaw.startsWith("[") || existingRaw.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(existingRaw);
+        return Array.isArray(parsed)
+          ? parsed
+          : parsed
+            ? [parsed]
+            : [];
+      } catch (_e) {
+        console.warn(TAG, "battle_log contains invalid JSON; resetting.");
+        return [];
+      }
+    }
+
+    console.warn(TAG, "battle_log is not JSON-like; resetting.");
+    return [];
+  }
+
+  function normalizeExistingTable(table) {
+    if (Array.isArray(table)) {
+      return duplicateSafe(table, []);
+    }
+
+    if (table && typeof table === "object") {
+      return duplicateSafe(Object.values(table), []);
+    }
+
+    return [];
+  }
+
   async function getDbActor() {
+    // Preferred path: use your DB resolver if loaded.
+    try {
+      const api = globalThis.FUCompanion?.api;
+      if (api?.getCurrentGameDb) {
+        const result = await api.getCurrentGameDb();
+        const db = result?.db ?? null;
+
+        if (db) {
+          console.debug(TAG, "DB actor resolved via DB_Resolver.", {
+            name: db.name,
+            owner: db.testUserPermission?.(game.user, "OWNER") ?? null
+          });
+
+          return db;
+        }
+      }
+    } catch (err) {
+      console.warn(TAG, "DB_Resolver path failed; falling back.", err);
+    }
+
+    // Fallback: preserve your original Current Game → game_id lookup.
     try {
       const currentGameActor = await fromUuid("Actor.DMpK5Bi119jIrCFZ");
+
       if (!currentGameActor) {
-        console.warn("[BL-APPEND] Current Game actor not found by UUID Actor.DMpK5Bi119jIrCFZ");
+        console.warn(TAG, "Current Game actor not found by UUID Actor.DMpK5Bi119jIrCFZ");
         return null;
       }
+
       const gameDbUuid = currentGameActor?.system?.props?.game_id;
+
       if (!gameDbUuid) {
-        console.warn("[BL-APPEND] system.props.game_id is empty on Current Game actor.");
+        console.warn(TAG, "system.props.game_id is empty on Current Game actor.");
         return null;
       }
+
       const dbActor = await fromUuid(gameDbUuid);
+
       if (!dbActor) {
-        console.warn("[BL-APPEND] DB actor not found by UUID from system.props.game_id:", gameDbUuid);
-      } else {
-        // Helpful: show ownership for permission debugging
-        const perm = dbActor.testUserPermission(game.user, "OWNER");
-        console.debug("[BL-APPEND] DB actor resolved:", dbActor.name, "owner?", perm);
+        console.warn(TAG, "DB actor not found by UUID from system.props.game_id:", gameDbUuid);
+        return null;
       }
+
+      console.debug(TAG, "DB actor resolved via fallback.", {
+        name: dbActor.name,
+        owner: dbActor.testUserPermission?.(game.user, "OWNER") ?? null
+      });
+
       return dbActor;
     } catch (err) {
-      console.warn("[BL-APPEND] getDbActor failed:", err);
+      console.warn(TAG, "getDbActor failed:", err);
       return null;
     }
   }
 
-
-  // 2) JSON append
-  async function appendBattleLogJSON(dbActor, newEntries) {
-    if (!newEntries?.length) return;
-    try {
-      let existingRaw = String(dbActor.system?.props?.battle_log ?? "").trim();
-      let arr = [];
-      if (existingRaw.startsWith("[") || existingRaw.startsWith("{")) {
-        try {
-          const parsed = JSON.parse(existingRaw);
-          arr = Array.isArray(parsed) ? parsed : (parsed ? [parsed] : []);
-        } catch {
-          console.warn("[BL-APPEND] battle_log contains non-JSON; resetting.");
-          arr = [];
-        }
-      }
-      arr.push(...newEntries);
-      if (arr.length > MAX) arr = arr.slice(-MAX);
-      await dbActor.update({ "system.props.battle_log": JSON.stringify(arr, null, 2) });
-      console.debug("[BL-APPEND] JSON append OK. New length:", arr.length);
-    } catch (err) {
-      console.warn("[BL-APPEND] JSON append failed (likely permissions):", err);
-      ui.notifications.warn("BattleLog JSON append failed. Check DB actor ownership & console.");
-    }
-  }
-
-  // 3) Table append
-  async function appendBattleTableRows(dbActor, newRows) {
-    if (!newRows?.length) return;
-    try {
-      const table = dbActor.system?.props?.battle_log_table;
-      const existing = Array.isArray(table)
-        ? foundry.utils.duplicate(table)
-        : (table && typeof table === "object" && !Array.isArray(table))
-          ? foundry.utils.duplicate(Object.values(table))
-          : [];
-
-      existing.push(...newRows);
-      const trimmed = existing.length > MAX ? existing.slice(-MAX) : existing;
-      await dbActor.update({ "system.props.battle_log_table": trimmed });
-      console.debug("[BL-APPEND] TABLE append OK. New length:", trimmed.length);
-    } catch (err) {
-      console.warn("[BL-APPEND] TABLE append failed (likely permissions):", err);
-      ui.notifications.warn("BattleLog TABLE append failed. Check DB actor ownership & console.");
-    }
-  }
-
-  // 4) Execute
   try {
     const dbActor = await getDbActor();
+
     if (!dbActor) {
       ui.notifications.warn("BattleLog: no DB actor. Is Current Game → game_id set?");
-      return;
+      return {
+        ok: false,
+        appended: false,
+        reason: "missing_db_actor"
+      };
     }
-    if (entries.length) await appendBattleLogJSON(dbActor, entries);
-    if (rows.length)    await appendBattleTableRows(dbActor, rows);
-    console.debug("[BL-APPEND] done.");
+
+    const updateData = {};
+    let finalJsonLength = null;
+    let finalTableLength = null;
+
+    if (entries.length) {
+      let existingJson = parseExistingBattleLog(dbActor.system?.props?.battle_log);
+
+      existingJson.push(...entries);
+
+      if (existingJson.length > MAX) {
+        existingJson = existingJson.slice(-MAX);
+      }
+
+      updateData["system.props.battle_log"] = JSON.stringify(existingJson, null, 2);
+      finalJsonLength = existingJson.length;
+    }
+
+    if (rows.length) {
+      let existingTable = normalizeExistingTable(dbActor.system?.props?.battle_log_table);
+
+      existingTable.push(...rows);
+
+      if (existingTable.length > MAX) {
+        existingTable = existingTable.slice(-MAX);
+      }
+
+      updateData["system.props.battle_log_table"] = existingTable;
+      finalTableLength = existingTable.length;
+    }
+
+    if (!Object.keys(updateData).length) {
+      console.debug(TAG, "no update fields produced.");
+      return {
+        ok: true,
+        appended: false,
+        reason: "no_update_fields"
+      };
+    }
+
+    // Main optimization:
+    // One actor update instead of separate battle_log and battle_log_table updates.
+    await dbActor.update(updateData);
+
+    console.debug(TAG, "append OK.", {
+      entriesAdded: entries.length,
+      rowsAdded: rows.length,
+      finalJsonLength,
+      finalTableLength,
+      updatedFields: Object.keys(updateData)
+    });
+
+    return {
+      ok: true,
+      appended: true,
+      entries: entries.length,
+      rows: rows.length,
+      finalJsonLength,
+      finalTableLength,
+      updatedFields: Object.keys(updateData)
+    };
   } catch (err) {
-    console.warn("[BL-APPEND] Unexpected failure:", err);
+    console.warn(TAG, "append failed:", err);
+    ui.notifications.warn("BattleLog append failed. Check DB actor ownership & console.");
+
+    return {
+      ok: false,
+      appended: false,
+      reason: "append_failed",
+      error: String(err?.message ?? err)
+    };
   }
 })();
