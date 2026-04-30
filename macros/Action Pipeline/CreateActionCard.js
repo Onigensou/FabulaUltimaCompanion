@@ -180,11 +180,25 @@ function getActionRollIndex(el) {
 }
 
 function getActionRollKey(el) {
-  const msgId = getActionRollMessageId(el) || "no-message-id";
+  // Best key: explicit key stamped into the preview number HTML.
+  const explicit = String(el?.dataset?.fuRollKey ?? "").trim();
+  if (explicit) return `explicit::${explicit}`;
+
+  // Second-best key: stable Action Card identity from the card wrapper.
+  const card = el?.closest?.("[data-fu-action-card-id], [data-fu-action-id]");
+  const actionCardId = String(card?.dataset?.fuActionCardId ?? "").trim();
+  const actionId = String(card?.dataset?.fuActionId ?? "").trim();
+
   const index = getActionRollIndex(el);
   const final = String(el?.dataset?.final ?? el?.textContent ?? "0").trim();
 
-  return `${msgId}::fu-rollnum::${index}::${final}`;
+  if (actionCardId) return `action-card::${actionCardId}::fu-rollnum::${index}::${final}`;
+  if (actionId) return `action::${actionId}::fu-rollnum::${index}::${final}`;
+
+  // Last fallback: message DOM identity.
+  // This is weaker because Foundry can replace/re-render DOM.
+  const msgId = getActionRollMessageId(el) || "no-message-id";
+  return `message::${msgId}::fu-rollnum::${index}::${final}`;
 }
 
 function setRollNumberFinal(el) {
@@ -273,10 +287,14 @@ function animateRollNumber(el) {
 function observeActionRollNumber(el) {
   if (!isActionCardRollNumber(el)) return;
 
-  // If Foundry re-rendered this Action Card and the number has already rolled,
-  // snap to final value immediately instead of replaying the animation.
+  // If this Action Card preview already rolled once, never replay it.
+  // This covers:
+  // - Confirm button press re-render
+  // - Damage Card creation re-render
+  // - Chat log refresh/repaint
   if (hasSeenActionRoll(el)) {
     el.__rolled = true;
+    el.__fuActionRollObserverBound = true;
     setRollNumberFinal(el);
     return;
   }
@@ -1281,10 +1299,13 @@ const actionCostEffectHTML = actionCostText
         <div class="fu-dmg-row" style="display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:.5rem;">
           <div style="font-weight:800;">${declaresHealing ? "Heal" : "Damage"}</div>
           <div style="text-align:left;">
-            <span class="fu-rollnum fu-tip-host" data-final="${finalForCard}" data-tip="${encodeURIComponent(tipHTML)}"
-                  style="font-size:32px; font-weight:900; font-style:italic; color:${dmgColor}; text-shadow:0 0 15px ${glowColor}; margin-left:2.9rem; will-change: contents;">
-              ${finalForCard}
-            </span>${hrPill}
+<span class="fu-rollnum fu-tip-host"
+      data-final="${finalForCard}"
+      data-fu-roll-key="${esc(`${actionCardIdentity.actionCardId}:damage-preview:${finalForCard}`)}"
+      data-tip="${encodeURIComponent(tipHTML)}"
+      style="font-size:32px; font-weight:900; font-style:italic; color:${dmgColor}; text-shadow:0 0 15px ${glowColor}; margin-left:2.9rem; will-change: contents;">
+  ${finalForCard}
+</span>${hrPill}
           </div>
           <div style="justify-self:end; font-size:18px; font-weight:800;">
             ${elemLabelHTML}

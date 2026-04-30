@@ -248,6 +248,18 @@ function buildSafeExecutionArgsFromFlaggedPayload(flagged, incomingArgs = {}, ch
     originalTargetActorUUIDs: savedTargetActors
   };
 }
+async function setChatFlagNoRender(chatMsg, scope, key, value) {
+  if (!chatMsg) return null;
+
+  return await chatMsg.update(
+    {
+      [`flags.${scope}.${key}`]: value
+    },
+    {
+      render: false
+    }
+  );
+}
 
 async function setActionCardState(chatMsg, state, extra = {}) {
   if (!chatMsg) return;
@@ -271,7 +283,7 @@ async function setActionCardState(chatMsg, state, extra = {}) {
   flag.payload = payload;
   flag.actionCardState = state;
 
-  await chatMsg.setFlag(MODULE_NS, "actionCard", flag);
+  await setChatFlagNoRender(chatMsg, MODULE_NS, "actionCard", flag);
 }
 
   // ------------------------------------------------------------
@@ -389,15 +401,15 @@ async function setActionCardState(chatMsg, state, extra = {}) {
         stamp.style.opacity = ".9";
       }
 
-      await chatMsg.setFlag(MODULE_NS, "actionApplied", {
-        by: confirmingUserId ?? game.userId,
-        at: Date.now(),
-        executionMode: "manualCard",
-        result: {
-          hitUUIDs: Array.isArray(result?.hitUUIDs) ? result.hitUUIDs : [],
-          missUUIDs: Array.isArray(result?.missUUIDs) ? result.missUUIDs : []
-        }
-      });
+await setChatFlagNoRender(chatMsg, MODULE_NS, "actionApplied", {
+  by: confirmingUserId ?? game.userId,
+  at: Date.now(),
+  executionMode: "manualCard",
+  result: {
+    hitUUIDs: Array.isArray(result?.hitUUIDs) ? result.hitUUIDs : [],
+    missUUIDs: Array.isArray(result?.missUUIDs) ? result.missUUIDs : []
+  }
+});
 
       // Broadcast to all clients so their Confirm button greys out too
       game.socket.emit(SOCKET_NS, {
