@@ -65,123 +65,25 @@
     );
   }
 
-  function firstDamageBatchIdFromPhaseMap(map = null) {
-  if (!map || typeof map !== "object") return "";
+  function resolveIncomingDamageBatchId(actionContext = {}, args = {}) {
+    return safeString(
+      actionContext?.meta?.damageBatchId ??
+      actionContext?.damageBatchId ??
+      args?.damageBatchId ??
+      args?.meta?.damageBatchId ??
 
-  for (const value of Object.values(map)) {
-    const id = safeString(
-      value?.damageBatchId ??
-      value?.rootDamageBatchId ??
-      value?.meta?.damageBatchId ??
-      value?.meta?.rootDamageBatchId ??
-      value?.actionContext?.damageBatchId ??
-      value?.actionContext?.rootDamageBatchId ??
-      value?.actionContext?.meta?.damageBatchId ??
-      value?.actionContext?.meta?.rootDamageBatchId ??
+      // Auto-passive / reaction-chain inheritance.
+      actionContext?.meta?.reaction_phase_payload?.damageBatchId ??
+      actionContext?.reaction_phase_payload?.damageBatchId ??
+      actionContext?.meta?.reaction_phase_payload?.meta?.damageBatchId ??
+      actionContext?.reaction_phase_payload?.meta?.damageBatchId ??
+
+      // Backup sources.
+      actionContext?.meta?.passiveSourceEvent?.damageBatchId ??
+      actionContext?.passiveSourceEvent?.damageBatchId ??
       ""
     );
-
-    if (id) return id;
   }
-
-  return "";
-}
-
-function resolveActionIcon(actionContext = {}) {
-  return safeString(
-    actionContext?.meta?.damageSourceIcon ??
-    actionContext?.sourceItem?.img ??
-    actionContext?.item?.img ??
-    actionContext?.core?.skillImg ??
-    actionContext?.dataCore?.skillImg ??
-    actionContext?.meta?.skillImg ??
-    ""
-  );
-}
-
-function stampDamageSourceMeta(actionContext = {}, executionMode = "manualCard") {
-  if (!actionContext || typeof actionContext !== "object") return actionContext;
-
-  actionContext.meta = actionContext.meta || {};
-  actionContext.core = actionContext.core || {};
-
-  const skillName = safeString(
-    actionContext?.meta?.damageSourceName ??
-    actionContext?.core?.skillName ??
-    actionContext?.dataCore?.skillName ??
-    actionContext?.sourceItem?.name ??
-    actionContext?.item?.name ??
-    "Damage"
-  );
-
-  const icon = resolveActionIcon(actionContext);
-
-  if (!actionContext.meta.executionMode) {
-    actionContext.meta.executionMode = executionMode;
-  }
-
-  if (!actionContext.meta.damageSourceKind) {
-    actionContext.meta.damageSourceKind =
-      executionMode === "autoPassive"
-        ? "autoPassive"
-        : "mainAction";
-  }
-
-  if (!actionContext.meta.damageSourceName) {
-    actionContext.meta.damageSourceName = skillName;
-  }
-
-  if (!actionContext.meta.damageSourceIcon && icon) {
-    actionContext.meta.damageSourceIcon = icon;
-  }
-
-  if (!actionContext.meta.damageSourceKey) {
-    actionContext.meta.damageSourceKey =
-      actionContext?.meta?.passiveIdentity ??
-      actionContext?.meta?.actionId ??
-      actionContext?.actionId ??
-      `${executionMode}:${skillName}`;
-  }
-
-  return actionContext;
-}
-
-function resolveIncomingDamageBatchId(actionContext = {}, args = {}) {
-  return safeString(
-    // Direct execution payload.
-    actionContext?.meta?.damageBatchId ??
-    actionContext?.meta?.rootDamageBatchId ??
-    actionContext?.damageBatchId ??
-    actionContext?.rootDamageBatchId ??
-
-    // Args from confirm / auto-passive handoff.
-    args?.damageBatchId ??
-    args?.rootDamageBatchId ??
-    args?.meta?.damageBatchId ??
-    args?.meta?.rootDamageBatchId ??
-
-    // Auto-passive / reaction-chain inheritance.
-    actionContext?.meta?.reaction_phase_payload?.damageBatchId ??
-    actionContext?.meta?.reaction_phase_payload?.rootDamageBatchId ??
-    actionContext?.reaction_phase_payload?.damageBatchId ??
-    actionContext?.reaction_phase_payload?.rootDamageBatchId ??
-    actionContext?.meta?.reaction_phase_payload?.meta?.damageBatchId ??
-    actionContext?.meta?.reaction_phase_payload?.meta?.rootDamageBatchId ??
-    actionContext?.reaction_phase_payload?.meta?.damageBatchId ??
-    actionContext?.reaction_phase_payload?.meta?.rootDamageBatchId ??
-
-    // Trigger map backup.
-    firstDamageBatchIdFromPhaseMap(actionContext?.meta?.reaction_phase_payload_by_trigger) ??
-    firstDamageBatchIdFromPhaseMap(actionContext?.reaction_phase_payload_by_trigger) ??
-
-    // Backup sources.
-    actionContext?.meta?.passiveSourceEvent?.damageBatchId ??
-    actionContext?.meta?.passiveSourceEvent?.rootDamageBatchId ??
-    actionContext?.passiveSourceEvent?.damageBatchId ??
-    actionContext?.passiveSourceEvent?.rootDamageBatchId ??
-    ""
-  );
-}
 
   function buildDamageBatchTitle(actionContext = {}, executionMode = "manualCard") {
     const skillName = safeString(
@@ -1127,25 +1029,17 @@ async function consumeItemIfNeeded(actionContext, runId) {
       damageBatchId = `DMG-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     }
 
-payload.damageBatchId = damageBatchId;
-payload.rootDamageBatchId = payload.rootDamageBatchId || damageBatchId;
+    payload.damageBatchId = damageBatchId;
+    payload.meta.damageBatchId = damageBatchId;
 
-payload.meta.damageBatchId = damageBatchId;
-payload.meta.rootDamageBatchId = payload.meta.rootDamageBatchId || damageBatchId;
-
-stampDamageSourceMeta(payload, executionMode);
-
-args = (args && typeof args === "object") ? args : {};
-args.damageBatchId = damageBatchId;
-args.rootDamageBatchId = args.rootDamageBatchId || damageBatchId;
+    args = (args && typeof args === "object") ? args : {};
+    args.damageBatchId = damageBatchId;
 
     const mergedArgs = {
       advMacroName: "AdvanceDamage",
       missMacroName: "Miss",
       aeMacroName: "ApplyActiveEffect",
       animMacroName: "ActionAnimationHandler",
-      damageBatchId,
-      rootDamageBatchId: damageBatchId,
       advPayload: payload?.advPayload ?? {},
       elementType: payload?.meta?.elementType ?? "physical",
       isSpellish: !!payload?.meta?.isSpellish,
@@ -1212,34 +1106,17 @@ args.rootDamageBatchId = args.rootDamageBatchId || damageBatchId;
     // This prevents blocked auto-passives from opening empty batches.
     if (damageBatchApi?.begin) {
       try {
-const batchBegin = damageBatchApi.begin({
-  batchId: damageBatchId,
-
-  rootActionId:
-    payload?.meta?.actionId ??
-    payload?.actionId ??
-    payload?.meta?.sourceActionId ??
-    null,
-
-  rootActionCardId:
-    payload?.meta?.actionCardId ??
-    payload?.actionCardId ??
-    payload?.meta?.sourceActionCardId ??
-    null,
-
-  rootActionCardMessageId:
-    payload?.meta?.actionCardMessageId ??
-    payload?.actionCardMessageId ??
-    payload?.meta?.sourceActionCardMessageId ??
-    chatMsgId ??
-    null,
-
-  executionMode,
-  title: buildDamageBatchTitle(payload, executionMode),
-  subtitle: buildDamageBatchSubtitle(payload, executionMode),
-  rootActionContext: payload,
-  enter: true
-});
+        const batchBegin = damageBatchApi.begin({
+          batchId: damageBatchId,
+          rootActionId: payload?.meta?.actionId ?? payload?.actionId ?? null,
+          rootActionCardId: payload?.meta?.actionCardId ?? payload?.actionCardId ?? null,
+          rootActionCardMessageId: payload?.meta?.actionCardMessageId ?? payload?.actionCardMessageId ?? chatMsgId ?? null,
+          executionMode,
+          title: buildDamageBatchTitle(payload, executionMode),
+          subtitle: buildDamageBatchSubtitle(payload, executionMode),
+          rootActionContext: payload,
+          enter: true
+        });
 
         damageBatchEntered = !!batchBegin?.ok;
 

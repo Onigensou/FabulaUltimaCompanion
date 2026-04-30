@@ -334,70 +334,6 @@
     return clone(phasePayloadByTrigger?.[triggerKey] ?? phasePayload ?? {});
   }
 
-  function resolveInheritedDamageBatchId({
-  preferredPayload = {},
-  phasePayload = {},
-  phasePayloadByTrigger = {}
-} = {}) {
-  const sources = [
-    preferredPayload,
-    phasePayload,
-    ...Object.values(phasePayloadByTrigger ?? {})
-  ].filter(src => src && typeof src === "object");
-
-  for (const src of sources) {
-    const id = str(
-      src?.damageBatchId ??
-      src?.rootDamageBatchId ??
-      src?.meta?.damageBatchId ??
-      src?.meta?.rootDamageBatchId ??
-      src?.actionContext?.damageBatchId ??
-      src?.actionContext?.meta?.damageBatchId ??
-      src?.rootActionContext?.damageBatchId ??
-      src?.rootActionContext?.meta?.damageBatchId ??
-      ""
-    );
-
-    if (id) return id;
-  }
-
-  return "";
-}
-
-function stampDamageBatchIdOnPayload(payload, damageBatchId) {
-  const id = str(damageBatchId);
-  if (!id || !payload || typeof payload !== "object") return payload;
-
-  payload.damageBatchId = id;
-  payload.rootDamageBatchId = payload.rootDamageBatchId || id;
-
-  payload.meta = payload.meta || {};
-  payload.meta.damageBatchId = id;
-  payload.meta.rootDamageBatchId = payload.meta.rootDamageBatchId || id;
-
-  if (payload.actionContext && typeof payload.actionContext === "object") {
-    payload.actionContext.damageBatchId = id;
-    payload.actionContext.meta = payload.actionContext.meta || {};
-    payload.actionContext.meta.damageBatchId = id;
-    payload.actionContext.meta.rootDamageBatchId =
-      payload.actionContext.meta.rootDamageBatchId || id;
-  }
-
-  return payload;
-}
-
-function stampDamageBatchMap(phasePayloadByTrigger = {}, damageBatchId) {
-  const out = clone(phasePayloadByTrigger ?? {});
-
-  if (!damageBatchId || !out || typeof out !== "object") return out;
-
-  for (const payload of Object.values(out)) {
-    stampDamageBatchIdOnPayload(payload, damageBatchId);
-  }
-
-  return out;
-}
-
   function shallowCloneReactionGroup(group, rows) {
     return {
       ...(group ?? {}),
@@ -604,48 +540,18 @@ function stampDamageBatchMap(phasePayloadByTrigger = {}, damageBatchId) {
         };
       }
 
-const preferredPayload = pickPreferredPayload(triggerKey, phasePayload, phasePayloadByTrigger);
+      const preferredPayload = pickPreferredPayload(triggerKey, phasePayload, phasePayloadByTrigger);
+      const ownerUserId = resolveOwnerUserIdForActor(actor);
+      const attackerTokenUuid = token?.document?.uuid ?? token?.uuid ?? null;
+      const attackerActorUuid = actor?.uuid ?? null;
+      const attackerUuidForADF = attackerTokenUuid ?? attackerActorUuid ?? null;
+      const runId = `AP-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const ancestry = toArrayUnique([...inheritedAncestry, passiveIdentity]);
 
-const inheritedDamageBatchId = resolveInheritedDamageBatchId({
-  preferredPayload,
-  phasePayload,
-  phasePayloadByTrigger
-});
-
-stampDamageBatchIdOnPayload(preferredPayload, inheritedDamageBatchId);
-
-const phasePayloadByTriggerForPayload = stampDamageBatchMap(
-  phasePayloadByTrigger,
-  inheritedDamageBatchId
-);
-
-const ownerUserId = resolveOwnerUserIdForActor(actor);
-const attackerTokenUuid = token?.document?.uuid ?? token?.uuid ?? null;
-const attackerActorUuid = actor?.uuid ?? null;
-const attackerUuidForADF = attackerTokenUuid ?? attackerActorUuid ?? null;
-const runId = `AP-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-const ancestry = toArrayUnique([...inheritedAncestry, passiveIdentity]);
-
-const passiveOrigin = {
-  rootKey,
-  passiveIdentity,
-  rowSignature: stableRowSignature(row, rowIndex),
-  ancestry,
-  depth: inheritedDepth + 1,
-  rootTimestamp: pickEventStamp(triggerKey, phasePayload, phasePayloadByTrigger)
-};
-
-const payload = {
-source: "AutoPassive",
-autoPassive: true,
-
-// Damage Card batch inheritance.
-// This lets passive/reaction damage join the same grouped Damage Card
-// as the original action that triggered it.
-damageBatchId: inheritedDamageBatchId || null,
-rootDamageBatchId: inheritedDamageBatchId || null,
-
-attacker_uuid: attackerUuidForADF,
+      const payload = {
+        source: "AutoPassive",
+        autoPassive: true,
+        attacker_uuid: attackerUuidForADF,
         attackerUuid: attackerUuidForADF,
         targets: [...targetResolution.targetUUIDs],
         originalTargetUUIDs: [...targetResolution.targetUUIDs],
@@ -654,22 +560,10 @@ attacker_uuid: attackerUuidForADF,
         reaction_trigger_key: triggerKey,
         reaction_trigger_keys: toArrayUnique([triggerKey]),
         reaction_phase_payload: preferredPayload,
-        reaction_phase_payload_by_trigger: phasePayloadByTriggerForPayload,
-        passiveOrigin,
+        reaction_phase_payload_by_trigger: clone(phasePayloadByTrigger),
         meta: {
           executionMode: "autoPassive",
           isPassiveExecution: true,
-
-          // Damage Card batch inheritance.
-          damageBatchId: inheritedDamageBatchId || null,
-          rootDamageBatchId: inheritedDamageBatchId || null,
-
-          // Useful for grouped Damage Card section labels later.
-          damageSourceKind: "autoPassive",
-          damageSourceKey: passiveIdentity,
-          damageSourceName: item?.name ?? null,
-          damageSourceIcon: item?.img ?? null,
-
           passiveManagerRunId: runId,
           passiveExecutionKey: executionKey,
           passiveTriggerKey: triggerKey,
@@ -685,10 +579,17 @@ attacker_uuid: attackerUuidForADF,
           originalTargetUUIDs: [...targetResolution.targetUUIDs],
           targetActorUUIDs: [...(targetResolution.targetActorUUIDs ?? [])],
           reaction_phase_payload: preferredPayload,
-          reaction_phase_payload_by_trigger: phasePayloadByTriggerForPayload,
+          reaction_phase_payload_by_trigger: clone(phasePayloadByTrigger),
           triggerKey,
           systemSource: "AutoPassiveManager",
-          passiveOrigin
+          passiveOrigin: {
+            rootKey,
+            passiveIdentity,
+            rowSignature: stableRowSignature(row, rowIndex),
+            ancestry,
+            depth: inheritedDepth + 1,
+            rootTimestamp: pickEventStamp(triggerKey, phasePayload, phasePayloadByTrigger)
+          }
         }
       };
 
@@ -697,7 +598,6 @@ attacker_uuid: attackerUuidForADF,
         executionKey,
         rootKey,
         passiveIdentity,
-        damageBatchId: inheritedDamageBatchId || null,
         actorName: actor?.name,
         tokenName: token?.name,
         itemName: item?.name,
@@ -736,15 +636,10 @@ attacker_uuid: attackerUuidForADF,
       }
 
       window.__PAYLOAD = payload;
+      await ADF.execute({ __AUTO: true, __PAYLOAD: payload });
 
-const adfResult = await ADF.execute({
-  __AUTO: true,
-  __PAYLOAD: payload
-});
-
-return {
-  ok: true,
-  adfResult,
+      return {
+        ok: true,
         executionKey,
         rootKey,
         passiveIdentity,

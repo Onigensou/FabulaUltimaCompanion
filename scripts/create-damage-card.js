@@ -518,274 +518,152 @@ async function buildGroupedDamageCardHTML({
 } = {}) {
   const safeEntries = entries.filter(Boolean);
   const count = safeEntries.length;
+
   const firstEntry = safeEntries[0] ?? {};
 
-  const firstNonBlank = (...values) => {
-    for (const value of values) {
-      const s = String(value ?? "").trim();
-      if (s) return s;
-    }
-    return "";
-  };
+  function cleanTitle(rawTitle) {
+    const skillName =
+      S(rootActionContext?.core?.skillName, "") ||
+      S(rootActionContext?.dataCore?.skillName, "") ||
+      S(firstEntry?.skillName, "") ||
+      S(firstEntry?.actionContext?.core?.skillName, "") ||
+      S(firstEntry?.actionContext?.dataCore?.skillName, "");
 
-  const cleanTitle = (rawTitle) => {
-    let out = String(rawTitle ?? "").trim();
+    let out = S(rawTitle, "") || skillName || "Damage";
+
+    // Remove redundant wording like:
+    // "Infectious Ray Results" -> "Infectious Ray"
+    // "Absorb MP Result"       -> "Absorb MP"
     out = out.replace(/\s+results?\s*$/i, "").trim();
-    return out || "Damage";
-  };
 
-  const normalizeMode = (raw) => {
-    const s = String(raw ?? "").trim().toLowerCase();
-    if (s === "autopassive") return "autoPassive";
-    if (s === "manualcard") return "manualCard";
-    return s;
-  };
-
-  const getEntryContext = (entry = {}) => {
-    return (
-      entry?.actionContext ??
-      entry?.rootActionContext ??
-      entry?.meta?.actionContext ??
-      {}
-    );
-  };
-
-  const resolveEntrySource = (entry = {}, index = 0) => {
-    const ctx = getEntryContext(entry);
-    const meta = entry?.meta ?? {};
-    const ctxMeta = ctx?.meta ?? {};
-    const core = ctx?.core ?? {};
-    const dataCore = ctx?.dataCore ?? {};
-
-    const executionMode = normalizeMode(
-      ctxMeta?.executionMode ??
-      meta?.executionMode ??
-      ctx?.executionMode ??
-      ""
-    );
-
-    const sourceKind = firstNonBlank(
-      ctxMeta?.damageSourceKind,
-      meta?.damageSourceKind,
-      executionMode === "autoPassive" ? "autoPassive" : "",
-      "mainAction"
-    );
-
-    const isPassiveLike =
-      sourceKind === "autoPassive" ||
-      executionMode === "autoPassive" ||
-      ctxMeta?.isPassiveExecution === true ||
-      ctx?.autoPassive === true;
-
-    const rawName = firstNonBlank(
-      ctxMeta?.damageSourceName,
-      meta?.damageSourceName,
-      core?.skillName,
-      dataCore?.skillName,
-      ctx?.sourceItem?.name,
-      ctx?.item?.name,
-      entry?.skillName,
-      title,
-      "Damage"
-    );
-
-    const name = cleanTitle(rawName);
-
-    const icon = firstNonBlank(
-      ctxMeta?.damageSourceIcon,
-      meta?.damageSourceIcon,
-      ctx?.sourceItem?.img,
-      ctx?.item?.img,
-      core?.skillImg,
-      dataCore?.skillImg,
-      meta?.skillImg,
-      entry?.skillImg,
-      entry?.actionImg,
-      entry?.sourceImg,
-      ""
-    );
-
-    const actorName = firstNonBlank(
-      ctxMeta?.attackerName,
-      core?.attackerName,
-      entry?.attackerName,
-      rootActionContext?.meta?.attackerName,
-      rootActionContext?.core?.attackerName,
-      "System"
-    );
-
-    const sourceKey = firstNonBlank(
-      ctxMeta?.damageSourceKey,
-      meta?.damageSourceKey,
-      ctxMeta?.passiveIdentity,
-      ctxMeta?.passiveItemUuid,
-      ctxMeta?.actionId,
-      ctx?.actionId,
-      `${sourceKind}:${name}`
-    );
-
-    const modeLabel = isPassiveLike ? "Auto Passive" : "Action";
-
-    return {
-      key: `${isPassiveLike ? "1" : "0"}::${sourceKey}`,
-      order: isPassiveLike ? 1 : 0,
-      firstIndex: index,
-      name,
-      icon,
-      actorName,
-      modeLabel,
-      sourceKind,
-      executionMode,
-      isPassiveLike
-    };
-  };
-
-  const buildSections = () => {
-    const map = new Map();
-
-    for (let i = 0; i < safeEntries.length; i++) {
-      const entry = safeEntries[i];
-      const source = resolveEntrySource(entry, i);
-
-      if (!map.has(source.key)) {
-        map.set(source.key, {
-          ...source,
-          entries: []
-        });
-      }
-
-      map.get(source.key).entries.push(entry);
-    }
-
-    return Array.from(map.values()).sort((a, b) => {
-      if (a.order !== b.order) return a.order - b.order;
-      return a.firstIndex - b.firstIndex;
-    });
-  };
-
-  const sections = buildSections();
-
-  // Show source section banners only when there is more than one source.
-  // Example:
-  //   Infectious Ray
-  //   Agony
-  // If only Infectious Ray exists, keep the compact card without extra banner.
-  const showSourceSections = sections.length > 1;
-
-  const renderSourceHeader = (section, sectionIndex) => {
-    if (!showSourceSections) return "";
-
-    const marginTop = sectionIndex === 0 ? "0" : ".42rem";
-
-    return `
-      <div class="fu-source-head"
-           style="
-             border:1px solid rgba(207,160,87,.82);
-             background:linear-gradient(180deg,#f7ecd9,#ead7b7);
-             border-radius:8px;
-             padding:.30rem .42rem;
-             margin:${marginTop} 0 .22rem 0;
-             box-shadow:0 1px 0 rgba(255,255,255,.55) inset;
-           ">
-        <div style="display:flex;align-items:center;gap:.36rem;min-width:0;">
-          ${
-            section.icon
-              ? `<img src="${escAttr(section.icon)}" alt=""
-                      style="
-                        width:20px;
-                        height:20px;
-                        object-fit:cover;
-                        border-radius:5px;
-                        box-shadow:0 0 0 1px rgba(0,0,0,.22);
-                        flex:0 0 auto;
-                      ">`
-              : ``
-          }
-
-          <div style="min-width:0;line-height:1.08;">
-            <div style="
-              font-size:11px;
-              font-weight:900;
-              color:#493827;
-              text-transform:uppercase;
-              letter-spacing:.032em;
-              white-space:nowrap;
-              overflow:hidden;
-              text-overflow:ellipsis;
-            ">
-              ${esc(section.name)}
-            </div>
-
-            <div style="
-              font-size:9px;
-              font-weight:700;
-              color:#6f5b43;
-              opacity:.86;
-              margin-top:.08rem;
-              white-space:nowrap;
-              overflow:hidden;
-              text-overflow:ellipsis;
-            ">
-              ${esc([section.modeLabel, section.actorName].filter(Boolean).join(" • "))}
-            </div>
-          </div>
-        </div>
-      </div>
-    `;
-  };
-
-  const sectionHTML = [];
-
-  for (let s = 0; s < sections.length; s++) {
-    const section = sections[s];
-
-    const shells = [];
-
-    for (const entry of section.entries) {
-      // index intentionally omitted to remove #1 / #2 style row labels.
-      shells.push(await buildDamageShellHTML(entry, {
-        compact: true,
-        index: null
-      }));
-    }
-
-    sectionHTML.push(`
-      <section class="fu-damage-source-section"
-               data-source-kind="${escAttr(section.sourceKind)}"
-               data-source-name="${escAttr(section.name)}"
-               style="display:flex;flex-direction:column;gap:.22rem;">
-        ${renderSourceHeader(section, s)}
-        ${shells.join("\n")}
-      </section>
-    `);
+    return out || skillName || "Damage";
   }
 
-  // Parent banner is now disabled by default.
-  // Source banners are more useful and smaller.
-  const shouldShowParentHeader = typeof showHeader === "boolean" ? showHeader : false;
+  function resolveActionIcon() {
+    return (
+      S(rootActionContext?.core?.skillImg, "") ||
+      S(rootActionContext?.dataCore?.skillImg, "") ||
+      S(rootActionContext?.sourceItem?.img, "") ||
+      S(firstEntry?.skillImg, "") ||
+      S(firstEntry?.actionImg, "") ||
+      S(firstEntry?.sourceImg, "") ||
+      S(firstEntry?.actionContext?.core?.skillImg, "") ||
+      S(firstEntry?.actionContext?.dataCore?.skillImg, "") ||
+      S(firstEntry?.actionContext?.sourceItem?.img, "") ||
+      ""
+    );
+  }
 
-  const parentHeader = shouldShowParentHeader ? `
+  function resolveExecutionMode() {
+    return String(
+      rootActionContext?.meta?.executionMode ??
+      firstEntry?.actionContext?.meta?.executionMode ??
+      firstEntry?.meta?.executionMode ??
+      ""
+    ).trim().toLowerCase();
+  }
+
+  function shouldShowHeader() {
+    if (typeof showHeader === "boolean") return showHeader;
+
+    const executionMode = resolveExecutionMode();
+
+    // Practical rule:
+    // - Hide banner for simple single-result actions.
+    // - Show banner for multi-target grouped results.
+    // - Show banner for auto-passive results, so they are separated from the root action.
+    return count > 1 || executionMode === "autopassive";
+  }
+
+  const sourceName =
+    S(rootActionContext?.meta?.attackerName, "") ||
+    S(rootActionContext?.core?.attackerName, "") ||
+    S(firstEntry?.attackerName, "System");
+
+  const executionMode = resolveExecutionMode();
+
+  const modeLabel =
+    executionMode === "autopassive"
+      ? "Auto Passive"
+      : "Action";
+
+  const headerTitle = cleanTitle(title);
+
+  const headerSubtitle =
+    S(subtitle, "") ||
+    [modeLabel, sourceName].filter(Boolean).join(" • ");
+
+  const icon = resolveActionIcon();
+  const renderHeader = shouldShowHeader();
+
+  const shells = [];
+
+  for (let i = 0; i < safeEntries.length; i++) {
+    shells.push(await buildDamageShellHTML(safeEntries[i], {
+      compact: true,
+      index: i
+    }));
+  }
+
+  const headerHTML = renderHeader ? `
     <div class="fu-group-head"
          style="
            border:1px solid #cfa057;
            background:linear-gradient(180deg,#f7ecd9,#ead7b7);
            border-radius:8px;
-           padding:.30rem .42rem;
+           padding:.34rem .45rem;
            margin-bottom:.28rem;
            box-shadow:0 1px 0 rgba(255,255,255,.55) inset;
          ">
-      <div style="font-size:11px;font-weight:900;color:#493827;text-transform:uppercase;letter-spacing:.035em;">
-        ${esc(cleanTitle(title))}
+      <div style="display:flex;align-items:center;gap:.38rem;min-width:0;">
+        ${
+          icon
+            ? `<img src="${escAttr(icon)}" alt=""
+                    style="
+                      width:22px;
+                      height:22px;
+                      object-fit:cover;
+                      border-radius:5px;
+                      box-shadow:0 0 0 1px rgba(0,0,0,.22);
+                      flex:0 0 auto;
+                    ">`
+            : ``
+        }
+
+        <div style="min-width:0;line-height:1.1;">
+          <div style="
+            font-size:12px;
+            font-weight:900;
+            color:#493827;
+            text-transform:uppercase;
+            letter-spacing:.035em;
+            white-space:nowrap;
+            overflow:hidden;
+            text-overflow:ellipsis;
+          ">
+            ${esc(headerTitle)}
+          </div>
+
+          ${
+            headerSubtitle
+              ? `<div style="
+                    font-size:10px;
+                    font-weight:700;
+                    color:#6f5b43;
+                    opacity:.9;
+                    margin-top:.12rem;
+                    white-space:nowrap;
+                    overflow:hidden;
+                    text-overflow:ellipsis;
+                  ">
+                    ${esc(headerSubtitle)}
+                 </div>`
+              : ``
+          }
+        </div>
       </div>
-      ${
-        subtitle
-          ? `<div style="font-size:9px;font-weight:700;color:#6f5b43;opacity:.86;margin-top:.08rem;">
-               ${esc(subtitle)}
-             </div>`
-          : ``
-      }
     </div>
-  ` : "";
+  ` : ``;
 
   return `
     <div class="fu-card fu-card-group"
@@ -793,9 +671,9 @@ async function buildGroupedDamageCardHTML({
          data-fu-card-kind="${GROUP_MARKER}"
          data-batch-id="${escAttr(batchId ?? "")}"
          style="font-family: Signika, sans-serif; letter-spacing:.2px;">
-      ${parentHeader}
-      <div class="fu-group-body" style="display:flex;flex-direction:column;gap:.24rem;">
-        ${sectionHTML.join("\n")}
+      ${headerHTML}
+      <div class="fu-group-body" style="display:flex;flex-direction:column;gap:.22rem;">
+        ${shells.join("\n")}
       </div>
     </div>
   `;

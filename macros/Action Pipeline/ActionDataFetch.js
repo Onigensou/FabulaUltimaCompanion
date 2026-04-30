@@ -10,7 +10,7 @@ const ADF_TAG   = "[ADF][DBG]";
 // Rich text → script API (per Oni guide)
 const MODULE_ID = "fabula-ultima-companion";
 
-return (async () => {
+(async () => {
   if (!canvas?.scene) return ui.notifications.error("No active scene.");
   const _ADF_T0 = (typeof performance !== "undefined" && performance?.now) ? performance.now() : Date.now();
   const _ADF_RUN_ID = `ADF-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
@@ -391,7 +391,7 @@ return (async () => {
     const computeMacro = game.macros.getName(COMPUTE_MACRO_NAME);
     if (!computeMacro) return ui.notifications.error(`Macro "${COMPUTE_MACRO_NAME}" not found or no permission.`);
 
-        return await computeMacro.execute({
+        await computeMacro.execute({
       __AUTO: true,
       __PAYLOAD: {
         source           : "Weapon",
@@ -617,7 +617,7 @@ _adfLog("Item usage mode resolved", {
     const computeMacro = game.macros.getName(COMPUTE_MACRO_NAME);
     if (!computeMacro) return ui.notifications.error(`Macro "${COMPUTE_MACRO_NAME}" not found or no permission.`);
 
-    return await computeMacro.execute({
+    await computeMacro.execute({
       __AUTO: true,
       __PAYLOAD: {
         source            : "Skill",
@@ -876,7 +876,7 @@ meta: buildForwardMeta({
     });
   } catch {}
 
-  return await computeMacro.execute({
+  await computeMacro.execute({
     __AUTO: true,
     __PAYLOAD: {
       source            : "Skill",

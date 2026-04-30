@@ -18,7 +18,7 @@ const ADC_DEBUG = true;
 const ADC_TAG   = "[ONI][ActionPassive]";
 const PASSIVE_ACTION_MACRO_NAME = "PassiveLogic-Action";
 
-return (async () => {
+(async () => {
   if (!canvas?.scene) {
     return ui.notifications.error("ActionDataComputation: No active scene.");
   }
@@ -449,37 +449,28 @@ return (async () => {
       costsNormalized: cardPayload?.meta?.costsNormalized ?? []
     });
 
-const result = await execApi({
-  actionContext: cardPayload,
-  args: {},
-  chatMsgId: null,
-  executionMode: "autoPassive",
-  confirmingUserId: null,
-  skipVisualFeedback: false
-});
+    const result = await execApi({
+      actionContext: cardPayload,
+      args: {},
+      chatMsgId: null,
+      executionMode: "autoPassive",
+      confirmingUserId: null,
+      skipVisualFeedback: false
+    });
 
-adcLog("EXECUTION CORE RESULT", result);
+    adcLog("EXECUTION CORE RESULT", result);
 
-if (!result?.ok) {
-  const reason = String(result?.reason ?? "unknown");
-  adcWarn("AUTO PASSIVE execution failed.", {
-    skillName: cardPayload?.core?.skillName ?? null,
-    reason,
-    result
-  });
+    if (!result?.ok) {
+      const reason = String(result?.reason ?? "unknown");
+      adcWarn("AUTO PASSIVE execution failed.", {
+        skillName: cardPayload?.core?.skillName ?? null,
+        reason,
+        result
+      });
+      return false;
+    }
 
-  return {
-    ok: false,
-    reason: "auto_passive_execution_failed",
-    executionCoreResult: result
-  };
-}
-
-return {
-  ok: true,
-  executionMode: "autoPassive",
-  executionCoreResult: result
-};
+    return true;
   }
 
   // ---------------- Defense helpers ----------------
@@ -1148,17 +1139,9 @@ accuracy: {
         source: "Weapon"
       });
 
-const executed = await executeAutoPassive(cardPayload);
-
-if (!executed?.ok) {
-  return {
-    ok: false,
-    reason: executed?.reason ?? "weapon_auto_passive_execution_failed",
-    result: executed
-  };
-}
-
-return executed;
+      const executed = await executeAutoPassive(cardPayload);
+      if (!executed) return;
+      return;
     }
 
     // 
@@ -1189,12 +1172,9 @@ return executed;
       return ui.notifications.error(`ActionDataComputation: Macro "${CARD_MACRO_NAME}" not found or no permission.`);
     }
 
-await applyPassiveModifiers(cardPayload);
-
-return await cardMacro.execute({
-  __AUTO: true,
-  __PAYLOAD: cardPayload
-});
+    await applyPassiveModifiers(cardPayload);
+    await cardMacro.execute({ __AUTO: true, __PAYLOAD: cardPayload });
+    return;
   }
 
   // 
@@ -1494,17 +1474,9 @@ const totalFlatBonus =
         source: "Weapon"
       });
 
-const executed = await executeAutoPassive(cardPayload);
-
-if (!executed?.ok) {
-  return {
-    ok: false,
-    reason: executed?.reason ?? "skill_auto_passive_execution_failed",
-    result: executed
-  };
-}
-
-return executed;
+      const executed = await executeAutoPassive(cardPayload);
+      if (!executed) return;
+      return;
     }
 
 // 
@@ -1537,12 +1509,9 @@ await refreshCanonicalTargetsAndDefense(cardPayload);
     if (!gate) {
       return ui.notifications.error(`ActionDataComputation: Macro "${RESOURCE_GATE_NAME}" not found or no permission.`);
     }
-await applyPassiveModifiers(cardPayload);
-
-return await gate.execute({
-  __AUTO: true,
-  __PAYLOAD: cardPayload
-});
+    await applyPassiveModifiers(cardPayload);
+    await gate.execute({ __AUTO: true, __PAYLOAD: cardPayload });
+    return;
   }
 
   ui.notifications.warn(`ActionDataComputation: Unknown source "${source}".`);

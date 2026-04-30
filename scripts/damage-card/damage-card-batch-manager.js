@@ -72,155 +72,6 @@
     return fallback;
   }
 
-  function firstNonBlank(...values) {
-  for (const value of values) {
-    const s = String(value ?? "").trim();
-    if (s) return s;
-  }
-  return "";
-}
-
-function normalizeExecutionMode(raw) {
-  const s = String(raw ?? "").trim().toLowerCase();
-  if (s === "autopassive") return "autoPassive";
-  if (s === "manualcard") return "manualCard";
-  return s || "";
-}
-
-function extractDamageSourceMeta(payload = {}) {
-  const ctx = payload?.actionContext ?? payload?.rootActionContext ?? {};
-  const meta = payload?.meta ?? {};
-  const ctxMeta = ctx?.meta ?? {};
-  const core = ctx?.core ?? {};
-  const dataCore = ctx?.dataCore ?? {};
-
-  const executionMode = normalizeExecutionMode(
-    ctxMeta?.executionMode ??
-    meta?.executionMode ??
-    ctx?.executionMode ??
-    ""
-  );
-
-  const isAutoPassive =
-    executionMode === "autoPassive" ||
-    ctxMeta?.isPassiveExecution === true ||
-    meta?.isPassiveExecution === true ||
-    ctx?.autoPassive === true;
-
-  const sourceName = firstNonBlank(
-    ctxMeta?.damageSourceName,
-    meta?.damageSourceName,
-    core?.skillName,
-    dataCore?.skillName,
-    ctx?.sourceItem?.name,
-    ctx?.item?.name,
-    payload?.skillName,
-    payload?.attackerName,
-    "Damage"
-  );
-
-  const sourceIcon = firstNonBlank(
-    ctxMeta?.damageSourceIcon,
-    meta?.damageSourceIcon,
-    ctx?.sourceItem?.img,
-    ctx?.item?.img,
-    core?.skillImg,
-    dataCore?.skillImg,
-    meta?.skillImg,
-    payload?.skillImg,
-    payload?.actionImg,
-    payload?.sourceImg,
-    ""
-  );
-
-  const sourceKind = firstNonBlank(
-    ctxMeta?.damageSourceKind,
-    meta?.damageSourceKind,
-    isAutoPassive ? "autoPassive" : "mainAction"
-  );
-
-  const sourceKey = firstNonBlank(
-    ctxMeta?.damageSourceKey,
-    meta?.damageSourceKey,
-    ctxMeta?.passiveIdentity,
-    meta?.passiveIdentity,
-    ctxMeta?.passiveItemUuid,
-    meta?.passiveItemUuid,
-    ctxMeta?.actionId,
-    ctx?.actionId,
-    `${sourceKind}:${sourceName}`
-  );
-
-  return {
-    executionMode,
-    damageSourceKind: sourceKind,
-    damageSourceKey: sourceKey,
-    damageSourceName: sourceName,
-    damageSourceIcon: sourceIcon || null
-  };
-}
-
-function stampEntryDamageSourceMeta(entry = {}, batch = null) {
-  if (!entry || typeof entry !== "object") return entry;
-
-  const sourceMeta = extractDamageSourceMeta(entry);
-
-  entry.meta = entry.meta || {};
-
-  entry.meta.executionMode =
-    entry.meta.executionMode ||
-    sourceMeta.executionMode ||
-    entry?.actionContext?.meta?.executionMode ||
-    null;
-
-  entry.meta.damageSourceKind =
-    entry.meta.damageSourceKind ||
-    sourceMeta.damageSourceKind ||
-    "mainAction";
-
-  entry.meta.damageSourceKey =
-    entry.meta.damageSourceKey ||
-    sourceMeta.damageSourceKey ||
-    `${entry.meta.damageSourceKind}:${sourceMeta.damageSourceName}`;
-
-  entry.meta.damageSourceName =
-    entry.meta.damageSourceName ||
-    sourceMeta.damageSourceName ||
-    batch?.title ||
-    "Damage";
-
-  if (!entry.meta.damageSourceIcon && sourceMeta.damageSourceIcon) {
-    entry.meta.damageSourceIcon = sourceMeta.damageSourceIcon;
-  }
-
-  // Also stamp actionContext.meta, because the grouped renderer prefers that.
-  if (entry.actionContext && typeof entry.actionContext === "object") {
-    entry.actionContext.meta = entry.actionContext.meta || {};
-
-    entry.actionContext.meta.executionMode =
-      entry.actionContext.meta.executionMode ||
-      entry.meta.executionMode;
-
-    entry.actionContext.meta.damageSourceKind =
-      entry.actionContext.meta.damageSourceKind ||
-      entry.meta.damageSourceKind;
-
-    entry.actionContext.meta.damageSourceKey =
-      entry.actionContext.meta.damageSourceKey ||
-      entry.meta.damageSourceKey;
-
-    entry.actionContext.meta.damageSourceName =
-      entry.actionContext.meta.damageSourceName ||
-      entry.meta.damageSourceName;
-
-    if (!entry.actionContext.meta.damageSourceIcon && entry.meta.damageSourceIcon) {
-      entry.actionContext.meta.damageSourceIcon = entry.meta.damageSourceIcon;
-    }
-  }
-
-  return entry;
-}
-
   function makeBatchId(prefix = "DMG-BATCH") {
     const rnd =
       foundry?.utils?.randomID?.(8) ??
@@ -554,20 +405,13 @@ function stampEntryDamageSourceMeta(entry = {}, batch = null) {
     }
 
     const entry = safeClone(payload, payload) ?? {};
-entry.meta = entry.meta || {};
+    entry.meta = entry.meta || {};
 
-entry.damageBatchId = batchId;
-entry.rootDamageBatchId = entry.rootDamageBatchId || batchId;
-
-entry.meta.damageBatchId = batchId;
-entry.meta.rootDamageBatchId = entry.meta.rootDamageBatchId || batchId;
-entry.meta.damageBatchCapturedAtMs = nowMs();
-entry.meta.damageBatchCapturedAtIso = new Date().toISOString();
-entry.meta.damageBatchEntryIndex = batch.entries.length;
-
-// Preserve source identity for grouped card sections:
-// Main action, Agony, Absorb MP, etc.
-stampEntryDamageSourceMeta(entry, batch);
+    entry.damageBatchId = batchId;
+    entry.meta.damageBatchId = batchId;
+    entry.meta.damageBatchCapturedAtMs = nowMs();
+    entry.meta.damageBatchCapturedAtIso = new Date().toISOString();
+    entry.meta.damageBatchEntryIndex = batch.entries.length;
 
     if (options?.source) {
       entry.meta.damageBatchCaptureSource = str(options.source);
@@ -577,17 +421,15 @@ stampEntryDamageSourceMeta(entry, batch);
     batch.touchedAt = nowMs();
 
     log("CAPTURE", {
-  batchId,
-  entryIndex: batch.entries.length - 1,
-  entries: batch.entries.length,
-  sourceName: entry?.meta?.damageSourceName ?? null,
-  sourceKind: entry?.meta?.damageSourceKind ?? null,
-  mode: entry?.mode ?? null,
-  attackerName: entry?.attackerName ?? null,
-  targetName: entry?.targetName ?? null,
-  displayedAmount: entry?.displayedAmount ?? null,
-  noEffectReason: entry?.noEffectReason ?? null
-});
+      batchId,
+      entryIndex: batch.entries.length - 1,
+      entries: batch.entries.length,
+      mode: entry?.mode ?? null,
+      attackerName: entry?.attackerName ?? null,
+      targetName: entry?.targetName ?? null,
+      displayedAmount: entry?.displayedAmount ?? null,
+      noEffectReason: entry?.noEffectReason ?? null
+    });
 
     return {
       ok: true,
@@ -689,9 +531,7 @@ stampEntryDamageSourceMeta(entry, batch);
       };
     }
 
-    const entries = batch.entries
-      .filter(Boolean)
-      .map(entry => stampEntryDamageSourceMeta(entry, batch));
+    const entries = batch.entries.filter(Boolean);
 
     batch.flushed = true;
     batch.touchedAt = nowMs();
@@ -725,19 +565,14 @@ stampEntryDamageSourceMeta(entry, batch);
       let fallbackMode = false;
 
       if (typeof groupedApi === "function") {
-  message = await groupedApi({
-    batchId,
-    title,
-    subtitle,
-    rootActionContext: batch.rootActionContext,
-    entries,
-
-    // Let the renderer decide:
-    // - one source: no banner
-    // - multiple sources: section banners
-    showHeader: false
-  });
-} else if (typeof singleApi === "function") {
+        message = await groupedApi({
+          batchId,
+          title,
+          subtitle,
+          rootActionContext: batch.rootActionContext,
+          entries
+        });
+      } else if (typeof singleApi === "function") {
         // Safety fallback: never lose results if grouped renderer is missing.
         fallbackMode = true;
         warn("Grouped renderer missing; falling back to individual Damage Cards.", {
