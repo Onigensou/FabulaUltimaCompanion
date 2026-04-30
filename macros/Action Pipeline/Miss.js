@@ -64,6 +64,49 @@ const tokens = (foundryTargets.length ? foundryTargets : selectedTokens);
 
 if (!tokens.length) { ui.notifications.error("Select/target token(s) before applying Miss."); return; }
 
+// Step 4 optimization: yield between multi-target miss cards.
+// This prevents multi-target miss results from creating/capturing all cards
+// in one uninterrupted browser frame.
+const MISS_TARGET_LOOP_YIELD_ENABLED = true;
+const MISS_TARGET_LOOP_YIELD_MIN_TARGETS = 2;
+const MISS_TARGET_LOOP_YIELD_EVERY = 1;
+
+function waitAfterNextPaint() {
+  return new Promise(resolve => {
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => {
+        setTimeout(resolve, 0);
+      });
+      return;
+    }
+
+    setTimeout(resolve, 0);
+  });
+}
+
+async function maybeYieldBetweenMissTargets({
+  index = 0,
+  total = 0
+} = {}) {
+  if (!MISS_TARGET_LOOP_YIELD_ENABLED) return;
+  if (total < MISS_TARGET_LOOP_YIELD_MIN_TARGETS) return;
+
+  const completed = Number(index) + 1;
+
+  if (completed >= total) return;
+
+  if (MISS_TARGET_LOOP_YIELD_EVERY > 1 && completed % MISS_TARGET_LOOP_YIELD_EVERY !== 0) {
+    return;
+  }
+
+  await waitAfterNextPaint();
+
+  console.debug("[Miss] Yielded between miss targets.", {
+    completed,
+    total
+  });
+}
+
 // ---- 1) Battle Log -------------------------------------------------------------
 const rows = [];
 const entries = [];
@@ -163,7 +206,8 @@ const createDmg = game.macros.getName(DMG_CARD_MACRO_NAME);
 if (!createDmg) { console.warn(`[Miss] Macro "${DMG_CARD_MACRO_NAME}" not found.`); }
 
 // One compact “miss” card per target (same as how damage cards are per-target)
-for (const t of tokens) {
+for (let targetIndex = 0; targetIndex < tokens.length; targetIndex++) {
+  const t = tokens[targetIndex];
   const targetName = t.actor?.name ?? t.name ?? "Target";
   const targetUuid = t.document?.uuid ?? "";
 
@@ -204,6 +248,11 @@ for (const t of tokens) {
         accuracyTotal: Number.isFinite(accTotal)?accTotal:null,
         defenseUsed: Number.isFinite(defenseUsed)?defenseUsed:null
       }
-    });
+        });
   }
+
+  await maybeYieldBetweenMissTargets({
+    index: targetIndex,
+    total: tokens.length
+  });
 }

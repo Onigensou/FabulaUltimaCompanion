@@ -273,6 +273,57 @@ const elementMapping = {
 };
 const CAP = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
+// Step 4 optimization: yield between multi-target processing.
+// This lets the browser/Foundry breathe between targets instead of doing
+// all actor updates + FX + damage-card captures in one uninterrupted chain.
+const TARGET_LOOP_YIELD_ENABLED = true;
+const TARGET_LOOP_YIELD_MIN_TARGETS = 2;
+const TARGET_LOOP_YIELD_EVERY = 1; // 1 = after every target except the last
+
+function waitAfterNextPaint() {
+  return new Promise(resolve => {
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => {
+        setTimeout(resolve, 0);
+      });
+      return;
+    }
+
+    setTimeout(resolve, 0);
+  });
+}
+
+async function maybeYieldBetweenTargets({
+  index = 0,
+  total = 0,
+  label = "AdvanceDamage"
+} = {}) {
+  if (!TARGET_LOOP_YIELD_ENABLED) return;
+  if (total < TARGET_LOOP_YIELD_MIN_TARGETS) return;
+
+  const completed = Number(index) + 1;
+
+  // Do not yield after the final target.
+  if (completed >= total) return;
+
+  if (TARGET_LOOP_YIELD_EVERY > 1 && completed % TARGET_LOOP_YIELD_EVERY !== 0) {
+    return;
+  }
+
+  const started = performance.now?.() ?? Date.now();
+
+  await waitAfterNextPaint();
+
+  const ended = performance.now?.() ?? Date.now();
+
+  console.debug("[AdvanceDamage] Yielded between targets.", {
+    label,
+    completed,
+    total,
+    waitedMs: Math.round((ended - started) * 100) / 100
+  });
+}
+
 /* ===================== Damage Computation (Steps 0–8) =====================
 
 ORDERING RULE: FLAT before MULTIPLIER
@@ -464,7 +515,8 @@ async function APPLY(opts) {
   const weaponKey  = String(weaponType || "").split("_")[0];
   const weaponNice = (weaponType !== "none_ef" && weaponKey) ? `${weaponKey.toLowerCase()} weapon` : "";
 
-  for (let target of targets) {
+  for (let targetIndex = 0; targetIndex < targets.length; targetIndex++) {
+  const target = targets[targetIndex];
     const actorData = target.actor.system.props;
 
     // Starting stats
@@ -861,6 +913,12 @@ meta: {
         console.warn("[ADV-DMG] Create Damage Card failed:", e);
       }
     }
+
+    await maybeYieldBetweenTargets({
+      index: targetIndex,
+      total: targets.length,
+      label: "AdvanceDamage target loop"
+    });
   } // for targets
 
   // Persist BattleLog.
