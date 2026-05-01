@@ -1920,190 +1920,986 @@ If you change token selection later, close and reopen this UI to refresh the lis
     if (el) el.value = text;
   }
 
-  async function openCustomBuilderDialog(parentState, parentRoot) {
-    if (BUILDER_DIALOG) {
-      try {
-        BUILDER_DIALOG.bringToTop?.();
-        return BUILDER_DIALOG;
-      } catch (_e) {}
+async function openCustomBuilderDialog(parentState, parentRoot) {
+  // ==========================================================================
+  // Native ActiveEffect Configuration builder — CSB-safe version
+  // ==========================================================================
+  // CSB's CustomActiveEffectConfig expects the ActiveEffect to have a real parent.
+  // So instead of opening a parentless unsaved ActiveEffect, we create a temporary
+  // disabled draft effect on a real actor, open its native sheet, intercept Submit,
+  // capture the data, delete the draft, then queue the final effect in AEM.
+  // ==========================================================================
+
+  const SUGGESTION_STYLE_ID = "oni-aem-native-key-suggestion-style";
+  const SUGGESTION_CLASS = "oni-aem-native-key-suggestion-dropdown";
+
+  // "path" = system.props.defense
+  // "short" = defense
+  const NATIVE_SUGGESTION_VALUE = "path";
+
+  if (BUILDER_DIALOG) {
+    try {
+      BUILDER_DIALOG.bringToTop?.();
+      return BUILDER_DIALOG;
+    } catch (_e) {
+      BUILDER_DIALOG = null;
+    }
+  }
+
+  function ensureNativeSuggestionStyle() {
+    const old = document.getElementById(SUGGESTION_STYLE_ID);
+    if (old) old.remove();
+
+    const style = document.createElement("style");
+    style.id = SUGGESTION_STYLE_ID;
+    style.textContent = `
+      .${SUGGESTION_CLASS} {
+        position: fixed;
+        z-index: 9999999;
+        display: none;
+        min-width: 260px;
+        max-width: 460px;
+        max-height: 260px;
+        overflow: auto;
+        padding: 5px;
+        border: 1px solid rgba(40, 32, 24, .34);
+        border-radius: 8px;
+        background: rgba(248, 242, 224, .98);
+        box-shadow: 0 10px 28px rgba(0,0,0,.28);
+        color: #1f1a14;
+        font-family: var(--font-primary, "Signika"), sans-serif;
+      }
+
+      .${SUGGESTION_CLASS} .aem-suggest-head {
+        padding: 4px 6px 6px;
+        font-size: 10px;
+        font-weight: 900;
+        text-transform: uppercase;
+        letter-spacing: .04em;
+        opacity: .62;
+      }
+
+      .${SUGGESTION_CLASS} .aem-suggest-row {
+        display: grid;
+        gap: 2px;
+        padding: 6px 7px;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+
+      .${SUGGESTION_CLASS} .aem-suggest-row:hover,
+      .${SUGGESTION_CLASS} .aem-suggest-row.active {
+        background: rgba(65, 50, 32, .14);
+      }
+
+      .${SUGGESTION_CLASS} .aem-suggest-key {
+        font-family: monospace;
+        font-size: 12px;
+        font-weight: 900;
+        color: #15110c;
+        overflow-wrap: anywhere;
+      }
+
+      .${SUGGESTION_CLASS} .aem-suggest-meta {
+        font-size: 10px;
+        opacity: .7;
+        line-height: 1.2;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function getSheetRoot(sheet) {
+    return normalizeHtmlRoot(sheet?.element) ??
+      document.getElementById(sheet?.id) ??
+      document.querySelector(`[data-appid="${sheet?.appId}"]`) ??
+      document.querySelector(`#app-${sheet?.appId}`) ??
+      null;
+  }
+
+  function boolFromFormValue(value, fallback = false) {
+    if (value === undefined || value === null) return fallback;
+    if (value === true || value === false) return value;
+
+    const s = String(value).trim().toLowerCase();
+    if (["true", "1", "on", "yes", "checked"].includes(s)) return true;
+    if (["false", "0", "off", "no", ""].includes(s)) return false;
+
+    return !!value;
+  }
+
+  function deleteUnsafeCreateFields(effectData) {
+    if (!effectData || typeof effectData !== "object") return effectData;
+
+    delete effectData._id;
+    delete effectData.id;
+    delete effectData.folder;
+    delete effectData.sort;
+    delete effectData.ownership;
+    delete effectData._stats;
+
+    return effectData;
+  }
+
+  function normalizeNativeChanges(changes) {
+    if (!changes) return [];
+
+    if (Array.isArray(changes)) {
+      return changes
+        .filter(Boolean)
+        .map(row => ({
+          key: safeString(row.key),
+          mode: Number(row.mode ?? modeValue("ADD")),
+          value: String(row.value ?? ""),
+          priority: Number(row.priority ?? 20)
+        }))
+        .filter(row => row.key);
     }
 
-    const builderState = {
-      customName: parentState.customName ?? "Custom Active Effect",
-      customCategory: parentState.customCategory ?? "Buff",
-      customIcon: parentState.customIcon ?? "icons/svg/aura.svg",
-      customStatuses: parentState.customStatuses ?? "",
-      customDescription: parentState.customDescription ?? "",
-      customRows: clone(parentState.customRows, []) ?? [],
-      fieldEntries: clone(parentState.fieldEntries, []) ?? [],
-      previewText: ""
+    if (typeof changes === "object") {
+      return Object.entries(changes)
+        .sort(([a], [b]) => Number(a) - Number(b))
+        .map(([, row]) => row)
+        .filter(Boolean)
+        .map(row => ({
+          key: safeString(row.key),
+          mode: Number(row.mode ?? modeValue("ADD")),
+          value: String(row.value ?? ""),
+          priority: Number(row.priority ?? 20)
+        }))
+        .filter(row => row.key);
+    }
+
+    return [];
+  }
+
+  function readChangeRowsFromDom(root) {
+    if (!root) return [];
+
+    const rows = new Map();
+
+    for (const el of root.querySelectorAll("input[name], textarea[name], select[name]")) {
+      const name = String(el.name ?? "");
+      const match = name.match(/^changes\.(\d+)\.(key|mode|value|priority)$/);
+      if (!match) continue;
+
+      const index = match[1];
+      const field = match[2];
+
+      if (!rows.has(index)) {
+        rows.set(index, {
+          key: "",
+          mode: modeValue("ADD"),
+          value: "",
+          priority: 20
+        });
+      }
+
+      rows.get(index)[field] = el.value;
+    }
+
+    return Array.from(rows.values())
+      .map(row => ({
+        key: safeString(row.key),
+        mode: Number(row.mode ?? modeValue("ADD")),
+        value: String(row.value ?? ""),
+        priority: Number(row.priority ?? 20)
+      }))
+      .filter(row => row.key);
+  }
+
+  function normalizeNativeStatuses(statuses) {
+    if (statuses instanceof Set) return Array.from(statuses);
+    if (Array.isArray(statuses)) return statuses.map(String).filter(Boolean);
+
+    if (typeof statuses === "string") {
+      return statuses
+        .split(",")
+        .map(s => s.trim())
+        .filter(Boolean);
+    }
+
+    if (statuses && typeof statuses === "object") {
+      return Object.values(statuses).map(String).filter(Boolean);
+    }
+
+    return [];
+  }
+
+  function inferCategoryFromNativeEffect(effectData, fallback = "Other") {
+    const flags = effectData?.flags?.[MODULE_ID] ?? {};
+    const existing =
+      flags?.category ??
+      flags?.activeEffectManager?.sourceCategory ??
+      flags?.activeEffectManager?.category ??
+      null;
+
+    if (/^buff$/i.test(existing)) return "Buff";
+    if (/^debuff$/i.test(existing)) return "Debuff";
+    if (/^other$/i.test(existing)) return "Other";
+
+    const text = [
+      effectData?.name,
+      effectData?.label,
+      ...(effectData?.statuses ?? []),
+      ...(effectData?.changes ?? []).map(c => c?.key)
+    ].filter(Boolean).join(" ").toLowerCase();
+
+    if (/slow|dazed|weak|shaken|enraged|poison|poisoned|bleed|burn|frozen|fatigue|wet|oil|petrify|hypothermia|turbulence|zombie|curse|stun|blind/.test(text)) {
+      return "Debuff";
+    }
+
+    if (/swift|awake|strong|focus|clarity|energized|regen|regeneration|shield|barrier|protect|haste|bless|boost/.test(text)) {
+      return "Buff";
+    }
+
+    return fallback;
+  }
+
+  function stampNativeEffectData(effectData, category) {
+    const finalCategory = inferCategoryFromNativeEffect(effectData, category);
+
+    effectData.flags = effectData.flags || {};
+    effectData.flags[MODULE_ID] = effectData.flags[MODULE_ID] || {};
+
+    effectData.flags[MODULE_ID] = foundry?.utils?.mergeObject
+      ? foundry.utils.mergeObject(effectData.flags[MODULE_ID], {
+          category: finalCategory,
+          customActiveEffect: true,
+          activeEffectManager: {
+            managed: true,
+            custom: true,
+            sourceCategory: finalCategory,
+            createdFromUi: true,
+            createdFromNativeSheet: true,
+            createdAt: nowIso()
+          }
+        }, {
+          inplace: false,
+          recursive: true,
+          insertKeys: true,
+          insertValues: true,
+          overwrite: true
+        })
+      : {
+          ...(effectData.flags[MODULE_ID] ?? {}),
+          category: finalCategory,
+          customActiveEffect: true,
+          activeEffectManager: {
+            ...(effectData.flags[MODULE_ID]?.activeEffectManager ?? {}),
+            managed: true,
+            custom: true,
+            sourceCategory: finalCategory,
+            createdFromUi: true,
+            createdFromNativeSheet: true,
+            createdAt: nowIso()
+          }
+        };
+
+    return effectData;
+  }
+
+  function getFormDataExtendedClass() {
+    return (
+      foundry?.applications?.ux?.FormDataExtended ??
+      foundry?.utils?.FormDataExtended ??
+      globalThis.FormDataExtended ??
+      null
+    );
+  }
+
+  function readNativeFormData(sheet, fallbackEffectData = {}, category = "Other") {
+    const root = getSheetRoot(sheet);
+    const form = root?.querySelector?.("form") ?? sheet?.form ?? null;
+
+    let formObject = {};
+
+    try {
+      if (form) {
+        const FDE = getFormDataExtendedClass();
+
+        if (FDE) {
+          const fd = new FDE(form);
+          formObject = fd.object ?? fd;
+        } else {
+          for (const [key, value] of new FormData(form).entries()) {
+            if (formObject[key] === undefined) formObject[key] = value;
+            else formObject[key] = asArray(formObject[key]).concat(value);
+          }
+        }
+      }
+    } catch (e) {
+      warn("Could not read native ActiveEffect form data. Using fallback data.", e);
+      formObject = {};
+    }
+
+    let expanded = formObject;
+
+    try {
+      expanded = foundry.utils.expandObject(formObject);
+    } catch (_e) {}
+
+    const base = clone(fallbackEffectData, {});
+    const merged = foundry?.utils?.mergeObject
+      ? foundry.utils.mergeObject(base, expanded, {
+          inplace: false,
+          recursive: true,
+          insertKeys: true,
+          insertValues: true,
+          overwrite: true
+        })
+      : {
+          ...base,
+          ...expanded
+        };
+
+    merged.name = safeString(merged.name ?? merged.label, "Custom Active Effect");
+    merged.label = merged.name;
+
+    merged.img = safeString(merged.img ?? merged.icon, "icons/svg/aura.svg");
+    merged.icon = merged.img;
+
+    merged.description = String(merged.description ?? "");
+
+    // Important:
+    // The temporary draft is created disabled, but the final queued effect should
+    // default to enabled unless the user checked Disabled in the native sheet.
+    merged.disabled = boolFromFormValue(expanded.disabled, false);
+    merged.transfer = boolFromFormValue(expanded.transfer, false);
+
+    merged.changes = normalizeNativeChanges(merged.changes);
+
+    if (!merged.changes.length) {
+      merged.changes = readChangeRowsFromDom(root);
+    }
+
+    merged.statuses = normalizeNativeStatuses(merged.statuses);
+
+    merged.duration = merged.duration && typeof merged.duration === "object"
+      ? clone(merged.duration, {})
+      : {};
+
+    for (const key of ["rounds", "turns", "seconds", "startRound", "startTurn"]) {
+      if (merged.duration[key] === "" || merged.duration[key] == null) {
+        delete merged.duration[key];
+        continue;
+      }
+
+      const n = Number(merged.duration[key]);
+      if (Number.isFinite(n)) merged.duration[key] = n;
+    }
+
+    deleteUnsafeCreateFields(merged);
+    stampNativeEffectData(merged, category);
+
+    return merged;
+  }
+
+  function keyQueryFromFieldValue(value) {
+    return safeString(value)
+      .replace(/^system\.props\./i, "")
+      .split(/[\s,;|]+/g)
+      .pop()
+      .trim();
+  }
+
+  function suggestionValueFromEntry(entry = {}) {
+    const shortKey = safeString(entry.activeEffectKey ?? entry.key);
+    const propPath = safeString(entry.propPath) || (shortKey ? `system.props.${shortKey}` : "");
+
+    if (NATIVE_SUGGESTION_VALUE === "short") return shortKey || propPath;
+    return propPath || shortKey;
+  }
+
+  function getNativeSuggestions(query) {
+    const catalogue = getFieldCatalogueApi();
+    if (!catalogue) return [];
+
+    const q = keyQueryFromFieldValue(query);
+
+    try {
+      const rows = catalogue.getSuggestions?.(q, {
+        limit: 12,
+        recommendedOnly: false,
+        cloneResult: false
+      });
+
+      if (Array.isArray(rows)) return rows;
+    } catch (_e) {}
+
+    try {
+      const all = catalogue.getAll?.({ cloneResult: false }) ?? [];
+      const needle = q.toLowerCase();
+
+      return all
+        .filter(entry => {
+          if (!needle) return entry.isRecommended !== false;
+
+          const text = [
+            entry.key,
+            entry.activeEffectKey,
+            entry.propPath,
+            entry.label,
+            entry.category,
+            entry.valueKind
+          ].join(" ").toLowerCase();
+
+          return text.includes(needle);
+        })
+        .slice(0, 12);
+    } catch (_e) {
+      return [];
+    }
+  }
+
+  function findNativeAttributeKeyFields(root) {
+    if (!root) return [];
+
+    return Array.from(root.querySelectorAll(`
+      input[name^="changes."][name$=".key"],
+      textarea[name^="changes."][name$=".key"],
+      input[name*="changes"][name$="key"],
+      textarea[name*="changes"][name$="key"]
+    `)).filter(el => !el.dataset.oniAemNativeSuggestBound);
+  }
+
+  function bindSuggestionDropdownToField(field, dropdown) {
+    field.dataset.oniAemNativeSuggestBound = "1";
+    field.setAttribute("autocomplete", "off");
+    field.title = field.title || "Type to search actor data keys.";
+
+    let activeIndex = -1;
+    let currentRows = [];
+
+    const hide = () => {
+      dropdown.style.display = "none";
+      activeIndex = -1;
     };
 
-    if (!builderState.customRows.length) {
-      builderState.customRows = [{
-        id: randomId("mod"),
-        key: "",
-        mode: modeValue("ADD"),
-        value: "1",
-        priority: 20
-      }];
-    }
+    const position = () => {
+      const rect = field.getBoundingClientRect();
 
-    const dialog = new Dialog({
-      title: "Custom Active Effect Builder",
-      content: `
-        <div data-aem-builder-root-holder>
-          ${renderBuilderContent(builderState)}
-        </div>
-      `,
-      buttons: {
-        close: {
-          label: "Close"
-        }
-      },
-      render: (html) => {
-        const root = normalizeHtmlRoot(html);
-        if (!root) return;
+      dropdown.style.left = `${Math.max(8, rect.left)}px`;
+      dropdown.style.top = `${Math.min(window.innerHeight - 40, rect.bottom + 4)}px`;
+      dropdown.style.width = `${Math.max(260, rect.width)}px`;
+    };
 
-        const holder = root.querySelector("[data-aem-builder-root-holder]");
-        if (!holder) return;
+    const render = () => {
+      currentRows = getNativeSuggestions(field.value)
+        .map(entry => ({
+          entry,
+          value: suggestionValueFromEntry(entry)
+        }))
+        .filter(row => safeString(row.value));
 
-        holder.addEventListener("input", () => {
-          readBuilderStateFromDom(root, builderState);
-        });
-
-        holder.addEventListener("change", () => {
-          readBuilderStateFromDom(root, builderState);
-        });
-
-        holder.addEventListener("click", async (ev) => {
-          const btn = ev.target.closest?.("[data-aem-builder-action]");
-          if (!btn) return;
-
-          ev.preventDefault();
-          ev.stopPropagation();
-
-          const action = btn.dataset.aemBuilderAction;
-
-          try {
-            btn.disabled = true;
-            readBuilderStateFromDom(root, builderState);
-
-            if (action === "add-modifier-row") {
-              builderState.customRows.push({
-                id: randomId("mod"),
-                key: "",
-                mode: modeValue("ADD"),
-                value: "1",
-                priority: 20
-              });
-              rerenderBuilder(root, builderState);
-              return;
-            }
-
-            if (action === "remove-modifier-row") {
-              const id = btn.dataset.rowId;
-              builderState.customRows = builderState.customRows.filter(r => r.id !== id);
-
-              if (!builderState.customRows.length) {
-                builderState.customRows.push({
-                  id: randomId("mod"),
-                  key: "",
-                  mode: modeValue("ADD"),
-                  value: "1",
-                  priority: 20
-                });
-              }
-
-              rerenderBuilder(root, builderState);
-              return;
-            }
-
-            if (action === "refresh-fields") {
-              parentState.fieldEntries = parentState.fieldEntries || [];
-              await refreshFields(parentState);
-              builderState.fieldEntries = clone(parentState.fieldEntries, []) ?? [];
-              setBuilderPreview(root, builderState, {
-                ok: true,
-                fieldCount: builderState.fieldEntries.length
-              });
-              rerenderBuilder(root, builderState);
-              return;
-            }
-
-            if (action === "preview-custom") {
-              const effectData = buildCustomEffectData(builderState, parentState, { includeChanges: true });
-              setBuilderPreview(root, builderState, {
-                ok: true,
-                preview: effectData
-              });
-              return;
-            }
-
-            if (action === "add-custom-marker") {
-              const effectData = buildCustomEffectData(builderState, parentState, { includeChanges: false });
-
-              parentState.customName = builderState.customName;
-              parentState.customCategory = builderState.customCategory;
-              parentState.customIcon = builderState.customIcon;
-              parentState.customStatuses = builderState.customStatuses;
-              parentState.customDescription = builderState.customDescription;
-              parentState.customRows = clone(builderState.customRows, []) ?? [];
-
-              addSelectedCustomEffect(parentState, effectData, builderState.customCategory);
-              rerender(parentRoot, parentState);
-              dialog.close();
-              return;
-            }
-
-            if (action === "add-custom-modifier") {
-              const effectData = buildCustomEffectData(builderState, parentState, { includeChanges: true });
-
-              if (!effectData.changes.length) {
-                setBuilderPreview(root, builderState, {
-                  ok: false,
-                  reason: "no_modifier_rows",
-                  hint: "Add at least one modifier row, or use Add Marker Effect instead."
-                });
-                return;
-              }
-
-              parentState.customName = builderState.customName;
-              parentState.customCategory = builderState.customCategory;
-              parentState.customIcon = builderState.customIcon;
-              parentState.customStatuses = builderState.customStatuses;
-              parentState.customDescription = builderState.customDescription;
-              parentState.customRows = clone(builderState.customRows, []) ?? [];
-
-              addSelectedCustomEffect(parentState, effectData, builderState.customCategory);
-              rerender(parentRoot, parentState);
-              dialog.close();
-              return;
-            }
-          } catch (e) {
-            setBuilderPreview(root, builderState, {
-              ok: false,
-              action,
-              error: compactError(e)
-            });
-          } finally {
-            btn.disabled = false;
-          }
-        });
-      },
-      close: () => {
-        BUILDER_DIALOG = null;
+      if (!currentRows.length) {
+        hide();
+        return;
       }
-    }, {
-      width: 720,
-      height: "auto",
-      resizable: true
+
+      position();
+
+      dropdown.innerHTML = `
+        <div class="aem-suggest-head">Smart Key Suggestions</div>
+        ${currentRows.map((row, index) => {
+          const entry = row.entry ?? {};
+          const active = index === activeIndex ? " active" : "";
+          const meta = [
+            entry.label,
+            entry.category,
+            entry.valueKind,
+            entry.currentValue !== undefined ? `current: ${entry.currentValue}` : ""
+          ].filter(Boolean).join(" • ");
+
+          return `
+            <div class="aem-suggest-row${active}" data-suggest-index="${index}">
+              <div class="aem-suggest-key">${escapeHtml(row.value)}</div>
+              <div class="aem-suggest-meta">${escapeHtml(meta)}</div>
+            </div>
+          `;
+        }).join("")}
+      `;
+
+      dropdown.style.display = "block";
+    };
+
+    const choose = (index) => {
+      const row = currentRows[index];
+      if (!row) return;
+
+      field.value = row.value;
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      field.dispatchEvent(new Event("change", { bubbles: true }));
+      hide();
+      field.focus();
+    };
+
+    field.addEventListener("focus", render);
+    field.addEventListener("input", render);
+    field.addEventListener("click", render);
+
+    field.addEventListener("keydown", ev => {
+      if (dropdown.style.display !== "block") return;
+
+      if (ev.key === "ArrowDown") {
+        ev.preventDefault();
+        activeIndex = Math.min(currentRows.length - 1, activeIndex + 1);
+        render();
+        return;
+      }
+
+      if (ev.key === "ArrowUp") {
+        ev.preventDefault();
+        activeIndex = Math.max(0, activeIndex - 1);
+        render();
+        return;
+      }
+
+      if (ev.key === "Enter" && activeIndex >= 0) {
+        ev.preventDefault();
+        choose(activeIndex);
+        return;
+      }
+
+      if (ev.key === "Escape") {
+        hide();
+      }
     });
 
-    BUILDER_DIALOG = dialog;
-    dialog.render(true);
-    return dialog;
+    dropdown.addEventListener("mousedown", ev => {
+      const row = ev.target.closest?.(".aem-suggest-row");
+      if (!row) return;
+
+      ev.preventDefault();
+      ev.stopPropagation();
+
+      choose(Number(row.dataset.suggestIndex));
+    });
   }
+
+  async function resolveNativeBuilderParentActor() {
+    const targetActorUuids = Array.isArray(parentState.targetActorUuids)
+      ? parentState.targetActorUuids.filter(Boolean)
+      : [];
+
+    for (const uuid of targetActorUuids) {
+      const actor = await resolveActorFromRef(uuid);
+      if (actor?.documentName === "Actor") return actor;
+    }
+
+    const selectedTokenActor = Array.from(canvas?.tokens?.controlled ?? [])
+      .map(t => t.actor)
+      .find(Boolean);
+
+    if (selectedTokenActor?.documentName === "Actor") return selectedTokenActor;
+
+    if (game.user?.character?.documentName === "Actor") return game.user.character;
+
+    return Array.from(game.actors ?? []).find(actor => {
+      try {
+        return game.user?.isGM || actor.testUserPermission?.(game.user, "OWNER");
+      } catch (_e) {
+        return false;
+      }
+    }) ?? null;
+  }
+
+  async function refreshNativeFieldCatalogue(actor) {
+    try {
+      const catalogue = getFieldCatalogueApi();
+
+      if (catalogue?.refresh) {
+        await catalogue.refresh({
+          actorUuid: actor?.uuid ?? null,
+          includeLegacyConditionKeys: false,
+          includeReadOnly: false,
+          suggestionsOnly: false
+        });
+        return;
+      }
+
+      await refreshFields(parentState);
+    } catch (e) {
+      warn("Native sheet field catalogue refresh failed.", e);
+    }
+  }
+
+  const actor = await resolveNativeBuilderParentActor();
+
+  if (!actor) {
+    const report = {
+      ok: false,
+      reason: "no_parent_actor",
+      hint: "Select at least one target actor first. CSB's native Active Effect sheet needs a real actor parent."
+    };
+
+    updateOutput(parentRoot, parentState, report);
+    ui.notifications?.warn?.("Select at least one target actor before opening the native Active Effect builder.");
+    return report;
+  }
+
+  const builderState = {
+    customName: parentState.customName ?? "Custom Active Effect",
+    customCategory: parentState.customCategory ?? "Other",
+    customIcon: parentState.customIcon ?? "icons/svg/aura.svg",
+    customStatuses: parentState.customStatuses ?? "",
+    customDescription: parentState.customDescription ?? "",
+    customRows: clone(parentState.customRows, []) ?? []
+  };
+
+  const initialEffectData = buildCustomEffectData(builderState, parentState, {
+    includeChanges: true
+  });
+
+  // Draft is disabled so it does not affect mechanics while the sheet is open.
+  const draftData = clone(initialEffectData, {});
+  draftData.name = `[AEM Draft] ${safeString(draftData.name, "Custom Active Effect")}`;
+  draftData.label = draftData.name;
+  draftData.disabled = true;
+  draftData.flags = draftData.flags || {};
+  draftData.flags[MODULE_ID] = draftData.flags[MODULE_ID] || {};
+  draftData.flags[MODULE_ID].aemNativeDraft = true;
+
+  let draft = null;
+
+  try {
+    const created = await actor.createEmbeddedDocuments("ActiveEffect", [draftData], {
+      render: false
+    });
+
+    draft = created?.[0] ?? null;
+  } catch (e) {
+    const report = {
+      ok: false,
+      reason: "draft_create_failed",
+      actor: actor.name,
+      error: compactError(e)
+    };
+
+    updateOutput(parentRoot, parentState, report);
+    ui.notifications?.error?.("Active Effect Manager: could not create temporary native sheet draft.");
+    return report;
+  }
+
+  if (!draft) {
+    const report = {
+      ok: false,
+      reason: "draft_not_created",
+      actor: actor.name
+    };
+
+    updateOutput(parentRoot, parentState, report);
+    return report;
+  }
+
+  const sheet = draft.sheet;
+
+  if (!sheet?.render) {
+    try {
+      await draft.delete({ render: false });
+    } catch (_e) {}
+
+    const report = {
+      ok: false,
+      reason: "active_effect_sheet_not_found",
+      actor: actor.name
+    };
+
+    updateOutput(parentRoot, parentState, report);
+    return report;
+  }
+
+  BUILDER_DIALOG = sheet;
+
+  return await new Promise(resolve => {
+    let resolved = false;
+    let observer = null;
+    let dropdown = null;
+    let renderTimer = null;
+    let renderTries = 0;
+
+    const hookIds = [];
+    const originalClose = sheet.close?.bind(sheet);
+
+    const cleanup = () => {
+      if (renderTimer) {
+        clearInterval(renderTimer);
+        renderTimer = null;
+      }
+
+      for (const h of hookIds) {
+        try {
+          Hooks.off(h.name, h.id);
+        } catch (_e) {}
+      }
+
+      try {
+        observer?.disconnect?.();
+      } catch (_e) {}
+
+      try {
+        dropdown?.remove?.();
+      } catch (_e) {}
+
+      if (BUILDER_DIALOG === sheet) BUILDER_DIALOG = null;
+    };
+
+    const deleteDraft = async () => {
+      try {
+        if (draft && !draft.deleted) {
+          await draft.delete({ render: false });
+        }
+      } catch (e) {
+        warn("Could not delete AEM native draft effect.", e);
+      }
+    };
+
+    const finish = async (payload, { closeSheet = true, deleteTheDraft = true } = {}) => {
+      if (resolved) return;
+      resolved = true;
+
+      cleanup();
+
+      if (deleteTheDraft) {
+        await deleteDraft();
+      }
+
+      if (closeSheet && originalClose) {
+        try {
+          await originalClose();
+        } catch (_e) {}
+      }
+
+      resolve(payload);
+    };
+
+    const handleSubmit = async (ev) => {
+      ev?.preventDefault?.();
+      ev?.stopPropagation?.();
+      ev?.stopImmediatePropagation?.();
+
+      try {
+        const finalEffectData = readNativeFormData(
+          sheet,
+          initialEffectData,
+          parentState.customCategory ?? "Other"
+        );
+
+        // Remove draft prefix if the native form kept it.
+        finalEffectData.name = String(finalEffectData.name ?? "")
+          .replace(/^\[AEM Draft\]\s*/i, "")
+          .trim() || "Custom Active Effect";
+
+        finalEffectData.label = finalEffectData.name;
+
+        const finalCategory = inferCategoryFromNativeEffect(
+          finalEffectData,
+          parentState.customCategory ?? "Other"
+        );
+
+        parentState.customName = finalEffectData.name;
+        parentState.customCategory = finalCategory;
+        parentState.customIcon = finalEffectData.img ?? finalEffectData.icon ?? "icons/svg/aura.svg";
+        parentState.customStatuses = Array.isArray(finalEffectData.statuses)
+          ? finalEffectData.statuses.join(", ")
+          : "";
+        parentState.customDescription = finalEffectData.description ?? "";
+        parentState.customRows = (clone(finalEffectData.changes, []) ?? []).map(row => ({
+          id: randomId("mod"),
+          key: row.key ?? "",
+          mode: Number(row.mode ?? modeValue("ADD")),
+          value: String(row.value ?? ""),
+          priority: Number(row.priority ?? 20)
+        }));
+
+        addSelectedCustomEffect(parentState, finalEffectData, finalCategory);
+        rerender(parentRoot, parentState);
+
+        const report = {
+          ok: true,
+          action: "custom_native_effect_queued",
+          actorParent: actor.name,
+          effectName: finalEffectData.name,
+          category: finalCategory,
+          changes: finalEffectData.changes ?? []
+        };
+
+        updateOutput(parentRoot, parentState, report);
+        ui.notifications?.info?.(`Queued custom effect: ${finalEffectData.name}`);
+
+        await finish(report, {
+          closeSheet: true,
+          deleteTheDraft: true
+        });
+      } catch (e) {
+        console.error(`${TAG} Native custom effect submit failed.`, e);
+
+        const report = {
+          ok: false,
+          reason: "native_custom_effect_submit_failed",
+          error: compactError(e)
+        };
+
+        updateOutput(parentRoot, parentState, report);
+        ui.notifications?.error?.("Active Effect Manager: native sheet submit failed. Check console.");
+      }
+    };
+
+    const installIntoSheet = async () => {
+      const root = getSheetRoot(sheet);
+      if (!root) return false;
+
+      ensureNativeSuggestionStyle();
+      await refreshNativeFieldCatalogue(actor);
+
+      // Visually default the final queued effect to enabled, while the real draft
+      // document remains disabled in the background.
+      const disabledBox = root.querySelector('input[name="disabled"]');
+      if (disabledBox && !disabledBox.dataset.oniAemNativeDefaulted) {
+        disabledBox.dataset.oniAemNativeDefaulted = "1";
+        disabledBox.checked = false;
+      }
+
+      const nameInput = root.querySelector('input[name="name"]');
+      if (nameInput && /^\[AEM Draft\]\s*/i.test(nameInput.value)) {
+        nameInput.value = nameInput.value.replace(/^\[AEM Draft\]\s*/i, "");
+      }
+
+      const form = root.querySelector("form") ?? sheet.form ?? null;
+
+      if (form && !form.dataset.oniAemSubmitCaptured) {
+        form.dataset.oniAemSubmitCaptured = "1";
+        form.addEventListener("submit", handleSubmit, true);
+      }
+
+      if (!root.dataset.oniAemSubmitButtonCaptured) {
+        root.dataset.oniAemSubmitButtonCaptured = "1";
+
+        root.addEventListener("click", ev => {
+          const btn = ev.target.closest?.('button[data-action="submit"], button[data-action="save"], button[type="submit"]');
+          if (!btn) return;
+
+          if (String(btn.getAttribute("type") ?? "").toLowerCase() === "submit") return;
+
+          handleSubmit(ev);
+        }, true);
+      }
+
+      if (!dropdown) {
+        dropdown = document.createElement("div");
+        dropdown.className = SUGGESTION_CLASS;
+        dropdown.dataset.sheetId = String(sheet.appId ?? sheet.id ?? "native");
+        document.body.appendChild(dropdown);
+
+        document.addEventListener("mousedown", ev => {
+          if (dropdown.contains(ev.target)) return;
+          dropdown.style.display = "none";
+        });
+      }
+
+      const bindFields = () => {
+        const fields = findNativeAttributeKeyFields(root);
+        for (const field of fields) {
+          bindSuggestionDropdownToField(field, dropdown);
+        }
+      };
+
+      bindFields();
+
+      if (!observer) {
+        observer = new MutationObserver(() => bindFields());
+        observer.observe(root, {
+          childList: true,
+          subtree: true
+        });
+      }
+
+      return true;
+    };
+
+    const hookNames = [
+      "renderActiveEffectConfig",
+      "renderCustomActiveEffectConfig"
+    ];
+
+    for (const name of hookNames) {
+      const id = Hooks.on(name, app => {
+        if (app !== sheet) return;
+        installIntoSheet();
+      });
+
+      hookIds.push({ name, id });
+    }
+
+    if (originalClose && !sheet.__oniAemNativeBuilderClosePatched) {
+      sheet.__oniAemNativeBuilderClosePatched = true;
+
+      sheet.close = async (...args) => {
+        if (!resolved) {
+          await finish({
+            ok: false,
+            reason: "closed"
+          }, {
+            closeSheet: false,
+            deleteTheDraft: true
+          });
+        }
+
+        return await originalClose(...args);
+      };
+    }
+
+    try {
+      sheet.render(true);
+
+      renderTimer = setInterval(async () => {
+        renderTries += 1;
+
+        if (resolved) {
+          clearInterval(renderTimer);
+          return;
+        }
+
+        const ok = await installIntoSheet();
+
+        if (ok) {
+          clearInterval(renderTimer);
+          renderTimer = null;
+          return;
+        }
+
+        // Prevent the manager button from staying grey forever if Foundry/CSB
+        // throws during render before our sheet hook can finish.
+        if (renderTries >= 30) {
+          const report = {
+            ok: false,
+            reason: "native_sheet_render_timeout",
+            actor: actor.name,
+            hint: "The native sheet did not finish rendering. Check the console error above."
+          };
+
+          updateOutput(parentRoot, parentState, report);
+          ui.notifications?.error?.("Active Effect Manager: native sheet failed to render.");
+
+          await finish(report, {
+            closeSheet: true,
+            deleteTheDraft: true
+          });
+        }
+      }, 100);
+    } catch (e) {
+      finish({
+        ok: false,
+        reason: "sheet_render_failed",
+        actor: actor.name,
+        error: compactError(e)
+      }, {
+        closeSheet: false,
+        deleteTheDraft: true
+      });
+    }
+  });
+}
 
   // --------------------------------------------------------------------------
   // Apply action
