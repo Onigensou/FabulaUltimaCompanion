@@ -1286,7 +1286,7 @@
               </div>
 
               <div class="aem-mini" style="margin-top:6px;">
-                Add preset effects from the registry, or open the builder to create a custom one.
+                Add official CONFIG status effects, or open the builder to create a custom one.
               </div>
             </div>
           </div>
@@ -1346,19 +1346,52 @@
   // Data loading
   // --------------------------------------------------------------------------
 
+  function isConfigStatusEffectEntry(entry = {}) {
+    const sourceText = [
+      entry.sourceType,
+      entry.sourceName,
+      entry.registryId,
+      entry.effectUuid,
+      entry.sourceUuid,
+      entry.name
+    ]
+      .filter(Boolean)
+      .map(String)
+      .join(" ")
+      .toLowerCase();
+
+    return (
+      sourceText.includes("config.statuseffects") ||
+      sourceText.includes("config-status-effect")
+    );
+  }
+
   async function refreshRegistry(state, { includeCompendiums = false } = {}) {
     const registry = getRegistryApi();
 
     if (!registry) {
       state.registryEntries = [];
-      return { ok: false, reason: "registry_api_not_found" };
+      return {
+        ok: false,
+        reason: "registry_api_not_found"
+      };
     }
 
     const sampleActorUuid = state.targetActorUuids?.[0] ?? null;
 
+    // For the polished GM Active Effect Manager UI, only show the official
+    // CONFIG.statusEffects list. This prevents duplicate rows from world items,
+    // actor-embedded effects, equipment effects, and compendiums.
     if (typeof registry.refresh === "function") {
       await registry.refresh({
-        scanCompendiums: !!includeCompendiums,
+        scanConfigStatusEffects: true,
+
+        scanWorldItems: false,
+        scanWorldActors: false,
+        includeActorEffects: false,
+        scanCompendiums: false,
+
+        dedupe: true,
         sampleActorUuid
       });
     }
@@ -1367,9 +1400,18 @@
       ? registry.getAll({ cloneResult: false })
       : [];
 
-    state.registryEntries = Array.isArray(entries) ? entries : [];
+    const rawEntries = Array.isArray(entries) ? entries : [];
 
-    return { ok: true, count: state.registryEntries.length };
+    // Extra safety filter in case the registry script keeps old cached rows
+    // or ignores some scan options.
+    state.registryEntries = rawEntries.filter(isConfigStatusEffectEntry);
+
+    return {
+      ok: true,
+      source: "CONFIG.statusEffects only",
+      count: state.registryEntries.length,
+      rawCountBeforeFilter: rawEntries.length
+    };
   }
 
   async function refreshFields(state) {
