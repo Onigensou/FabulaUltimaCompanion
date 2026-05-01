@@ -342,9 +342,11 @@
       ...asArray(raw?.tags),
       ...asArray(raw?.system?.tags),
       ...asArray(effectLike?.tags),
+      ...asArray(effectLike?.system?.tags),
 
-      ...asArray(getProperty(flags, `${MODULE_ID}.tags`)),
-      ...asArray(getProperty(flags, `${MODULE_ID}.effectTags`)),
+      ...asArray(getProperty(flags, MODULE_ID + ".tags")),
+      ...asArray(getProperty(flags, MODULE_ID + ".effectTags")),
+      ...asArray(getProperty(flags, MODULE_ID + ".activeEffectManager.tags")),
       ...asArray(getProperty(flags, "custom-system-builder.tags")),
       ...asArray(getProperty(flags, "dfreds-convenient-effects.tags"))
     ];
@@ -352,38 +354,119 @@
     return uniq(candidates).map(String);
   }
 
-  function inferCategory(effectLike, rawData = null) {
+  function normalizeCategoryToken(value) {
+    return safeString(value)
+      .toLowerCase()
+      .replace(/[\s_-]+/g, "")
+      .trim();
+  }
+
+  function normalizeCategory(value) {
+    const token = normalizeCategoryToken(value);
+
+    if (token === "buff") return "Buff";
+    if (token === "debuff") return "Debuff";
+    if (token === "other") return "Other";
+
+    return "";
+  }
+
+  function categoryFromTags(tags = []) {
+    const rawTags = asArray(tags);
+
+    // Strongest signal:
+    // CSB stores the visible tag chips here:
+    // system.tags = ["buff"] / ["debuff"] / ["other"]
+    for (const tag of rawTags) {
+      const cat = normalizeCategory(tag);
+      if (cat) return cat;
+    }
+
+    // Loose fallback for future/custom text tags.
+    for (const tag of rawTags) {
+      const text = safeString(tag).toLowerCase();
+      if (/\bdebuff\b/.test(text)) return "Debuff";
+      if (/\bbuff\b/.test(text)) return "Buff";
+      if (/\bother\b/.test(text)) return "Other";
+    }
+
+    return "";
+  }
+
+  function categoryFromOwnerName(value) {
+    const token = normalizeCategoryToken(value);
+
+    // Strong fallback for template Items named exactly:
+    // Buff / Debuff / Other
+    if (token === "buff" || token === "buffs") return "Buff";
+    if (token === "debuff" || token === "debuffs") return "Debuff";
+    if (token === "other" || token === "others") return "Other";
+
+    return "";
+  }
+
+  function explicitCategoryFromData(effectLike, rawData = null) {
+    const raw = rawData ?? effectToRawData(effectLike);
+    const flags = raw?.flags ?? effectLike?.flags ?? {};
+
+    const explicit = safeString(
+      raw?.category ??
+      raw?.system?.category ??
+      effectLike?.category ??
+      effectLike?.system?.category ??
+      getProperty(flags, MODULE_ID + ".category") ??
+      getProperty(flags, MODULE_ID + ".effectCategory") ??
+      getProperty(flags, MODULE_ID + ".activeEffectManager.sourceCategory") ??
+      getProperty(flags, MODULE_ID + ".activeEffectManager.category") ??
+      getProperty(flags, "custom-system-builder.category") ??
+      getProperty(flags, "dfreds-convenient-effects.category")
+    );
+
+    return normalizeCategory(explicit);
+  }
+
+  function inferCategory(effectLike, rawData = null, source = {}) {
     const raw = rawData ?? effectToRawData(effectLike);
     const flags = raw?.flags ?? effectLike?.flags ?? {};
     const tags = extractTags(effectLike, raw);
     const name = getEffectName(effectLike ?? raw);
 
-    const explicit = safeString(
-      raw?.category ??
-      raw?.system?.category ??
-      getProperty(flags, `${MODULE_ID}.category`) ??
-      getProperty(flags, `${MODULE_ID}.effectCategory`) ??
-      getProperty(flags, "custom-system-builder.category") ??
-      getProperty(flags, "dfreds-convenient-effects.category")
-    );
+    // 1. Explicit category fields win.
+    const explicit = explicitCategoryFromData(effectLike, raw);
+    if (explicit) return explicit;
 
-    if (/^buff$/i.test(explicit)) return "Buff";
-    if (/^debuff$/i.test(explicit)) return "Debuff";
-    if (/^other$/i.test(explicit)) return "Other";
+    // 2. CSB string-tags field wins after explicit category.
+    // This fixes cases like Berserk:
+    // system.tags = ["debuff"]
+    const fromTags = categoryFromTags(tags);
+    if (fromTags) return fromTags;
+
+    // 3. Template parent Item fallback.
+    // Example: effect lives inside an Item named "Debuff".
+    const fromOwner = categoryFromOwnerName(
+      source?.ownerName ??
+      source?.name ??
+      raw?.parentName ??
+      effectLike?.parentName ??
+      effectLike?.parent?.name ??
+      ""
+    );
+    if (fromOwner) return fromOwner;
 
     const allText = [
       name,
       ...tags,
+      source?.ownerName,
       JSON.stringify(raw?.statuses ?? []),
       JSON.stringify(flags ?? {})
     ].join(" ").toLowerCase();
 
-    // This fallback is for display grouping only.
-    // Mechanics should still use the actual ActiveEffect document.
+    // 4. Last-resort display fallback only.
+    // Mechanics still use the real ActiveEffect document.
     if (
       /\bdebuff\b/.test(allText) ||
       /\bcondition\b/.test(allText) ||
-      /slow|dazed|weak|shaken|enraged|poison|poisoned|bleed|burn|frozen|curse|blind|stun|fatigue|wet|oil|petrify|hypothermia|turbulence|zombie/.test(allText)
+      /slow|dazed|weak|shaken|enraged|poison|poisoned|bleed|burn|frozen|curse|blind|stun|fatigue|wet|oil|petrify|hypothermia|turbulence|zombie|berserk/.test(allText)
     ) {
       return "Debuff";
     }
@@ -396,6 +479,138 @@
     }
 
     return "Other";
+  }
+
+  function normalizeStatusMatchKey(value) {
+    return safeString(value)
+      .toLowerCase()
+      .replace(/^status:/, "")
+      .trim();
+  }
+
+  function getConfigStatusMatchKeys(status = {}) {
+    return uniq([
+      status?.id,
+      status?._id,
+      status?.name,
+      status?.label,
+      status?.status,
+      ...asArray(status?.statuses)
+    ])
+      .map(normalizeStatusMatchKey)
+      .filter(Boolean);
+  }
+
+  function effectMatchesConfigStatus(effectLike, rawData = null, status = {}) {
+    const raw = rawData ?? effectToRawData(effectLike);
+    const wanted = new Set(getConfigStatusMatchKeys(status));
+    if (!wanted.size) return false;
+
+    const effectStatusKeys = getEffectStatuses(effectLike, raw)
+      .map(normalizeStatusMatchKey)
+      .filter(Boolean);
+
+    if (effectStatusKeys.some(k => wanted.has(k))) return true;
+
+    // Name fallback catches templates whose status id is not loaded yet,
+    // but only after the stronger status-id match check above.
+    const effectName = normalizeName(getEffectName(effectLike ?? raw));
+    const wantedNames = uniq([
+      status?.name,
+      status?.label,
+      status?.id
+    ])
+      .map(normalizeName)
+      .filter(Boolean);
+
+    return !!effectName && wantedNames.includes(effectName);
+  }
+
+  function scoreStatusTemplateCandidate({ effect, raw, source, status, tags, category } = {}) {
+    let score = 0;
+
+    const wanted = new Set(getConfigStatusMatchKeys(status));
+    const effectStatusKeys = getEffectStatuses(effect, raw)
+      .map(normalizeStatusMatchKey)
+      .filter(Boolean);
+
+    if (effectStatusKeys.some(k => wanted.has(k))) score += 100;
+
+    const effectName = normalizeName(getEffectName(effect ?? raw));
+    const statusNames = uniq([status?.name, status?.label, status?.id])
+      .map(normalizeName)
+      .filter(Boolean);
+
+    if (effectName && statusNames.includes(effectName)) score += 35;
+    if (categoryFromTags(tags)) score += 30;
+    if (explicitCategoryFromData(effect, raw)) score += 25;
+    if (categoryFromOwnerName(source?.ownerName)) score += 15;
+    if (source?.ownerDocumentName === "Item") score += 8;
+    if (category === "Buff" || category === "Debuff") score += 5;
+
+    return score;
+  }
+
+  function findTemplateForConfigStatus(status = {}) {
+    const candidates = [];
+
+    const scanOwner = (owner, sourceType, ownerDocumentName) => {
+      for (const effect of owner?.effects ?? []) {
+        try {
+          const raw = effectToRawData(effect);
+          if (!effectMatchesConfigStatus(effect, raw, status)) continue;
+
+          const source = {
+            sourceType,
+            ownerName: owner.name,
+            ownerUuid: owner.uuid,
+            ownerDocumentName,
+            ownerType: owner.type,
+            effectId: effect.id,
+            effectUuid: effect.uuid,
+            registryId: effect.uuid
+          };
+
+          const tags = extractTags(effect, raw);
+          const category = inferCategory(effect, raw, source);
+          const score = scoreStatusTemplateCandidate({
+            effect,
+            raw,
+            source,
+            status,
+            tags,
+            category
+          });
+
+          candidates.push({
+            effect,
+            raw,
+            source,
+            tags,
+            category,
+            score
+          });
+        } catch (e) {
+          warn("Failed while matching CONFIG.statusEffects entry to ActiveEffect template.", {
+            owner: owner?.name,
+            effect: effect?.name,
+            status: status?.name ?? status?.label ?? status?.id,
+            error: String(e?.message ?? e)
+          });
+        }
+      }
+    };
+
+    for (const item of game.items ?? []) {
+      scanOwner(item, "world-item-effect", "Item");
+    }
+
+    for (const actor of game.actors ?? []) {
+      scanOwner(actor, "world-actor-effect", "Actor");
+    }
+
+    candidates.sort((a, b) => b.score - a.score);
+    return candidates[0] ?? null;
   }
 
   function normalizeEffectDataForRegistry(effectLike, source = {}) {
@@ -505,7 +720,7 @@
 
     const name = getEffectName(effectLike ?? raw);
     const img = getEffectImg(effectLike ?? raw);
-    const category = inferCategory(effectLike ?? raw, raw);
+    const category = inferCategory(effectLike ?? raw, raw, source);
     const tags = extractTags(effectLike ?? raw, raw);
     const statuses = getEffectStatuses(effectLike ?? raw, raw);
     const canonicalIds = getCanonicalIds(effectLike ?? raw, raw, source);
@@ -567,16 +782,52 @@
 
     const raw = clone(status, {});
 
+    // CONFIG.statusEffects entries often know the status id/name,
+    // but not the CSB string-tags field from the actual ActiveEffect template.
+    // Bridge that gap by matching the CONFIG status to the real ActiveEffect
+    // document by status id first, then by name.
+    const template = findTemplateForConfigStatus(status);
+    const templateTags = template?.tags ?? [];
+    const templateCategory = template?.category ?? "";
+
+    const mergedTags = uniq([
+      ...asArray(status?.tags),
+      ...asArray(status?.system?.tags),
+      ...templateTags
+    ]);
+
+    const pseudoFlags = clone(status?.flags ?? {}, {});
+    pseudoFlags[MODULE_ID] = {
+      ...(pseudoFlags[MODULE_ID] ?? {}),
+      sourceEffectUuid: template?.source?.effectUuid ?? null,
+      sourceEffId: template?.source?.effectUuid ?? template?.source?.effectId ?? null,
+      statusTemplateEffectUuid: template?.source?.effectUuid ?? null,
+      statusTemplateSourceName: template?.source?.ownerName ?? null,
+      statusTemplateCategory: templateCategory || null,
+      statusTemplateTags: clone(templateTags, [])
+    };
+
+    const pseudoSystem = {
+      ...(status?.system && typeof status.system === "object" ? clone(status.system, {}) : {}),
+      tags: mergedTags
+    };
+
+    if (templateCategory && !pseudoSystem.category) {
+      pseudoSystem.category = templateCategory;
+    }
+
     const pseudoEffect = {
       id,
       name,
       label: name,
       img,
       icon: img,
+      tags: mergedTags,
+      system: pseudoSystem,
       statuses: id ? [id] : [],
-      changes: clone(status?.changes ?? [], []),
+      changes: clone(status?.changes ?? template?.raw?.changes ?? [], []),
       duration: {},
-      flags: clone(status?.flags ?? {}, {}),
+      flags: pseudoFlags,
       sourceType: "config-status-effect"
     };
 
@@ -586,9 +837,10 @@
       ownerUuid: null,
       ownerDocumentName: "CONFIG",
       effectId: id,
-      effectUuid: id ? `status:${id}` : null,
-      registryId: id ? `status:${id}` : `status:${name}`,
-      raw
+      effectUuid: id ? "status:" + id : null,
+      registryId: id ? "status:" + id : "status:" + name,
+      raw,
+      templateSource: template?.source ?? null
     };
 
     return buildRegistryEntry(pseudoEffect, source);
