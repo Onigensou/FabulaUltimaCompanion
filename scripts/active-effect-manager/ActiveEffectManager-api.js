@@ -1044,21 +1044,46 @@
   // Core document operations
   // --------------------------------------------------------------------------
 
-  async function createEffectOnActor(actor, effectData) {
-    const created = await actor.createEmbeddedDocuments("ActiveEffect", [effectData]);
+  async function createEffectOnActor(actor, effectData, options = {}) {
+    const created = await createEffectsOnActor(actor, [effectData], options);
     return created?.[0] ?? null;
   }
 
-  async function deleteEffectsOnActor(actor, effectsOrIds = []) {
+  async function createEffectsOnActor(actor, effectRowsOrData = [], options = {}) {
+    const rows = asArray(effectRowsOrData).filter(Boolean);
+
+    const dataArray = rows
+      .map(row => {
+        const data = row.effectData ?? row;
+        const cloned = clone(data, {});
+        deleteUnsafeCreateFields(cloned);
+        return cloned;
+      })
+      .filter(data => data && typeof data === "object");
+
+    if (!actor || !dataArray.length) return [];
+
+    const created = await actor.createEmbeddedDocuments("ActiveEffect", dataArray, {
+      render: false,
+      ...options
+    });
+
+    return Array.from(created ?? []);
+  }
+
+  async function deleteEffectsOnActor(actor, effectsOrIds = [], options = {}) {
     const ids = effectsOrIds
       .map(e => typeof e === "string" ? e : e?.id)
       .filter(Boolean);
 
-    if (!ids.length) return [];
+    if (!actor || !ids.length) return [];
 
-    await actor.deleteEmbeddedDocuments("ActiveEffect", ids);
+    await actor.deleteEmbeddedDocuments("ActiveEffect", uniq(ids), {
+      render: false,
+      ...options
+    });
 
-    return ids;
+    return uniq(ids);
   }
 
   async function updateEffect(effect, updates = {}) {
@@ -1172,6 +1197,22 @@
     const results = [];
     const errors = [];
 
+    const makeEffectResultInfo = (effectData, identity) => ({
+      name: effectData?.name ?? null,
+      img: effectData?.img ?? effectData?.icon ?? null,
+      identity
+    });
+
+    const identityQueueKey = (identity, effectData) => {
+      const ids = uniq(identity?.canonicalIds ?? []).filter(Boolean);
+      if (ids.length) return `ids:${ids.join("|")}`;
+
+      const statuses = uniq(identity?.statuses ?? []).filter(Boolean);
+      const name = normalizeName(identity?.name ?? effectData?.name);
+
+      return `name:${name}|statuses:${statuses.join("|")}`;
+    };
+
     if (!actors.length) {
       const report = {
         ok: false,
@@ -1234,19 +1275,49 @@
         continue;
       }
 
+      const createQueue = [];
+      const deleteIds = [];
+      const removeResultRows = [];
+      const plannedCreateKeys = new Set();
+      let deleteFailed = false;
+
       for (const normalized of validEffects) {
         const effectData = clone(normalized.effectData, {});
         const identity = normalized.identity;
+        const queueKey = identityQueueKey(identity, effectData);
 
         try {
           const dupReport = await findDuplicatesOnActor(actor, identity, options);
           const duplicates = dupReport.duplicates ?? [];
 
+          const requestedMode = safeString(
+            normalized.duplicateMode ?? options.duplicateMode,
+            options.duplicateMode
+          ).toLowerCase();
+
+          // Important for batched mode:
+          // If the same effect is queued twice in one operation, "skip" should still
+          // behave like the old sequential version: first one applies, second skips.
+          if (
+            plannedCreateKeys.has(queueKey) &&
+            requestedMode !== "stack"
+          ) {
+            results.push({
+              ok: true,
+              status: "skipped",
+              reason: "duplicate_exists",
+              actor: compactActor(actor),
+              effect: makeEffectResultInfo(effectData, identity),
+              duplicates: []
+            });
+            continue;
+          }
+
           const duplicateMode = await decideDuplicateMode({
             actor,
             effectData,
             duplicates,
-            mode: normalized.duplicateMode ?? options.duplicateMode
+            mode: requestedMode
           });
 
           if (duplicates.length && duplicateMode === "skip") {
@@ -1255,101 +1326,204 @@
               status: "skipped",
               reason: "duplicate_exists",
               actor: compactActor(actor),
-              effect: {
-                name: effectData.name,
-                img: effectData.img,
-                identity
-              },
+              effect: makeEffectResultInfo(effectData, identity),
               duplicates
             });
             continue;
           }
 
           if (duplicates.length && duplicateMode === "remove") {
-            const removedIds = await deleteEffectsOnActor(actor, duplicates);
+            const ids = duplicates
+              .map(d => d?.id)
+              .filter(Boolean);
 
-            results.push({
+            deleteIds.push(...ids);
+
+            removeResultRows.push({
               ok: true,
               status: "removed",
               reason: "duplicate_removed",
               actor: compactActor(actor),
-              effect: {
-                name: effectData.name,
-                img: effectData.img,
-                identity
-              },
-              removedIds,
+              effect: makeEffectResultInfo(effectData, identity),
+              removedIds: ids,
               duplicates
             });
+
             continue;
           }
 
           if (duplicates.length && duplicateMode === "replace") {
-            const removedIds = await deleteEffectsOnActor(actor, duplicates);
+            const ids = duplicates
+              .map(d => d?.id)
+              .filter(Boolean);
 
-            const created = await createEffectOnActor(actor, effectData);
+            deleteIds.push(...ids);
 
-            results.push({
-              ok: true,
+            createQueue.push({
               status: "replaced",
-              actor: compactActor(actor),
-              effect: {
-                name: effectData.name,
-                img: effectData.img,
-                identity
-              },
-              removedIds,
-              created: compactEffectDoc(created)
+              actor,
+              effectData,
+              identity,
+              duplicates,
+              removedIds: ids
             });
 
+            plannedCreateKeys.add(queueKey);
             continue;
           }
 
           // stack or no duplicate
-          const created = await createEffectOnActor(actor, effectData);
-
-          results.push({
-            ok: true,
+          createQueue.push({
             status: duplicates.length ? "stacked" : "applied",
-            actor: compactActor(actor),
-            effect: {
-              name: effectData.name,
-              img: effectData.img,
-              identity
-            },
+            actor,
+            effectData,
+            identity,
             duplicates,
-            created: compactEffectDoc(created)
+            removedIds: []
           });
+
+          if (duplicateMode !== "stack") {
+            plannedCreateKeys.add(queueKey);
+          }
 
         } catch (e) {
           const errorRow = {
             ok: false,
             status: "failed",
             actor: compactActor(actor),
-            effect: {
-              name: effectData?.name ?? null,
-              img: effectData?.img ?? null,
-              identity
-            },
+            effect: makeEffectResultInfo(effectData, identity),
             error: String(e?.message ?? e)
           };
 
           results.push(errorRow);
           errors.push(errorRow);
 
-          err("Failed to apply effect.", {
+          err("Failed to plan effect application.", {
             actor: actor.name,
             effect: effectData?.name,
             error: e
           });
         }
       }
+
+      // Batch delete first for remove / replace.
+      if (deleteIds.length) {
+        try {
+          await deleteEffectsOnActor(actor, deleteIds, {
+            render: false
+          });
+
+          for (const row of removeResultRows) {
+            results.push(row);
+          }
+
+        } catch (e) {
+          deleteFailed = true;
+
+          const errorText = String(e?.message ?? e);
+
+          errors.push({
+            actor: compactActor(actor),
+            operation: "deleteEmbeddedDocuments",
+            ids: uniq(deleteIds),
+            error: errorText
+          });
+
+          for (const row of removeResultRows) {
+            results.push({
+              ...row,
+              ok: false,
+              status: "failed",
+              reason: "delete_failed",
+              error: errorText
+            });
+          }
+        }
+      }
+
+      // If delete failed, avoid creating replacement duplicates.
+      const actualCreateQueue = createQueue.filter(row => {
+        if (!deleteFailed) return true;
+
+        if (row.status === "replaced") {
+          results.push({
+            ok: false,
+            status: "failed",
+            reason: "replace_delete_failed",
+            actor: compactActor(actor),
+            effect: makeEffectResultInfo(row.effectData, row.identity),
+            removedIds: row.removedIds,
+            duplicates: row.duplicates
+          });
+
+          return false;
+        }
+
+        return true;
+      });
+
+      // Batch create once per actor.
+      if (actualCreateQueue.length) {
+        try {
+          const createdDocs = await createEffectsOnActor(actor, actualCreateQueue, {
+            render: false
+          });
+
+          for (let i = 0; i < actualCreateQueue.length; i++) {
+            const row = actualCreateQueue[i];
+            const created = createdDocs?.[i] ?? null;
+
+            results.push({
+              ok: true,
+              status: row.status,
+              actor: compactActor(actor),
+              effect: makeEffectResultInfo(row.effectData, row.identity),
+              duplicates: row.duplicates,
+              removedIds: row.removedIds,
+              created: compactEffectDoc(created)
+            });
+          }
+
+        } catch (e) {
+          const errorText = String(e?.message ?? e);
+
+          errors.push({
+            actor: compactActor(actor),
+            operation: "createEmbeddedDocuments",
+            count: actualCreateQueue.length,
+            error: errorText
+          });
+
+          for (const row of actualCreateQueue) {
+            results.push({
+              ok: false,
+              status: "failed",
+              reason: "create_failed",
+              actor: compactActor(actor),
+              effect: makeEffectResultInfo(row.effectData, row.identity),
+              duplicates: row.duplicates,
+              removedIds: row.removedIds,
+              error: errorText
+            });
+          }
+
+          err("Failed to batch create ActiveEffects.", {
+            actor: actor.name,
+            count: actualCreateQueue.length,
+            error: e
+          });
+        }
+      }
     }
 
-    const ok = results.some(r => r.ok && ["applied", "stacked", "replaced", "removed", "skipped"].includes(r.status));
+    const ok = results.some(r =>
+      r.ok &&
+      ["applied", "stacked", "replaced", "removed", "skipped"].includes(r.status)
+    );
 
     const report = {
       ok,
+      optimized: true,
       runId,
       action: "apply",
       options: {
@@ -1372,6 +1546,7 @@
     await maybeRenderChat(report, options);
 
     log("applyEffects complete.", {
+      optimized: true,
       runId,
       counts: report.counts
     });
@@ -1907,6 +2082,7 @@
       effectMatchesIdentity,
 
       createEffectOnActor,
+      createEffectsOnActor,
       deleteEffectsOnActor,
       updateEffect,
 
