@@ -215,6 +215,73 @@
     );
   }
 
+    function isVideoSrc(src) {
+    return /\.(webm|mp4|m4v|ogv|ogg)(\?|#|$)/i.test(String(src ?? ""));
+  }
+
+  function targetIconMediaHtml(row = {}) {
+    const src = row.img || FALLBACK_IMG;
+    const safeSrc = escapeHtml(src);
+    const safeName = escapeHtml(row.actorName || "Target");
+
+    if (isVideoSrc(src)) {
+      return `
+        <video
+          class="aem-target-img aem-target-video"
+          src="${safeSrc}"
+          title="${safeName}"
+          autoplay
+          muted
+          loop
+          playsinline
+          preload="auto"
+        ></video>
+      `;
+    }
+
+    return `
+      <img
+        class="aem-target-img aem-target-image"
+        src="${safeSrc}"
+        title="${safeName}"
+        alt=""
+        draggable="false"
+      >
+    `;
+  }
+
+    function tokenTextureImg(token, fallback = FALLBACK_IMG) {
+    return (
+      token?.document?.texture?.src ??
+      token?.texture?.src ??
+      token?.mesh?.texture?.baseTexture?.resource?.url ??
+      fallback
+    );
+  }
+
+  function findSceneTokenForActor(actor) {
+    if (!actor) return null;
+
+    const tokens = Array.from(canvas?.tokens?.placeables ?? []);
+
+    return (
+      tokens.find(t => t?.actor?.uuid && t.actor.uuid === actor.uuid) ??
+      tokens.find(t => t?.document?.actorId && t.document.actorId === actor.id) ??
+      null
+    );
+  }
+
+  function actorTokenImg(actor, fallback = FALLBACK_IMG) {
+    const sceneToken = findSceneTokenForActor(actor);
+
+    return tokenTextureImg(
+      sceneToken,
+      actor?.prototypeToken?.texture?.src ??
+      actor?.token?.texture?.src ??
+      actorImg(actor, fallback)
+    );
+  }
+
   function selectedCanvasTokens() {
     return Array.from(canvas?.tokens?.controlled ?? []).filter(t => t?.actor);
   }
@@ -282,14 +349,9 @@
     const tokens = selectedCanvasTokens();
 
     return tokens.map(token => {
-      const textureSrc =
-        token?.document?.texture?.src ??
-        token?.texture?.src ??
-        actorImg(token.actor);
-
       return makeTargetRow({
         actor: token.actor,
-        img: textureSrc,
+        img: tokenTextureImg(token, actorTokenImg(token.actor)),
         source: "Selected Token",
         selected: true,
         note: token.name ?? ""
@@ -329,7 +391,7 @@
         actor,
         actorUuid: actor?.uuid ?? normalizeActorRef(id),
         actorName: actor?.name ?? name,
-        img: sprite || actorImg(actor),
+        img: actor ? actorTokenImg(actor, sprite || actorImg(actor)) : (sprite || FALLBACK_IMG),
         source: "Party Member",
         selected: false,
         note: name
@@ -458,43 +520,41 @@
         line-height: 1.25;
       }
 
-      .oni-aem .aem-target-grid {
+            .oni-aem .aem-target-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
-        gap: 7px;
+        grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+        gap: 10px;
         max-height: 235px;
         overflow: auto;
-        padding: 4px;
-        border: 1px solid rgba(60,45,25,.18);
+        padding: 8px 4px;
+        border: 0;
         border-radius: 8px;
-        background: rgba(255,255,255,.38);
+        background: transparent;
       }
 
       .oni-aem .aem-target-card {
         position: relative;
-        min-height: 118px;
-        padding: 6px;
+        min-height: 82px;
+        padding: 0;
         margin: 0;
-        border-radius: 10px;
-        border: 1px solid rgba(60,45,25,.22);
-        background: rgba(255,255,255,.62);
+        border: 0;
+        border-radius: 0;
+        background: transparent;
         cursor: pointer;
         display: grid;
-        grid-template-rows: 64px auto;
-        gap: 5px;
-        transition: transform 120ms ease, background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+        place-items: center;
+        transition:
+          transform 120ms ease,
+          filter 120ms ease,
+          opacity 120ms ease;
       }
 
       .oni-aem .aem-target-card:hover {
-        transform: translateY(-1px);
-        background: rgba(255,255,255,.82);
-        border-color: rgba(70,50,25,.45);
+        transform: translateY(-2px) scale(1.035);
       }
 
       .oni-aem .aem-target-card.selected {
-        background: rgba(239, 225, 181, .88);
-        border-color: rgba(150,105,30,.72);
-        box-shadow: 0 0 0 2px rgba(180,125,35,.20) inset;
+        transform: translateY(-2px) scale(1.06);
       }
 
       .oni-aem .aem-target-card input {
@@ -503,39 +563,40 @@
         pointer-events: none;
       }
 
-      .oni-aem .aem-target-img-wrap {
-        width: 100%;
-        height: 64px;
-        border-radius: 8px;
-        overflow: hidden;
-        background: rgba(0,0,0,.10);
-        display: grid;
-        place-items: center;
-      }
-
-      .oni-aem .aem-target-img {
+            .oni-aem .aem-target-img {
+        max-width: 100%;
+        max-height: 100%;
         width: 100%;
         height: 100%;
-        object-fit: cover;
-        object-position: top center;
+        object-fit: contain;
+        object-position: center center;
         border: 0;
+        background: transparent;
+        pointer-events: none;
+
+        opacity: .72;
+        filter: grayscale(.35) brightness(.48) contrast(.95);
+        transform: translateZ(0);
+
+        transition:
+          opacity 140ms ease,
+          filter 140ms ease,
+          transform 140ms ease;
       }
 
-      .oni-aem .aem-target-name {
-        font-weight: 800;
-        font-size: 12px;
-        text-align: center;
-        line-height: 1.12;
-        min-height: 27px;
-        display: grid;
-        place-items: center;
+      .oni-aem video.aem-target-img {
+        display: block;
       }
 
-      .oni-aem .aem-target-source {
-        font-size: 10px;
-        opacity: .65;
-        text-align: center;
-        line-height: 1.1;
+      .oni-aem .aem-target-card:hover .aem-target-img {
+        opacity: .86;
+        filter: grayscale(.18) brightness(.62) contrast(1);
+      }
+
+      .oni-aem .aem-target-card.selected .aem-target-img {
+        opacity: 1;
+        filter: drop-shadow(0 8px 12px rgba(0,0,0,.26));
+        transform: scale(1.04);
       }
 
       .oni-aem .aem-effect-list {
@@ -1003,19 +1064,20 @@
       const selected = row.selected ? "selected" : "";
 
       return `
-        <label class="aem-target-card ${selected}" title="${escapeHtml(row.actorName)}">
+        <label
+          class="aem-target-card ${selected}"
+          title="${escapeHtml(row.actorName)}"
+          aria-label="${escapeHtml(row.actorName)}"
+        >
           <input
             type="checkbox"
             name="targetActorUuids"
             value="${escapeHtml(row.actorUuid)}"
             ${checked}
           >
+
           <div class="aem-target-img-wrap">
-            <img class="aem-target-img" src="${escapeHtml(row.img || FALLBACK_IMG)}">
-          </div>
-          <div>
-            <div class="aem-target-name">${escapeHtml(row.actorName)}</div>
-            <div class="aem-target-source">${escapeHtml(row.source || "Target")}</div>
+            ${targetIconMediaHtml(row)}
           </div>
         </label>
       `;
@@ -1256,8 +1318,8 @@
               </div>
 
               <div class="aem-mini">
-                Select one or more portraits. Selected scene token actors are included automatically when the window opens.
-                If you change token selection later, close and reopen this UI to refresh the list.
+Select one or more token icons. Selected scene token actors are included automatically when the window opens.
+If you change token selection later, close and reopen this UI to refresh the list.
               </div>
             </div>
 
