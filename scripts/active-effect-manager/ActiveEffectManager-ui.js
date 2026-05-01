@@ -2536,14 +2536,143 @@ function collectCoreSuggestionEntries() {
     .filter(Boolean);
 }
 
+const BUILTIN_GAMEPLAY_MODIFIER_KEYS = [
+  // Accuracy
+  "attack_accuracy_mod_all",
+  "attack_accuracy_mod_melee",
+  "attack_accuracy_mod_ranged",
+  "attack_accuracy_mod_magic",
+
+  // Extra Damage — attack range / action type
+  "extra_damage_mod_all",
+  "extra_damage_mod_melee",
+  "extra_damage_mod_ranged",
+  "extra_damage_mod_spell",
+
+  // Extra Damage — element
+  "extra_damage_mod_physical",
+  "extra_damage_mod_air",
+  "extra_damage_mod_bolt",
+  "extra_damage_mod_dark",
+  "extra_damage_mod_earth",
+  "extra_damage_mod_fire",
+  "extra_damage_mod_ice",
+  "extra_damage_mod_light",
+  "extra_damage_mod_poison",
+
+  // Extra Damage — weapon type
+  "extra_damage_mod_arcane",
+  "extra_damage_mod_bow",
+  "extra_damage_mod_brawling",
+  "extra_damage_mod_dagger",
+  "extra_damage_mod_firearm",
+  "extra_damage_mod_flail",
+  "extra_damage_mod_heavy",
+  "extra_damage_mod_spear",
+  "extra_damage_mod_sword",
+  "extra_damage_mod_thrown",
+
+  // Flat Damage Reduction
+  "damage_receiving_mod_all",
+  "damage_receiving_mod_melee",
+  "damage_receiving_mod_range",
+  "damage_receiving_mod_physical",
+  "damage_receiving_mod_air",
+  "damage_receiving_mod_bolt",
+  "damage_receiving_mod_dark",
+  "damage_receiving_mod_earth",
+  "damage_receiving_mod_fire",
+  "damage_receiving_mod_ice",
+  "damage_receiving_mod_light",
+  "damage_receiving_mod_poison",
+
+  // Percentage Damage Reduction
+  "damage_receiving_percentage_all",
+  "damage_receiving_percentage_melee",
+  "damage_receiving_percentage_range",
+  "damage_receiving_percentage_physical",
+  "damage_receiving_percentage_air",
+  "damage_receiving_percentage_bolt",
+  "damage_receiving_percentage_dark",
+  "damage_receiving_percentage_earth",
+  "damage_receiving_percentage_fire",
+  "damage_receiving_percentage_ice",
+  "damage_receiving_percentage_light",
+  "damage_receiving_percentage_poison",
+
+  // Critical / special combat modifiers
+  "minimum_critical_dice",
+  "critical_dice_range",
+  "critical_damage_bonus",
+  "critical_damage_multiplier",
+
+  // Sustain / drain
+  "lifesteal_percentage",
+  "lifesteal_value",
+  "manadrain_percentage",
+  "manadrain_value",
+
+  // Misc gameplay modifiers
+  "ip_reduction_value",
+  "character_exp_multiplier",
+  "character_zenit_multiplier",
+  "enmity",
+  "activation",
+
+  // Type affinity
+  "affinity_1",
+  "affinity_2",
+  "affinity_3",
+  "affinity_4",
+  "affinity_5",
+  "affinity_6",
+  "affinity_7",
+  "affinity_8",
+  "affinity_9",
+
+  // Weapon efficiency
+  "arcane_ef",
+  "bow_ef",
+  "brawling_ef",
+  "dagger_ef",
+  "firearm_ef",
+  "flail_ef",
+  "heavy_ef",
+  "spear_ef",
+  "sword_ef",
+  "thrown_ef"
+];
+
+function collectBuiltinGameplayModifierEntries() {
+  return BUILTIN_GAMEPLAY_MODIFIER_KEYS
+    .map(key => makeSuggestionEntry(key, {
+      category: inferSuggestionCategory(key),
+      source: "builtin-gameplay-modifier"
+    }))
+    .filter(Boolean);
+}
+
 function buildNativeSuggestionPool() {
   const byKey = new Map();
 
-  for (const entry of collectStatusTabSuggestionEntries()) {
+  // 1. Built-in known gameplay modifier keys.
+  // This makes the list reliable even if CSB's sheet body scanner misses
+  // collapsed tabs, table nodes, or formula-only label fields.
+  for (const entry of collectBuiltinGameplayModifierEntries()) {
     byKey.set(entry.key, entry);
   }
 
-  // Core entries should be added even if they are outside the Status tab.
+  // 2. Status tab scan from the current actor.
+  // This keeps the system extensible if you add more keys to the sheet later.
+  for (const entry of collectStatusTabSuggestionEntries()) {
+    byKey.set(entry.key, {
+      ...(byKey.get(entry.key) ?? {}),
+      ...entry,
+      source: "actor-status-tab"
+    });
+  }
+
+  // 3. Core actor stat/resource keys outside the Status tab.
   for (const entry of collectCoreSuggestionEntries()) {
     byKey.set(entry.key, entry);
   }
@@ -2553,7 +2682,7 @@ function buildNativeSuggestionPool() {
 
 function suggestionValueFromEntry(entry = {}) {
   // Foundry CSB ActiveEffect keys only need the short data key:
-  // damage_receiving_mod_all, dex_current, current_hp, etc.
+  // extra_damage_mod_all, dex_current, current_hp, etc.
   return safeString(entry.activeEffectKey ?? entry.key);
 }
 
@@ -2564,27 +2693,76 @@ function scoreNativeSuggestion(query, entry) {
   const cat = String(entry.category ?? "").toLowerCase();
 
   if (!q) {
-    if (entry.source === "core-actor-resource") return 800;
-    if (/^(attack_accuracy_mod_|extra_damage_mod_|damage_receiving_mod_)/.test(key)) return 700;
+    if (entry.source === "core-actor-resource") return 900;
+    if (entry.source === "builtin-gameplay-modifier") return 800;
+    if (entry.source === "actor-status-tab") return 750;
     return 300;
   }
 
   let score = 0;
 
-  if (key === q) score += 2000;
-  if (key.startsWith(q)) score += 1400;
-  if (key.includes(q)) score += 900;
-  if (label.includes(q)) score += 500;
-  if (cat.includes(q)) score += 250;
+  // Exact and normal matching.
+  if (key === q) score += 5000;
+  if (key.startsWith(q)) score += 3500;
+  if (key.includes(q)) score += 2400;
+  if (label.includes(q)) score += 800;
+  if (cat.includes(q)) score += 400;
 
-  const parts = q.split(/[\s._-]+/g).filter(Boolean);
-  for (const part of parts) {
-    if (key.includes(part)) score += 160;
-    if (label.includes(part)) score += 80;
-    if (cat.includes(part)) score += 40;
+  // Friendly alias matching.
+  // Typing "damage_mod" should find extra_damage_mod_*.
+  if (q.includes("damage_mod") && key.startsWith("extra_damage_mod_")) score += 3200;
+
+  // Typing "damage_reduction" should find damage_receiving_*.
+  if (
+    (q.includes("damage_reduction") || q.includes("reduction") || q.includes("receiving")) &&
+    key.startsWith("damage_receiving_")
+  ) {
+    score += 3200;
   }
 
+  // Typing "accuracy_mod" should find attack_accuracy_mod_*.
+  if (
+    (q.includes("accuracy_mod") || q.includes("accuracy")) &&
+    key.startsWith("attack_accuracy_mod_")
+  ) {
+    score += 3000;
+  }
+
+  // Typing "crit" should find critical keys.
+  if ((q.includes("crit") || q.includes("critical")) && key.includes("critical")) {
+    score += 2600;
+  }
+
+  // Typing "weapon" should show weapon efficiency.
+  if (
+    q.includes("weapon") &&
+    /^(arcane|bow|brawling|dagger|firearm|flail|heavy|spear|sword|thrown)_ef$/.test(key)
+  ) {
+    score += 2200;
+  }
+
+  // Split matching for things like "damage all", "fire damage", "melee mod".
+  const parts = q.split(/[\s._-]+/g).filter(Boolean);
+
+  for (const part of parts) {
+    if (key.includes(part)) score += 220;
+    if (label.includes(part)) score += 100;
+    if (cat.includes(part)) score += 60;
+  }
+
+  // Priority nudges.
+  if (entry.source === "builtin-gameplay-modifier") score += 180;
+  if (entry.source === "actor-status-tab") score += 160;
   if (entry.source === "core-actor-resource") score += 120;
+
+  // When user is clearly searching gameplay modifier keys, don't let core
+  // resources like dex_current crowd the result list.
+  const wantsModifier =
+    /damage|accuracy|crit|critical|reduction|receiving|mod|bonus|affinity|efficiency|weapon|melee|ranged|spell|magic|physical|air|bolt|dark|earth|fire|ice|light|poison/.test(q);
+
+  if (wantsModifier && entry.source === "core-actor-resource") {
+    score -= 1000;
+  }
 
   return score;
 }
@@ -2606,12 +2784,21 @@ function getNativeSuggestions(query) {
       const score = b.score - a.score;
       if (score) return score;
 
-      const cat = String(a.category ?? "").localeCompare(String(b.category ?? ""));
-      if (cat) return cat;
+      const sourcePriority = {
+        "builtin-gameplay-modifier": 3,
+        "actor-status-tab": 2,
+        "core-actor-resource": 1
+      };
+
+      const sp =
+        (sourcePriority[b.source] ?? 0) -
+        (sourcePriority[a.source] ?? 0);
+
+      if (sp) return sp;
 
       return String(a.key ?? "").localeCompare(String(b.key ?? ""));
     })
-    .slice(0, 12);
+    .slice(0, 16);
 }
 
   function findNativeAttributeKeyFields(root) {
