@@ -548,11 +548,14 @@
 
       .oni-aem .aem-effect-row {
         display: grid;
-        grid-template-columns: 30px 1fr auto;
+        grid-template-columns: 30px 1fr;
         gap: 7px;
         align-items: center;
-        padding: 5px 6px;
+        padding: 7px 8px;
         border-bottom: 1px solid rgba(60,45,25,.12);
+        cursor: pointer;
+        user-select: none;
+        transition: background 100ms ease, transform 100ms ease, border-color 100ms ease;
       }
 
       .oni-aem .aem-effect-row:last-child {
@@ -560,7 +563,12 @@
       }
 
       .oni-aem .aem-effect-row:hover {
-        background: rgba(0,0,0,.06);
+        background: rgba(239, 225, 181, .45);
+      }
+
+      .oni-aem .aem-effect-row:active {
+        transform: translateY(1px);
+        background: rgba(239, 225, 181, .72);
       }
 
       .oni-aem .aem-icon {
@@ -1051,17 +1059,18 @@
       const source = shortSource(entry);
 
       return `
-        <div class="aem-effect-row">
+        <div
+          class="aem-effect-row"
+          data-aem-action="add-registry-effect"
+          data-aem-registry-row="1"
+          data-registry-id="${escapeHtml(entry.registryId)}"
+          title="Left-click to add. Right-click to remove one queued copy."
+        >
           <img class="aem-icon" src="${escapeHtml(img)}">
           <div>
             <div class="aem-effect-name">${escapeHtml(entry.name)}</div>
             <div class="aem-effect-meta">${escapeHtml(category)}${source ? " • " + escapeHtml(source) : ""}</div>
           </div>
-          <button
-            type="button"
-            data-aem-action="add-registry-effect"
-            data-registry-id="${escapeHtml(entry.registryId)}"
-          >Add</button>
         </div>
       `;
     }).join("");
@@ -1077,7 +1086,12 @@
       const kind = sel.kind === "custom" ? "Custom" : "Preset";
 
       return `
-        <span class="aem-pill" title="${escapeHtml(kind)}">
+                <span
+          class="aem-pill"
+          title="${escapeHtml(kind)} — right-click to remove"
+          data-aem-selected-effect="1"
+          data-selected-id="${escapeHtml(sel.id)}"
+        >
           <img src="${escapeHtml(img)}">
           <b>${escapeHtml(sel.name)}</b>
           <small>${escapeHtml(sel.category || "Other")}</small>
@@ -1286,7 +1300,7 @@
               </div>
 
               <div class="aem-mini" style="margin-top:6px;">
-                Add official CONFIG status effects, or open the builder to create a custom one.
+                Left-click an effect to queue it. Right-click an effect to remove one queued copy.
               </div>
             </div>
           </div>
@@ -1549,6 +1563,64 @@
       img: entry.img || entry.icon || "icons/svg/aura.svg",
       category: entry.category || "Other"
     });
+  }
+
+    function removeSelectedRegistryEffect(state, entry) {
+    if (!entry) {
+      return {
+        ok: false,
+        reason: "missing_registry_entry"
+      };
+    }
+
+    const registryId = String(entry.registryId ?? "");
+    const entryName = String(entry.name ?? "");
+    const entryCategory = String(entry.category ?? "Other");
+
+    let index = -1;
+
+    // Prefer exact registry ID match.
+    for (let i = state.selectedEffects.length - 1; i >= 0; i--) {
+      const selected = state.selectedEffects[i];
+
+      if (
+        selected.kind === "registry" &&
+        String(selected.registryId ?? "") === registryId
+      ) {
+        index = i;
+        break;
+      }
+    }
+
+    // Fallback: name + category match, useful if an older queued item lacks registryId.
+    if (index < 0) {
+      for (let i = state.selectedEffects.length - 1; i >= 0; i--) {
+        const selected = state.selectedEffects[i];
+
+        if (
+          String(selected.name ?? "") === entryName &&
+          String(selected.category ?? "Other") === entryCategory
+        ) {
+          index = i;
+          break;
+        }
+      }
+    }
+
+    if (index < 0) {
+      return {
+        ok: false,
+        reason: "not_in_selected_effects",
+        effectName: entryName
+      };
+    }
+
+    const [removed] = state.selectedEffects.splice(index, 1);
+
+    return {
+      ok: true,
+      removed
+    };
   }
 
   function addSelectedCustomEffect(state, effectData, category = "Other") {
@@ -2092,6 +2164,37 @@ holder.addEventListener("input", (ev) => {
 
             rerender(root, state);
           }
+        });
+
+                holder.addEventListener("contextmenu", (ev) => {
+          const selectedBadge = ev.target.closest?.("[data-aem-selected-effect]");
+          const registryRow = ev.target.closest?.("[data-aem-registry-row]");
+
+          if (!selectedBadge && !registryRow) return;
+
+          ev.preventDefault();
+          ev.stopPropagation();
+
+          readCommonStateFromDom(root, state);
+
+          // Right-click selected badge = remove that exact queued effect.
+          if (selectedBadge) {
+            const id = selectedBadge.dataset.selectedId;
+            state.selectedEffects = state.selectedEffects.filter(e => e.id !== id);
+            rerender(root, state);
+            return;
+          }
+
+          // Right-click registry row = remove one matching queued copy.
+          const entry = findRegistryEntry(state, registryRow.dataset.registryId);
+          const result = removeSelectedRegistryEffect(state, entry);
+
+          if (!result.ok) {
+            ui.notifications?.info?.(`${entry?.name ?? "That effect"} is not currently queued.`);
+            return;
+          }
+
+          rerender(root, state);
         });
 
         holder.addEventListener("click", async (ev) => {
