@@ -520,9 +520,11 @@
         line-height: 1.25;
       }
 
-            .oni-aem .aem-target-grid {
+       .oni-aem .aem-target-grid {
+        --aem-target-slot-size: 86px;
+
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+        grid-template-columns: repeat(auto-fill, minmax(var(--aem-target-slot-size), 1fr));
         gap: 10px;
         max-height: 235px;
         overflow: auto;
@@ -534,19 +536,24 @@
 
       .oni-aem .aem-target-card {
         position: relative;
-        min-height: 82px;
+        width: var(--aem-target-slot-size);
+        height: var(--aem-target-slot-size);
+        min-height: var(--aem-target-slot-size);
         padding: 0;
-        margin: 0;
+        margin: 0 auto;
         border: 0;
         border-radius: 0;
         background: transparent;
         cursor: pointer;
         display: grid;
         place-items: center;
+        overflow: visible;
+        isolation: isolate;
+
         transition:
-          transform 120ms ease,
-          filter 120ms ease,
-          opacity 120ms ease;
+          transform 140ms ease,
+          opacity 140ms ease,
+          filter 140ms ease;
       }
 
       .oni-aem .aem-target-card:hover {
@@ -554,7 +561,7 @@
       }
 
       .oni-aem .aem-target-card.selected {
-        transform: translateY(-2px) scale(1.06);
+        transform: translateY(-2px) scale(1.07);
       }
 
       .oni-aem .aem-target-card input {
@@ -563,13 +570,26 @@
         pointer-events: none;
       }
 
-            .oni-aem .aem-target-img {
-        max-width: 100%;
-        max-height: 100%;
+      .oni-aem .aem-target-img-wrap {
+        width: var(--aem-target-slot-size);
+        height: var(--aem-target-slot-size);
+        overflow: visible;
+        background: transparent;
+        display: grid;
+        place-items: center;
+        pointer-events: none;
+      }
+
+      .oni-aem .aem-target-img {
+        display: block;
         width: 100%;
         height: 100%;
+        max-width: var(--aem-target-slot-size);
+        max-height: var(--aem-target-slot-size);
+
         object-fit: contain;
-        object-position: center center;
+        object-position: center bottom;
+
         border: 0;
         background: transparent;
         pointer-events: none;
@@ -577,6 +597,7 @@
         opacity: .72;
         filter: grayscale(.35) brightness(.48) contrast(.95);
         transform: translateZ(0);
+        transform-origin: center bottom;
 
         transition:
           opacity 140ms ease,
@@ -1043,7 +1064,7 @@
     document.head.appendChild(style);
   }
 
-  // --------------------------------------------------------------------------
+    // --------------------------------------------------------------------------
   // Rendering helpers
   // --------------------------------------------------------------------------
 
@@ -1066,6 +1087,8 @@
       return `
         <label
           class="aem-target-card ${selected}"
+          data-aem-target-card
+          data-target-actor-uuid="${escapeHtml(row.actorUuid)}"
           title="${escapeHtml(row.actorName)}"
           aria-label="${escapeHtml(row.actorName)}"
         >
@@ -1309,7 +1332,8 @@
               <h3>Targets</h3>
 
               <div class="aem-target-summary">
-                <b>${selectedCount}</b> target${selectedCount === 1 ? "" : "s"} selected.
+                <b data-aem-selected-target-count>${selectedCount}</b>
+                target<span data-aem-selected-target-plural>${selectedCount === 1 ? "" : "s"}</span> selected.
                 <br>${escapeHtml(state.targetSourceLabel || "Target list loaded automatically.")}
               </div>
 
@@ -1433,6 +1457,34 @@ If you change token selection later, close and reopen this UI to refresh the lis
 
     list.innerHTML = effectListHtml(state);
     list.scrollTop = 0;
+  }
+
+    function updateTargetSelectionDom(root, state) {
+    const selected = new Set(state.targetActorUuids ?? []);
+
+    for (const card of root.querySelectorAll("[data-aem-target-card]")) {
+      const uuid = card.dataset.targetActorUuid;
+      const isSelected = selected.has(uuid);
+
+      card.classList.toggle("selected", isSelected);
+
+      const input = card.querySelector('input[name="targetActorUuids"]');
+      if (input) input.checked = isSelected;
+    }
+
+    const count = selected.size;
+
+    const countEl = root.querySelector("[data-aem-selected-target-count]");
+    if (countEl) countEl.textContent = String(count);
+
+    const pluralEl = root.querySelector("[data-aem-selected-target-plural]");
+    if (pluralEl) pluralEl.textContent = count === 1 ? "" : "s";
+  }
+
+  function refreshFieldsQuietly(state) {
+    refreshFields(state).catch(e => {
+      warn("Quiet field refresh after target change failed.", e);
+    });
   }
 
   // --------------------------------------------------------------------------
@@ -2218,13 +2270,11 @@ holder.addEventListener("input", (ev) => {
           readCommonStateFromDom(root, state);
 
           if (target.name === "targetActorUuids") {
-            try {
-              await refreshFields(state);
-            } catch (e) {
-              warn("Field refresh after target change failed.", e);
-            }
+            updateTargetSelectionDom(root, state);
 
-            rerender(root, state);
+            // Refresh field suggestions in the background.
+            // Important: do not rerender the full UI here, or target videos/images blink.
+            refreshFieldsQuietly(state);
           }
         });
 
