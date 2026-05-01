@@ -774,6 +774,11 @@
         margin-bottom: 6px;
       }
 
+      /* Small spacing between Effect Search bar and category tabs */
+      .oni-aem .aem-category-tabs {
+      margin-top: 9px;
+      }
+
       .oni-aem .aem-category-tabs button.active {
         background: rgba(40,34,26,.88);
         color: white;
