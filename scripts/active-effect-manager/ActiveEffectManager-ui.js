@@ -6,18 +6,11 @@
 // - GM UI for applying/removing Active Effects through ActiveEffectManager-api.
 // - Uses dynamic registry when available.
 // - Uses field catalogue for custom modifier key suggestions when available.
-// - Does NOT hardcode effect names.
-// - Does NOT touch legacy condition booleans like isSlow/isDazed.
-// - Actor-first: can apply effects to actors even when they have no token.
-//
-// Public API:
-//   FUCompanion.api.activeEffectManager.ui.open()
-//   FUCompanion.api.activeEffectManager.openUI()
-//
-// Depends on:
-//   ActiveEffectManager-registry.js
-//   ActiveEffectManager-field-catalogue.js
-//   ActiveEffectManager-api.js
+// - Targeting polish:
+//   1. If GM has selected tokens, use those actors as default targets.
+//   2. If no selected token, use DB Resolver to load current party members.
+//   3. Targeting is shown as portrait cards, not a huge actor UUID list.
+//   4. Multiple target actors can be selected in one operation.
 // ============================================================================
 
 (() => {
@@ -30,6 +23,7 @@
   const err = (...a) => console.error(TAG, ...a);
 
   const STYLE_ID = "oni-active-effect-manager-ui-style";
+  const FALLBACK_IMG = "icons/svg/mystery-man.svg";
 
   let ACTIVE_DIALOG = null;
 
@@ -68,6 +62,10 @@
       game.modules?.get?.(MODULE_ID)?.api?.activeEffectManager?.fieldCatalog ??
       null
     );
+  }
+
+  function getDbResolverApi() {
+    return globalThis.FUCompanion?.api?.getCurrentGameDb ?? null;
   }
 
   // --------------------------------------------------------------------------
@@ -142,28 +140,6 @@
     return `${prefix}-${id}`;
   }
 
-  function selectedTokenActors() {
-    return Array.from(canvas?.tokens?.controlled ?? [])
-      .map(t => t.actor)
-      .filter(Boolean);
-  }
-
-  function selectedTokenActorUuids() {
-    return uniq(selectedTokenActors().map(a => a.uuid));
-  }
-
-  function getAllActorsForSelection() {
-    return Array.from(game.actors ?? [])
-      .filter(actor => {
-        try {
-          return game.user?.isGM || actor.testUserPermission?.(game.user, "OWNER");
-        } catch (_e) {
-          return false;
-        }
-      })
-      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
-  }
-
   function modeValue(name) {
     const modes = CONST?.ACTIVE_EFFECT_MODES ?? {};
     const fallback = {
@@ -206,6 +182,238 @@
   }
 
   // --------------------------------------------------------------------------
+  // Target helpers
+  // --------------------------------------------------------------------------
+
+  function normalizeActorRef(ref) {
+    const raw = safeString(ref);
+    if (!raw) return "";
+
+    if (raw.startsWith("Actor.")) return raw;
+    if (raw.startsWith("Scene.")) return raw;
+    if (raw.includes(".")) return raw;
+
+    return `Actor.${raw}`;
+  }
+
+  async function resolveActorFromRef(ref) {
+    const uuid = normalizeActorRef(ref);
+    if (!uuid) return null;
+
+    try {
+      const doc = await fromUuid(uuid);
+      if (!doc) return null;
+
+      if (doc.documentName === "Actor") return doc;
+      if (doc.actor) return doc.actor;
+      if (doc.object?.actor) return doc.object.actor;
+      if (doc.document?.actor) return doc.document.actor;
+
+      return null;
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  function actorImg(actor, fallback = FALLBACK_IMG) {
+    return (
+      actor?.img ??
+      actor?.prototypeToken?.texture?.src ??
+      actor?.token?.texture?.src ??
+      fallback
+    );
+  }
+
+  function selectedCanvasTokens() {
+    return Array.from(canvas?.tokens?.controlled ?? []).filter(t => t?.actor);
+  }
+
+  function makeTargetRow({
+    actor,
+    actorUuid,
+    actorName,
+    img,
+    source = "Target",
+    selected = true,
+    note = ""
+  } = {}) {
+    const uuid = actorUuid ?? actor?.uuid ?? "";
+    const name = actorName ?? actor?.name ?? "Unknown Actor";
+
+    return {
+      id: uuid || randomId("target"),
+      actorUuid: uuid,
+      actorName: name,
+      img: img ?? actorImg(actor),
+      source,
+      note,
+      selected: !!selected
+    };
+  }
+
+  function mergeTargetRows(rows = []) {
+    const byUuid = new Map();
+
+    for (const row of rows) {
+      if (!row?.actorUuid) continue;
+
+      const existing = byUuid.get(row.actorUuid);
+      if (!existing) {
+        byUuid.set(row.actorUuid, row);
+        continue;
+      }
+
+      existing.selected = existing.selected || row.selected;
+      existing.img = existing.img || row.img;
+      existing.source = existing.source || row.source;
+      existing.note = existing.note || row.note;
+    }
+
+    return Array.from(byUuid.values());
+  }
+
+  function syncTargetRowsSelection(state) {
+    const selected = new Set(state.targetActorUuids ?? []);
+
+    state.targetRows = (state.targetRows ?? []).map(row => ({
+      ...row,
+      selected: selected.has(row.actorUuid)
+    }));
+  }
+
+  function setSelectedTargetsFromRows(state, rows) {
+    state.targetRows = mergeTargetRows(rows);
+    state.targetActorUuids = state.targetRows
+      .filter(r => r.selected)
+      .map(r => r.actorUuid)
+      .filter(Boolean);
+  }
+
+  async function loadSelectedTokenTargets() {
+    const tokens = selectedCanvasTokens();
+
+    const rows = tokens.map(token => {
+      const textureSrc =
+        token?.document?.texture?.src ??
+        token?.texture?.src ??
+        actorImg(token.actor);
+
+      return makeTargetRow({
+        actor: token.actor,
+        img: textureSrc,
+        source: "Selected Token",
+        selected: true,
+        note: token.name ?? ""
+      });
+    });
+
+    return {
+      ok: rows.length > 0,
+      source: "selected-tokens",
+      label: rows.length ? "Using selected token target(s)." : "No token selected.",
+      rows
+    };
+  }
+
+  async function loadPartyMemberTargets() {
+    const getCurrentGameDb = getDbResolverApi();
+
+    if (typeof getCurrentGameDb !== "function") {
+      return {
+        ok: false,
+        source: "party-db",
+        label: "DB Resolver API not found.",
+        rows: []
+      };
+    }
+
+    let resolved = null;
+
+    try {
+      resolved = await getCurrentGameDb();
+    } catch (e) {
+      return {
+        ok: false,
+        source: "party-db",
+        label: `DB Resolver failed: ${compactError(e)}`,
+        rows: []
+      };
+    }
+
+    const db = resolved?.source ?? resolved?.db ?? null;
+    const props = db?.system?.props ?? {};
+
+    if (!db) {
+      return {
+        ok: false,
+        source: "party-db",
+        label: "Current game DB not found.",
+        rows: []
+      };
+    }
+
+    const rows = [];
+
+    // Main party members.
+    for (let i = 1; i <= 12; i++) {
+      const name = safeString(props[`member_name_${i}`]);
+      const id = safeString(props[`member_id_${i}`]);
+      const sprite = safeString(props[`member_sprite_${i}`]);
+
+      if (!id && !name) continue;
+
+      const actor = await resolveActorFromRef(id);
+
+      if (!actor && !id) continue;
+
+      rows.push(makeTargetRow({
+        actor,
+        actorUuid: actor?.uuid ?? normalizeActorRef(id),
+        actorName: actor?.name ?? name,
+        img: sprite || actorImg(actor),
+        source: "Party Member",
+        selected: true,
+        note: name
+      }));
+    }
+
+    return {
+      ok: rows.length > 0,
+      source: "party-db",
+      label: rows.length
+        ? `Using current party from ${resolved?.gameName ?? db.name ?? "Database"}.`
+        : "No party members found in current DB.",
+      rows
+    };
+  }
+
+  async function loadInitialTargets() {
+    const selected = await loadSelectedTokenTargets();
+
+    if (selected.ok) return selected;
+
+    return await loadPartyMemberTargets();
+  }
+
+  async function reloadTargets(state, mode = "auto") {
+    let result = null;
+
+    if (mode === "selected") {
+      result = await loadSelectedTokenTargets();
+    } else if (mode === "party") {
+      result = await loadPartyMemberTargets();
+    } else {
+      result = await loadInitialTargets();
+    }
+
+    setSelectedTargetsFromRows(state, result.rows ?? []);
+    state.targetSourceLabel = result.label ?? "";
+    state.targetSourceMode = result.source ?? mode;
+
+    return result;
+  }
+
+  // --------------------------------------------------------------------------
   // Styling
   // --------------------------------------------------------------------------
 
@@ -226,7 +434,7 @@
 
       .oni-aem .aem-grid-main {
         display: grid;
-        grid-template-columns: 1.05fr 1.35fr;
+        grid-template-columns: 0.9fr 1.45fr;
         gap: 10px;
       }
 
@@ -264,10 +472,6 @@
         width: 100%;
       }
 
-      .oni-aem select[multiple] {
-        min-height: 150px;
-      }
-
       .oni-aem button {
         cursor: pointer;
       }
@@ -303,6 +507,95 @@
         font-size: 11px;
         opacity: .75;
         line-height: 1.25;
+      }
+
+      .oni-aem .aem-target-summary {
+        margin: 6px 0;
+        padding: 6px 8px;
+        border-radius: 8px;
+        background: rgba(0,0,0,.06);
+        font-size: 11px;
+        line-height: 1.25;
+      }
+
+      .oni-aem .aem-target-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+        gap: 7px;
+        max-height: 235px;
+        overflow: auto;
+        padding: 4px;
+        border: 1px solid rgba(60,45,25,.18);
+        border-radius: 8px;
+        background: rgba(255,255,255,.38);
+      }
+
+      .oni-aem .aem-target-card {
+        position: relative;
+        min-height: 118px;
+        padding: 6px;
+        margin: 0;
+        border-radius: 10px;
+        border: 1px solid rgba(60,45,25,.22);
+        background: rgba(255,255,255,.62);
+        cursor: pointer;
+        display: grid;
+        grid-template-rows: 64px auto;
+        gap: 5px;
+        transition: transform 120ms ease, background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+      }
+
+      .oni-aem .aem-target-card:hover {
+        transform: translateY(-1px);
+        background: rgba(255,255,255,.82);
+        border-color: rgba(70,50,25,.45);
+      }
+
+      .oni-aem .aem-target-card.selected {
+        background: rgba(239, 225, 181, .88);
+        border-color: rgba(150,105,30,.72);
+        box-shadow: 0 0 0 2px rgba(180,125,35,.20) inset;
+      }
+
+      .oni-aem .aem-target-card input {
+        position: absolute;
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      .oni-aem .aem-target-img-wrap {
+        width: 100%;
+        height: 64px;
+        border-radius: 8px;
+        overflow: hidden;
+        background: rgba(0,0,0,.10);
+        display: grid;
+        place-items: center;
+      }
+
+      .oni-aem .aem-target-img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        object-position: top center;
+        border: 0;
+      }
+
+      .oni-aem .aem-target-name {
+        font-weight: 800;
+        font-size: 12px;
+        text-align: center;
+        line-height: 1.12;
+        min-height: 27px;
+        display: grid;
+        place-items: center;
+      }
+
+      .oni-aem .aem-target-source {
+        font-size: 10px;
+        opacity: .65;
+        text-align: center;
+        line-height: 1.1;
       }
 
       .oni-aem .aem-effect-list {
@@ -439,18 +732,44 @@
   // Rendering helpers
   // --------------------------------------------------------------------------
 
-  function actorOptionsHtml(selectedUuids = []) {
-    const selected = new Set(selectedUuids);
-
-    return getAllActorsForSelection().map(actor => {
-      const sel = selected.has(actor.uuid) ? "selected" : "";
-      return `<option value="${escapeHtml(actor.uuid)}" ${sel}>${escapeHtml(actor.name)} — ${escapeHtml(actor.uuid)}</option>`;
-    }).join("");
-  }
-
   function categoryButtonHtml(category, label, state) {
     const active = state.categoryFilter === category ? "active" : "";
     return `<button type="button" class="${active}" data-aem-action="set-category" data-category="${escapeHtml(category)}">${escapeHtml(label)}</button>`;
+  }
+
+  function targetCardsHtml(state) {
+    const rows = state.targetRows ?? [];
+
+    if (!rows.length) {
+      return `
+        <div class="aem-empty">
+          No target found. Select token(s), or load current party from DB.
+        </div>
+      `;
+    }
+
+    return rows.map(row => {
+      const checked = row.selected ? "checked" : "";
+      const selected = row.selected ? "selected" : "";
+
+      return `
+        <label class="aem-target-card ${selected}" title="${escapeHtml(row.actorName)}">
+          <input
+            type="checkbox"
+            name="targetActorUuids"
+            value="${escapeHtml(row.actorUuid)}"
+            ${checked}
+          >
+          <div class="aem-target-img-wrap">
+            <img class="aem-target-img" src="${escapeHtml(row.img || FALLBACK_IMG)}">
+          </div>
+          <div>
+            <div class="aem-target-name">${escapeHtml(row.actorName)}</div>
+            <div class="aem-target-source">${escapeHtml(row.source || "Target")}</div>
+          </div>
+        </label>
+      `;
+    }).join("");
   }
 
   function effectListHtml(state) {
@@ -603,6 +922,8 @@
   }
 
   function renderMainContent(state) {
+    const selectedCount = (state.targetActorUuids ?? []).length;
+
     return `
       <div class="oni-aem">
         <div class="aem-grid-main">
@@ -612,16 +933,20 @@
 
               <div class="aem-actions">
                 <button type="button" data-aem-action="use-selected-tokens">Use Selected Tokens</button>
-                <button type="button" data-aem-action="clear-targets">Clear</button>
+                <button type="button" data-aem-action="load-party-members">Load Party Members</button>
               </div>
 
-              <label>Actors</label>
-              <select name="targetActorUuids" multiple>
-                ${actorOptionsHtml(state.targetActorUuids)}
-              </select>
+              <div class="aem-target-summary">
+                <b>${selectedCount}</b> target${selectedCount === 1 ? "" : "s"} selected.
+                ${state.targetSourceLabel ? `<br>${escapeHtml(state.targetSourceLabel)}` : ""}
+              </div>
+
+              <div class="aem-target-grid" data-aem-target-grid>
+                ${targetCardsHtml(state)}
+              </div>
 
               <div class="aem-mini">
-                This applies effects directly to Actors, so the target does not need to have a token on the scene.
+                Select one or more portraits. Active Effects apply directly to Actors, even if their tokens are not on this scene.
               </div>
             </div>
 
@@ -777,9 +1102,11 @@
   }
 
   function readCommonStateFromDom(root, state) {
-    state.targetActorUuids = Array.from(root.querySelector('[name="targetActorUuids"]')?.selectedOptions ?? [])
-      .map(o => o.value)
+    state.targetActorUuids = Array.from(root.querySelectorAll('[name="targetActorUuids"]:checked'))
+      .map(el => el.value)
       .filter(Boolean);
+
+    syncTargetRowsSelection(state);
 
     state.duplicateMode = root.querySelector('[name="duplicateMode"]')?.value ?? state.duplicateMode;
     state.overrideDuration = !!root.querySelector('[name="overrideDuration"]')?.checked;
@@ -1019,7 +1346,7 @@
       updateOutput(root, state, {
         ok: false,
         reason: "no_target_actors",
-        hint: "Choose at least one actor first."
+        hint: "Choose at least one target portrait first."
       });
       return;
     }
@@ -1055,29 +1382,6 @@
     updateOutput(root, state, result);
   }
 
-  async function removeSelectedByName(root, state) {
-    const manager = getManagerApi();
-
-    if (!manager?.removeEffects) {
-      updateOutput(root, state, {
-        ok: false,
-        reason: "active_effect_manager_api_not_found"
-      });
-      return;
-    }
-
-    const names = state.selectedEffects.map(e => e.name).filter(Boolean);
-
-    const result = await manager.removeEffects({
-      actorUuids: state.targetActorUuids,
-      names,
-      silent: state.silent,
-      renderChat: true
-    });
-
-    updateOutput(root, state, result);
-  }
-
   // --------------------------------------------------------------------------
   // Main open function
   // --------------------------------------------------------------------------
@@ -1097,10 +1401,11 @@
       } catch (_e) {}
     }
 
-    const initialTargets = selectedTokenActorUuids();
-
     const state = {
-      targetActorUuids: initialTargets,
+      targetRows: [],
+      targetActorUuids: [],
+      targetSourceLabel: "",
+      targetSourceMode: "auto",
 
       registryEntries: [],
       fieldEntries: [],
@@ -1133,6 +1438,14 @@
 
       outputText: ""
     };
+
+    try {
+      const targetResult = await reloadTargets(state, "auto");
+      log("Initial target load.", targetResult);
+    } catch (e) {
+      warn("Initial target load failed.", e);
+      state.targetSourceLabel = `Target load failed: ${compactError(e)}`;
+    }
 
     try {
       await refreshRegistry(state, { includeCompendiums: false });
@@ -1211,14 +1524,29 @@
             readCommonStateFromDom(root, state);
 
             if (action === "use-selected-tokens") {
-              state.targetActorUuids = selectedTokenActorUuids();
+              const result = await reloadTargets(state, "selected");
+
+              if (!result.ok) {
+                updateOutput(root, state, {
+                  ok: false,
+                  reason: "no_selected_tokens",
+                  hint: "Select token(s) on the scene first, or use Load Party Members."
+                });
+              }
+
               await refreshFields(state);
               rerender(root, state);
               return;
             }
 
-            if (action === "clear-targets") {
-              state.targetActorUuids = [];
+            if (action === "load-party-members") {
+              const result = await reloadTargets(state, "party");
+
+              if (!result.ok) {
+                updateOutput(root, state, result);
+              }
+
+              await refreshFields(state);
               rerender(root, state);
               return;
             }
@@ -1389,7 +1717,7 @@
   // --------------------------------------------------------------------------
 
   const api = {
-    version: "0.1.0",
+    version: "0.2.0",
     open,
     reopen: () => {
       try {
@@ -1398,7 +1726,8 @@
       ACTIVE_DIALOG = null;
       return open();
     },
-    getActiveDialog: () => ACTIVE_DIALOG
+    getActiveDialog: () => ACTIVE_DIALOG,
+    reloadTargets
   };
 
   const root = ensureApiRoot();
