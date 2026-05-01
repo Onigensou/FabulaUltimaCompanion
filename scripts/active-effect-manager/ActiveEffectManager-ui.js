@@ -1935,7 +1935,7 @@ async function openCustomBuilderDialog(parentState, parentRoot) {
 
   // "path" = system.props.defense
   // "short" = defense
-  const NATIVE_SUGGESTION_VALUE = "path";
+  const NATIVE_SUGGESTION_VALUE = "short";
 
   if (BUILDER_DIALOG) {
     try {
@@ -2295,62 +2295,324 @@ async function openCustomBuilderDialog(parentState, parentRoot) {
     return merged;
   }
 
-  function keyQueryFromFieldValue(value) {
-    return safeString(value)
-      .replace(/^system\.props\./i, "")
-      .split(/[\s,;|]+/g)
-      .pop()
-      .trim();
+ function keyQueryFromFieldValue(value) {
+  return safeString(value)
+    .replace(/^system\.props\./i, "")
+    .split(/[\s,;|]+/g)
+    .pop()
+    .trim();
+}
+
+function plainSuggestionText(value) {
+  return String(value ?? "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\$\{[\s\S]*?\}\$/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function walkAemSheetNodes(value, visitor, path = [], ancestors = []) {
+  if (Array.isArray(value)) {
+    value.forEach((v, i) => walkAemSheetNodes(v, visitor, [...path, i], ancestors));
+    return;
   }
 
-  function suggestionValueFromEntry(entry = {}) {
-    const shortKey = safeString(entry.activeEffectKey ?? entry.key);
-    const propPath = safeString(entry.propPath) || (shortKey ? `system.props.${shortKey}` : "");
+  if (!value || typeof value !== "object") return;
 
-    if (NATIVE_SUGGESTION_VALUE === "short") return shortKey || propPath;
-    return propPath || shortKey;
-  }
+  visitor(value, path, ancestors);
 
-  function getNativeSuggestions(query) {
-    const catalogue = getFieldCatalogueApi();
-    if (!catalogue) return [];
+  const nextAncestors = [...ancestors, value];
 
-    const q = keyQueryFromFieldValue(query);
-
-    try {
-      const rows = catalogue.getSuggestions?.(q, {
-        limit: 12,
-        recommendedOnly: false,
-        cloneResult: false
-      });
-
-      if (Array.isArray(rows)) return rows;
-    } catch (_e) {}
-
-    try {
-      const all = catalogue.getAll?.({ cloneResult: false }) ?? [];
-      const needle = q.toLowerCase();
-
-      return all
-        .filter(entry => {
-          if (!needle) return entry.isRecommended !== false;
-
-          const text = [
-            entry.key,
-            entry.activeEffectKey,
-            entry.propPath,
-            entry.label,
-            entry.category,
-            entry.valueKind
-          ].join(" ").toLowerCase();
-
-          return text.includes(needle);
-        })
-        .slice(0, 12);
-    } catch (_e) {
-      return [];
+  for (const key of ["contents", "rowLayout", "options", "predefinedLines"]) {
+    if (value[key] !== undefined) {
+      walkAemSheetNodes(value[key], visitor, [...path, key], nextAncestors);
     }
   }
+}
+
+function isStatusTabNodeForSuggestions(node = {}) {
+  const key = String(node.key ?? "").trim().toLowerCase();
+  const name = plainSuggestionText(node.name ?? "").toLowerCase();
+  const title = plainSuggestionText(node.title ?? "").toLowerCase();
+  const label = plainSuggestionText(node.label ?? "").toLowerCase();
+  const text = [key, name, title, label].join(" ");
+
+  return node.type === "tab" && (
+    key === "status" ||
+    name.includes("status") ||
+    title.includes("status") ||
+    label.includes("status") ||
+    text.includes("status")
+  );
+}
+
+function isInsideStatusTabForSuggestions(ancestors = []) {
+  return ancestors.some(isStatusTabNodeForSuggestions);
+}
+
+function getActorPropsForSuggestions() {
+  return actor?.system?.props ?? {};
+}
+
+function getSuggestionCurrentValue(key) {
+  const props = getActorPropsForSuggestions();
+
+  if (Object.prototype.hasOwnProperty.call(props, key)) {
+    return props[key];
+  }
+
+  return undefined;
+}
+
+function readableLabelFromKey(key) {
+  return String(key ?? "")
+    .replace(/^_+/, "")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, m => m.toUpperCase());
+}
+
+function makeSuggestionEntry(key, options = {}) {
+  const cleanKey = safeString(key);
+  if (!cleanKey) return null;
+
+  const currentValue = getSuggestionCurrentValue(cleanKey);
+
+  return {
+    key: cleanKey,
+    activeEffectKey: cleanKey,
+    propPath: `system.props.${cleanKey}`,
+
+    label: options.label ?? readableLabelFromKey(cleanKey),
+    category: options.category ?? inferSuggestionCategory(cleanKey),
+    valueKind: options.valueKind ?? inferSuggestionValueKind(cleanKey, currentValue),
+    source: options.source ?? "native-status-suggestion",
+
+    currentValue,
+    isRecommended: true
+  };
+}
+
+function inferSuggestionValueKind(key, currentValue) {
+  if (typeof currentValue === "boolean") return "boolean";
+  if (typeof currentValue === "number") return "number";
+
+  const s = String(currentValue ?? "");
+  if (s !== "" && Number.isFinite(Number(s))) return "number";
+
+  const text = String(key ?? "").toLowerCase();
+
+  if (
+    /hp|mp|ip|zero|zp|current|max|def|mdef|defense|accuracy|damage|reduction|mod|bonus|penalty|critical|initiative|clock|resource|affinity|efficiency|percentage|percent|multiplier|rate/.test(text)
+  ) {
+    return "number";
+  }
+
+  return "text";
+}
+
+function inferSuggestionCategory(key) {
+  const k = String(key ?? "").toLowerCase();
+
+  if (/^(dex|ins|mig|wlp)_(base|current)$/.test(k)) return "Attribute";
+  if (/hp|mp|ip|zero|zp|resource|clock|shield/.test(k)) return "Resource";
+  if (/accuracy/.test(k)) return "Accuracy";
+  if (/damage_receiving|reduction|receiving/.test(k)) return "Damage Reduction";
+  if (/extra_damage|damage_mod|damage_outgoing|attack_damage|damage_bonus/.test(k)) return "Damage Bonus";
+  if (/critical|crit/.test(k)) return "Critical";
+  if (/affinity|physical|air|bolt|dark|earth|fire|ice|light|poison/.test(k)) return "Type Affinity";
+  if (/weapon|arcane|bow|brawling|dagger|firearm|flail|heavy|spear|sword|thrown|melee|ranged|spell|magic/.test(k)) return "Weapon / Attack Type";
+
+  return "Status";
+}
+
+function isAllowedStatusModifierKey(key) {
+  const k = String(key ?? "").trim();
+
+  if (!k) return false;
+
+  // Keep old CSB condition booleans out of the suggestion list.
+  if (/^is[A-Z]/.test(k)) return false;
+
+  // These are the combat/status modifier families shown in the Status tab.
+  return (
+    /^(attack_accuracy_mod_|extra_damage_mod_|damage_receiving_mod_)/.test(k) ||
+    /^damage_.*_mod_/.test(k) ||
+    /_(damage|accuracy|critical|crit|reduction|receiving|affinity|efficiency|mod|bonus|penalty|multiplier|percentage|percent)$/.test(k) ||
+    /(damage|accuracy|critical|crit|reduction|receiving|affinity|efficiency|weapon|melee|ranged|spell|magic|physical|air|bolt|dark|earth|fire|ice|light|poison)/.test(k)
+  );
+}
+
+function collectStatusTabSuggestionEntries() {
+  const bodyContents = actor?.system?.body?.contents ?? [];
+  const byKey = new Map();
+
+  walkAemSheetNodes(bodyContents, (node, _path, ancestors) => {
+    if (!isInsideStatusTabForSuggestions(ancestors)) return;
+
+    const key = safeString(node.key);
+    if (!key) return;
+    if (!isAllowedStatusModifierKey(key)) return;
+
+    const label =
+      safeString(node.tooltip) ||
+      safeString(node.label) ||
+      safeString(node.colName) ||
+      safeString(node.title) ||
+      readableLabelFromKey(key);
+
+    const entry = makeSuggestionEntry(key, {
+      label: plainSuggestionText(label) || readableLabelFromKey(key),
+      category: inferSuggestionCategory(key),
+      source: "actor-status-tab"
+    });
+
+    if (entry) byKey.set(key, entry);
+  });
+
+  return Array.from(byKey.values());
+}
+
+function collectCoreSuggestionEntries() {
+  const props = getActorPropsForSuggestions();
+
+  const coreKeys = [
+    // Attribute dice
+    "dex_current",
+    "ins_current",
+    "mig_current",
+    "wlp_current",
+
+    // Include base too because sometimes an effect may need to alter the source die.
+    "dex_base",
+    "ins_base",
+    "mig_base",
+    "wlp_base",
+
+    // Actor resources
+    "current_hp",
+    "max_hp",
+    "current_mp",
+    "max_mp",
+    "current_ip",
+    "max_ip",
+
+    // Optional but useful resource families if your sheet has them.
+    "zero_power_value",
+    "max_zero",
+    "current_zero",
+    "current_zp",
+    "max_zp",
+    "shield_value"
+  ];
+
+  return coreKeys
+    .filter(key => {
+      // Always allow the main requested names.
+      if ([
+        "dex_current",
+        "ins_current",
+        "mig_current",
+        "wlp_current",
+        "current_hp",
+        "max_hp",
+        "current_mp",
+        "max_mp",
+        "current_ip",
+        "max_ip"
+      ].includes(key)) {
+        return true;
+      }
+
+      // Optional keys only appear if the actor actually has them.
+      return Object.prototype.hasOwnProperty.call(props, key);
+    })
+    .map(key => makeSuggestionEntry(key, {
+      category: inferSuggestionCategory(key),
+      source: "core-actor-resource"
+    }))
+    .filter(Boolean);
+}
+
+function buildNativeSuggestionPool() {
+  const byKey = new Map();
+
+  for (const entry of collectStatusTabSuggestionEntries()) {
+    byKey.set(entry.key, entry);
+  }
+
+  // Core entries should be added even if they are outside the Status tab.
+  for (const entry of collectCoreSuggestionEntries()) {
+    byKey.set(entry.key, entry);
+  }
+
+  return Array.from(byKey.values());
+}
+
+function suggestionValueFromEntry(entry = {}) {
+  // Foundry CSB ActiveEffect keys only need the short data key:
+  // damage_receiving_mod_all, dex_current, current_hp, etc.
+  return safeString(entry.activeEffectKey ?? entry.key);
+}
+
+function scoreNativeSuggestion(query, entry) {
+  const q = keyQueryFromFieldValue(query).toLowerCase();
+  const key = String(entry.key ?? "").toLowerCase();
+  const label = String(entry.label ?? "").toLowerCase();
+  const cat = String(entry.category ?? "").toLowerCase();
+
+  if (!q) {
+    if (entry.source === "core-actor-resource") return 800;
+    if (/^(attack_accuracy_mod_|extra_damage_mod_|damage_receiving_mod_)/.test(key)) return 700;
+    return 300;
+  }
+
+  let score = 0;
+
+  if (key === q) score += 2000;
+  if (key.startsWith(q)) score += 1400;
+  if (key.includes(q)) score += 900;
+  if (label.includes(q)) score += 500;
+  if (cat.includes(q)) score += 250;
+
+  const parts = q.split(/[\s._-]+/g).filter(Boolean);
+  for (const part of parts) {
+    if (key.includes(part)) score += 160;
+    if (label.includes(part)) score += 80;
+    if (cat.includes(part)) score += 40;
+  }
+
+  if (entry.source === "core-actor-resource") score += 120;
+
+  return score;
+}
+
+function getNativeSuggestions(query) {
+  const pool = buildNativeSuggestionPool();
+  const q = keyQueryFromFieldValue(query);
+
+  return pool
+    .map(entry => ({
+      ...entry,
+      score: scoreNativeSuggestion(q, entry)
+    }))
+    .filter(entry => {
+      if (!q) return true;
+      return entry.score > 0;
+    })
+    .sort((a, b) => {
+      const score = b.score - a.score;
+      if (score) return score;
+
+      const cat = String(a.category ?? "").localeCompare(String(b.category ?? ""));
+      if (cat) return cat;
+
+      return String(a.key ?? "").localeCompare(String(b.key ?? ""));
+    })
+    .slice(0, 12);
+}
 
   function findNativeAttributeKeyFields(root) {
     if (!root) return [];
