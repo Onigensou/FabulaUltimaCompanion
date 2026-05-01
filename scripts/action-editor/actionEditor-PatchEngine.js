@@ -659,6 +659,174 @@
     };
   }
 
+  function hasOwn(obj, key) {
+  return !!obj && Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function pickFirstDefined(...values) {
+  for (const value of values) {
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
+function applySetDamagePreview(payload, op = {}) {
+  payload.meta = payload.meta || {};
+  payload.advPayload = payload.advPayload || {};
+  payload.accuracy = payload.accuracy || {};
+
+  const changedPaths = [];
+
+  const setPath = (path, value) => {
+    setByPath(payload, path, value);
+    changedPaths.push(path);
+  };
+
+  // -------------------------------------------------------
+  // Base / preview value
+  // -------------------------------------------------------
+  // value / previewValue / baseValue all mean:
+  // "the number CreateActionCard should use as the displayed base damage."
+  //
+  // This intentionally updates meta.baseValueStrForCard because that is
+  // the card-preview mirror field used by the visual Action Card.
+  // -------------------------------------------------------
+
+  const baseInput = pickFirstDefined(
+    op.previewValue,
+    op.previewBase,
+    op.displayValue,
+    op.displayBase,
+    op.baseValue,
+    op.base,
+    op.value
+  );
+
+  if (baseInput !== undefined) {
+    const normalizedBase = String(baseInput ?? "0").trim() || "0";
+
+    setPath("advPayload.baseValue", normalizedBase);
+    setPath("meta.baseValue", normalizedBase);
+    setPath("meta.baseValueStrForCard", normalizedBase);
+  }
+
+  // -------------------------------------------------------
+  // HR preview mirror
+  // -------------------------------------------------------
+  // This is separate because some actions want to preserve HR,
+  // while effects like Warning Shot want to hard-neutralize it.
+  // -------------------------------------------------------
+
+  const wantsHr =
+    hasOwn(op, "hrBonus") ||
+    hasOwn(op, "hr") ||
+    hasOwn(op, "hitRollBonus") ||
+    hasOwn(op, "previewHrBonus");
+
+  if (wantsHr) {
+    const hr = num(
+      pickFirstDefined(
+        op.hrBonus,
+        op.hr,
+        op.hitRollBonus,
+        op.previewHrBonus
+      ),
+      0
+    );
+
+    setPath("meta.hrBonus", hr);
+    setPath("accuracy.hr", hr);
+  }
+
+  // -------------------------------------------------------
+  // Bonus / reduction / multiplier
+  // -------------------------------------------------------
+  // These are optional. If omitted, they are preserved.
+  // This keeps the operation useful for both:
+  // - "change only the preview base"
+  // - "hard set the whole damage packet"
+  // -------------------------------------------------------
+
+  if (hasOwn(op, "bonus") || hasOwn(op, "damageBonus")) {
+    const bonus = num(pickFirstDefined(op.bonus, op.damageBonus), 0);
+    setPath("advPayload.bonus", bonus);
+    setPath("meta.bonus", bonus);
+  }
+
+  if (hasOwn(op, "reduction") || hasOwn(op, "damageReduction")) {
+    const reduction = num(pickFirstDefined(op.reduction, op.damageReduction), 0);
+    setPath("advPayload.reduction", reduction);
+    setPath("meta.reduction", reduction);
+  }
+
+  if (hasOwn(op, "multiplier") || hasOwn(op, "damageMultiplier")) {
+    const multiplier = normalizeMultiplier(
+      pickFirstDefined(op.multiplier, op.damageMultiplier)
+    );
+
+    setPath("advPayload.multiplier", multiplier);
+    setPath("meta.multiplier", multiplier);
+  }
+
+  // -------------------------------------------------------
+  // Optional value type / element / weapon mirrors
+  // -------------------------------------------------------
+
+  if (hasOwn(op, "valueType")) {
+    const valueType = lower(op.valueType);
+    setPath("advPayload.valueType", valueType);
+    setPath("meta.valueType", valueType);
+  }
+
+  if (hasOwn(op, "elementType") || hasOwn(op, "element")) {
+    const validation = validateElement(pickFirstDefined(op.elementType, op.element));
+
+    if (!validation.ok) {
+      return {
+        ok: false,
+        reason: validation.reason,
+        changedPaths
+      };
+    }
+
+    const element = validation.value;
+
+    setPath("advPayload.elementType", element);
+    setPath("meta.elementType", element);
+    setPath("core.typeDamageTxt", element);
+
+    payload.dataCore = payload.dataCore || {};
+    setPath("dataCore.typeDamageTxt", element);
+  }
+
+  if (hasOwn(op, "weaponType")) {
+    const weaponType = normalizeWeaponType(op.weaponType);
+
+    setPath("advPayload.weaponType", weaponType);
+    setPath("meta.weaponType", weaponType);
+    setPath("core.weaponType", weaponType);
+  }
+
+  // -------------------------------------------------------
+  // Debug marker
+  // -------------------------------------------------------
+
+  payload.meta.actionEditorPreviewOverride = {
+    enabled: true,
+    atMs: Date.now(),
+    operation: "setDamagePreview",
+    input: clone(op, {})
+  };
+
+  changedPaths.push("meta.actionEditorPreviewOverride");
+
+  return {
+    ok: true,
+    changedPaths: uniq(changedPaths),
+    summary: "Damage preview fields were set through Action Editor."
+  };
+} 
+
   function applySetDamageBonus(payload, op) {
     const value = num(op.value ?? op.bonus, 0);
 
@@ -1033,6 +1201,11 @@
 
     setBaseValue: applySetBaseValue,
     setDamageBase: applySetBaseValue,
+
+    setDamagePreview: applySetDamagePreview,
+    setDamagePreviewValue: applySetDamagePreview,
+    setDamageDisplay: applySetDamagePreview,
+    setDamageDisplayValue: applySetDamagePreview,
 
     setDamageBonus: applySetDamageBonus,
     addDamageBonus: applyAddDamageBonus,
