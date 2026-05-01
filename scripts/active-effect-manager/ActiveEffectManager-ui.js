@@ -1311,12 +1311,23 @@
     `;
   }
 
-  function updateOutput(root, state, data) {
+ function updateOutput(root, state, data) {
     const text = typeof data === "string" ? data : JSON.stringify(data, null, 2);
     state.outputText = text;
 
     const out = root?.querySelector?.("[data-aem-output]");
     if (out) out.value = text;
+  }
+
+  function rerender(root, state) {
+    const holder = root.querySelector("[data-aem-root-holder]");
+
+    if (!holder) {
+      console.warn(`${TAG} Could not rerender Active Effect Manager UI: root holder missing.`);
+      return;
+    }
+
+    holder.innerHTML = renderMainContent(state);
   }
 
   function readCommonStateFromDom(root, state) {
@@ -1336,10 +1347,16 @@
     state.search = root.querySelector('[name="effectSearch"]')?.value ?? state.search;
   }
 
-  function rerender(root, state) {
-    const holder = root.querySelector("[data-aem-root-holder]");
-    if (!holder) return;
-    holder.innerHTML = renderMainContent(state);
+ function rerenderEffectListOnly(root, state) {
+    const list = root.querySelector("[data-aem-effect-list]");
+
+    if (!list) {
+      rerender(root, state);
+      return;
+    }
+
+    list.innerHTML = effectListHtml(state);
+    list.scrollTop = 0;
   }
 
   // --------------------------------------------------------------------------
@@ -2049,16 +2066,16 @@
         const holder = root.querySelector("[data-aem-root-holder]");
         if (!holder) return;
 
-        holder.addEventListener("input", (ev) => {
-          const target = ev.target;
-          if (!target) return;
+holder.addEventListener("input", (ev) => {
+  const target = ev.target;
+  if (!target) return;
 
-          readCommonStateFromDom(root, state);
+  readCommonStateFromDom(root, state);
 
-          if (target.name === "effectSearch") {
-            rerender(root, state);
-          }
-        });
+  if (target.name === "effectSearch") {
+    rerenderEffectListOnly(root, state);
+  }
+});
 
         holder.addEventListener("change", async (ev) => {
           const target = ev.target;
