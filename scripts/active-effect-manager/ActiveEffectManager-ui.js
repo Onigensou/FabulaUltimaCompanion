@@ -384,6 +384,55 @@
         font-family: var(--font-primary);
       }
 
+            .oni-aem .aem-apply-compact {
+        padding-bottom: 7px;
+      }
+
+      .oni-aem .aem-apply-grid {
+        display: grid;
+        grid-template-columns: 1.4fr 0.9fr;
+        gap: 8px;
+        align-items: end;
+      }
+
+      .oni-aem .aem-duration-mini {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 5px;
+      }
+
+      .oni-aem .aem-toggle-row {
+        display: flex;
+        gap: 6px;
+        margin-top: 7px;
+      }
+
+      .oni-aem .aem-toggle-pill {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 5px;
+        padding: 5px 6px;
+        border-radius: 8px;
+        border: 1px solid rgba(60,45,25,.20);
+        background: rgba(255,255,255,.45);
+        font-size: 11px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      .oni-aem .aem-toggle-pill input {
+        width: auto;
+        margin: 0;
+      }
+
+      .oni-aem .aem-inline-label {
+        font-size: 11px;
+        opacity: .82;
+        margin-bottom: 2px;
+      }
+
       .oni-aem * {
         box-sizing: border-box;
       }
@@ -922,38 +971,52 @@
               </div>
             </div>
 
-            <div class="aem-card">
+            <div class="aem-card aem-apply-compact">
               <h3>Apply Options</h3>
 
-              <label>Duplicate Behavior</label>
-              <select name="duplicateMode">
-                <option value="skip" ${state.duplicateMode === "skip" ? "selected" : ""}>Skip if already exists</option>
-                <option value="replace" ${state.duplicateMode === "replace" ? "selected" : ""}>Replace existing</option>
-                <option value="stack" ${state.duplicateMode === "stack" ? "selected" : ""}>Stack duplicate</option>
-                <option value="remove" ${state.duplicateMode === "remove" ? "selected" : ""}>Remove existing instead</option>
-                <option value="ask" ${state.duplicateMode === "ask" ? "selected" : ""}>Ask each time</option>
-              </select>
+              <div class="aem-apply-grid">
+                <div>
+                  <div class="aem-inline-label">Duplicate</div>
+                  <select name="duplicateMode">
+                    <option value="skip" ${state.duplicateMode === "skip" ? "selected" : ""}>Skip existing</option>
+                    <option value="replace" ${state.duplicateMode === "replace" ? "selected" : ""}>Replace existing</option>
+                    <option value="stack" ${state.duplicateMode === "stack" ? "selected" : ""}>Stack duplicate</option>
+                    <option value="remove" ${state.duplicateMode === "remove" ? "selected" : ""}>Remove instead</option>
+                    <option value="ask" ${state.duplicateMode === "ask" ? "selected" : ""}>Ask each time</option>
+                  </select>
+                </div>
 
-              <div class="aem-row">
-                <label>
+                <div>
+                  <div class="aem-inline-label">Duration</div>
+                  <div class="aem-duration-mini">
+                    <input
+                      type="number"
+                      name="durationRounds"
+                      value="${escapeHtml(state.durationRounds)}"
+                      title="Rounds"
+                      placeholder="Rounds"
+                    >
+                    <input
+                      type="number"
+                      name="durationTurns"
+                      value="${escapeHtml(state.durationTurns)}"
+                      title="Turns"
+                      placeholder="Turns"
+                    >
+                  </div>
+                </div>
+              </div>
+
+              <div class="aem-toggle-row">
+                <label class="aem-toggle-pill">
                   <input type="checkbox" name="overrideDuration" ${state.overrideDuration ? "checked" : ""}>
-                  Override duration
+                  Override Duration
                 </label>
-                <label>
+
+                <label class="aem-toggle-pill">
                   <input type="checkbox" name="silent" ${state.silent ? "checked" : ""}>
                   Silent
                 </label>
-              </div>
-
-              <div class="aem-row">
-                <div>
-                  <label>Rounds</label>
-                  <input type="number" name="durationRounds" value="${escapeHtml(state.durationRounds)}">
-                </div>
-                <div>
-                  <label>Turns</label>
-                  <input type="number" name="durationTurns" value="${escapeHtml(state.durationTurns)}">
-                </div>
               </div>
             </div>
 
