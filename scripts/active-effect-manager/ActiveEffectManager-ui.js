@@ -580,6 +580,44 @@
         pointer-events: none;
       }
 
+      /* Selected target soft glow only, no ring */
+.oni-aem .aem-target-img-wrap {
+  position: relative;
+  border-radius: 999px;
+}
+
+.oni-aem .aem-target-img-wrap::before {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-radius: 999px;
+  background: radial-gradient(
+    circle,
+    rgba(255, 205, 72, 0.42) 0%,
+    rgba(255, 177, 35, 0.26) 42%,
+    rgba(255, 145, 20, 0.08) 68%,
+    rgba(255, 145, 20, 0) 82%
+  );
+  opacity: 0;
+  transform: scale(0.86);
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease;
+  pointer-events: none;
+  z-index: 0;
+  filter: blur(8px);
+}
+
+.oni-aem .aem-target-img {
+  position: relative;
+  z-index: 1;
+}
+
+.oni-aem .aem-target-card.selected .aem-target-img-wrap::before {
+  opacity: 1;
+  transform: scale(1.08);
+}
+
       .oni-aem .aem-target-img {
         display: block;
         width: 100%;
