@@ -6,10 +6,9 @@
 // - Render compact grouped chat cards for ActiveEffectManager API results.
 // - One manager operation = one chat card.
 // - Each applied/removed/skipped/failed result = one row inside that card.
-// - Hides default Foundry speaker/header wrapper, like Treasure/Obtain cards.
+// - Styled as a video game log message instead of a backend/debug report.
 // - Buff card outline = blue.
 // - Debuff card outline = red.
-// - Mixed/Other card outline = neutral/gold.
 // ============================================================================
 
 (() => {
@@ -54,7 +53,7 @@
   }
 
   // --------------------------------------------------------------------------
-  // General helpers
+  // Helpers
   // --------------------------------------------------------------------------
 
   function clone(value, fallback = null) {
@@ -102,7 +101,6 @@
 
   function normalizeCategory(value) {
     const s = safeString(value, "Other").toLowerCase();
-
     if (s === "buff") return "Buff";
     if (s === "debuff") return "Debuff";
     return "Other";
@@ -146,18 +144,8 @@
     );
   }
 
-  function actorUuidFromRow(row = {}) {
-    return safeString(
-      row?.actor?.uuid ??
-      row?.actorUuid ??
-      row?.targetActorUuid ??
-      ""
-    );
-  }
-
   function categoryFromFlags(effectLike = {}) {
     const flags = effectLike?.flags?.[MODULE_ID] ?? {};
-
     return safeString(
       flags?.category ??
       flags?.activeEffectManager?.sourceCategory ??
@@ -173,7 +161,6 @@
       row?.category ??
       ""
     );
-
     if (direct) return normalizeCategory(direct);
 
     const fromCreated = categoryFromFlags(row?.created);
@@ -193,92 +180,6 @@
 
   function statusFromRow(row = {}) {
     return safeString(row.status, row.ok === false ? "failed" : "applied").toLowerCase();
-  }
-
-  function statusLabel(row = {}) {
-    const status = statusFromRow(row);
-
-    if (status === "applied") return "Applied";
-    if (status === "replaced") return "Replaced";
-    if (status === "stacked") return "Stacked";
-    if (status === "removed") return "Removed";
-    if (status === "skipped") return "Skipped";
-    if (status === "failed") return "Failed";
-
-    return titleCase(status);
-  }
-
-  function reasonText(row = {}) {
-    const reason = safeString(row.reason);
-    const error = safeString(row.error);
-
-    if (error) return error;
-    if (!reason) return "";
-
-    const map = {
-      duplicate_exists: "Already exists",
-      duplicate_removed: "Removed duplicate",
-      no_matching_effects: "No match",
-      no_permission: "No permission",
-      toggle_on: "Toggled on",
-      toggle_off: "Toggled off"
-    };
-
-    return map[reason] ?? titleCase(reason);
-  }
-
-  function getRows(report = {}) {
-    const rows = asArray(report.results);
-
-    // Normal apply/remove/toggle flow.
-    if (rows.length) return rows;
-
-    // Fallback for modify-style reports.
-    if (report.action === "modify") {
-      return [{
-        ok: report.ok,
-        status: report.ok ? "applied" : "failed",
-        actor: report.actor,
-        before: report.before,
-        after: report.after,
-        reason: report.reason,
-        error: report.error
-      }];
-    }
-
-    return [];
-  }
-
-  function getActionLabel(report = {}) {
-    const action = safeString(report.action, "apply").toLowerCase();
-
-    if (action === "remove") return "Active Effects Removed";
-    if (action === "toggle") return "Active Effects Updated";
-    if (action === "modify") return "Active Effect Modified";
-
-    return "Active Effects Applied";
-  }
-
-  function classifyCard(report = {}) {
-    const rows = getRows(report)
-      .filter(row => row?.ok !== false)
-      .filter(row => ["applied", "replaced", "stacked", "removed"].includes(statusFromRow(row)));
-
-    const categories = rows.map(categoryFromRow).filter(Boolean);
-
-    if (!categories.length) return "other";
-
-    const allBuff = categories.every(c => c === "Buff");
-    const allDebuff = categories.every(c => c === "Debuff");
-
-    if (allBuff) return "buff";
-    if (allDebuff) return "debuff";
-
-    if (categories.some(c => c === "Buff") && categories.some(c => c === "Debuff")) {
-      return "mixed";
-    }
-
-    return "other";
   }
 
   function countRows(report = {}) {
@@ -318,23 +219,91 @@
     return parts.join(" • ");
   }
 
-  function statusClass(row = {}) {
-    const status = statusFromRow(row);
+  function getRows(report = {}) {
+    const rows = asArray(report.results);
+    if (rows.length) return rows;
 
-    if (["applied", "replaced", "stacked"].includes(status)) return "good";
-    if (status === "removed") return "removed";
-    if (status === "skipped") return "skip";
-    if (status === "failed") return "bad";
+    if (report.action === "modify") {
+      return [{
+        ok: report.ok,
+        status: report.ok ? "applied" : "failed",
+        actor: report.actor,
+        before: report.before,
+        after: report.after,
+        reason: report.reason,
+        error: report.error
+      }];
+    }
 
-    return "neutral";
+    return [];
   }
 
-  function categoryClass(row = {}) {
-    const category = categoryFromRow(row);
+  function classifyCard(report = {}) {
+    const rows = getRows(report)
+      .filter(row => row?.ok !== false)
+      .filter(row => ["applied", "replaced", "stacked", "removed"].includes(statusFromRow(row)));
 
-    if (category === "Buff") return "buff";
-    if (category === "Debuff") return "debuff";
+    const categories = rows.map(categoryFromRow).filter(Boolean);
+
+    if (!categories.length) return "other";
+
+    const allBuff = categories.every(c => c === "Buff");
+    const allDebuff = categories.every(c => c === "Debuff");
+
+    if (allBuff) return "buff";
+    if (allDebuff) return "debuff";
+
+    if (categories.some(c => c === "Buff") && categories.some(c => c === "Debuff")) {
+      return "mixed";
+    }
+
     return "other";
+  }
+
+  function getCardTitle(report = {}) {
+    const action = safeString(report.action, "apply").toLowerCase();
+    const cardType = classifyCard(report);
+
+    if (action === "remove") return "Status Removed";
+    if (cardType === "buff") return "Buff";
+    if (cardType === "debuff") return "Debuff";
+    if (cardType === "mixed") return "Status Effects";
+    return "Active Effects";
+  }
+
+  function getCardSymbol(report = {}) {
+    const cardType = classifyCard(report);
+    if (cardType === "buff") return "✨";
+    if (cardType === "debuff") return "💢";
+    if (cardType === "mixed") return "💫";
+    return "💫";
+  }
+
+  function buildNarration(row = {}) {
+    const actorName = actorNameFromRow(row);
+    const effectName = effectNameFromRow(row);
+    const category = categoryFromRow(row);
+    const status = statusFromRow(row);
+
+    if (["applied", "replaced", "stacked"].includes(status)) {
+      if (category === "Debuff") return `${actorName} is inflicted with ${effectName}!`;
+      if (category === "Buff") return `${actorName} gains ${effectName}!`;
+      return `${actorName} is affected by ${effectName}!`;
+    }
+
+    if (status === "removed") {
+      return `${actorName} is no longer affected by ${effectName}.`;
+    }
+
+    if (status === "skipped") {
+      return `${actorName} already has ${effectName}.`;
+    }
+
+    if (status === "failed") {
+      return `Failed to apply ${effectName} to ${actorName}.`;
+    }
+
+    return `${actorName} is affected by ${effectName}.`;
   }
 
   // --------------------------------------------------------------------------
@@ -348,11 +317,7 @@
     const style = document.createElement("style");
     style.id = STYLE_ID;
     style.textContent = `
-/* -------------------------------------------------------------------------
-   Active Effect Manager compact chat card
-   ------------------------------------------------------------------------- */
-
-/* Hide default Foundry message chrome, like Treasure/Obtain cards. */
+/* Hide default Foundry chat chrome */
 .chat-message.${CHAT_CSS_CLASS},
 .chat-message:has(.oni-aem-chat-card) {
   background: transparent !important;
@@ -385,8 +350,7 @@
   border: 2px solid var(--aem-border);
   border-left-width: 7px;
   border-radius: 10px;
-  background:
-    linear-gradient(180deg, rgba(250, 245, 232, .98), rgba(232, 224, 207, .98));
+  background: linear-gradient(180deg, rgba(250,245,232,.98), rgba(232,224,207,.98));
   box-shadow: 0 2px 6px rgba(0,0,0,.24);
   overflow: hidden;
   color: #1f1a14;
@@ -440,10 +404,6 @@
   line-height: 1;
 }
 
-.oni-aem-chat-title {
-  min-width: 0;
-}
-
 .oni-aem-chat-title-main {
   font-weight: 900;
   font-size: 13px;
@@ -472,21 +432,21 @@
   box-shadow: 0 1px 2px rgba(0,0,0,.18);
 }
 
-/* Row list */
+/* Rows */
 .oni-aem-chat-rows {
   display: grid;
   gap: 0;
-  max-height: ${MAX_VISIBLE_ROWS_BEFORE_SCROLL * 43}px;
+  max-height: ${MAX_VISIBLE_ROWS_BEFORE_SCROLL * 44}px;
   overflow: auto;
 }
 
 .oni-aem-chat-row {
   display: grid;
-  grid-template-columns: 28px 1fr auto;
-  gap: 8px;
+  grid-template-columns: 30px 1fr;
+  gap: 10px;
   align-items: center;
-  min-height: 40px;
-  padding: 6px 8px;
+  min-height: 42px;
+  padding: 8px 10px;
   border-bottom: 1px solid rgba(60,45,25,.12);
 }
 
@@ -495,12 +455,12 @@
 }
 
 .oni-aem-chat-row:nth-child(even) {
-  background: rgba(255,255,255,.26);
+  background: rgba(255,255,255,.22);
 }
 
 .oni-aem-chat-row-icon {
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   border: 0;
   border-radius: 5px;
   object-fit: cover;
@@ -514,102 +474,10 @@
 
 .oni-aem-chat-row-line {
   font-size: 12px;
-  line-height: 1.18;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.oni-aem-chat-actor {
-  font-weight: 900;
-}
-
-.oni-aem-chat-effect {
-  font-weight: 900;
-}
-
-.oni-aem-chat-row-note {
-  margin-top: 2px;
-  font-size: 10px;
-  opacity: .62;
-  line-height: 1.15;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.oni-aem-chat-tags {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 3px;
-}
-
-.oni-aem-chat-chip {
-  height: 17px;
-  padding: 0 6px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 999px;
-  border: 1px solid rgba(0,0,0,.12);
-  background: rgba(0,0,0,.06);
-  font-size: 9px;
-  font-weight: 900;
-  line-height: 1;
-  white-space: nowrap;
-}
-
-.oni-aem-chat-chip.buff {
-  color: rgb(28, 78, 145);
-  background: rgba(64, 132, 210, .14);
-  border-color: rgba(64, 132, 210, .28);
-}
-
-.oni-aem-chat-chip.debuff {
-  color: rgb(138, 26, 34);
-  background: rgba(190, 54, 64, .14);
-  border-color: rgba(190, 54, 64, .28);
-}
-
-.oni-aem-chat-chip.other {
-  color: rgb(118, 78, 24);
-  background: rgba(158, 111, 42, .13);
-  border-color: rgba(158, 111, 42, .25);
-}
-
-.oni-aem-chat-chip.good {
-  color: rgb(35, 104, 50);
-  background: rgba(72, 170, 86, .15);
-  border-color: rgba(72, 170, 86, .25);
-}
-
-.oni-aem-chat-chip.removed {
-  color: rgb(28, 78, 145);
-  background: rgba(64, 132, 210, .14);
-  border-color: rgba(64, 132, 210, .28);
-}
-
-.oni-aem-chat-chip.skip {
-  color: rgb(120, 82, 22);
-  background: rgba(210, 152, 55, .14);
-  border-color: rgba(210, 152, 55, .25);
-}
-
-.oni-aem-chat-chip.bad {
-  color: rgb(138, 26, 34);
-  background: rgba(190, 54, 64, .14);
-  border-color: rgba(190, 54, 64, .28);
-}
-
-/* Footer */
-.oni-aem-chat-foot {
-  padding: 5px 9px 7px;
-  font-size: 10px;
-  opacity: .64;
-  line-height: 1.15;
-  border-top: 1px solid rgba(60,45,25,.10);
-  background: rgba(255,255,255,.30);
+  line-height: 1.25;
+  font-weight: 700;
+  color: #241c15;
+  word-break: break-word;
 }
 
 .oni-aem-chat-debug {
@@ -638,41 +506,19 @@
   }
 
   // --------------------------------------------------------------------------
-  // Render helpers
+  // Render
   // --------------------------------------------------------------------------
 
   function renderRow(row = {}) {
-    const actorName = actorNameFromRow(row);
-    const actorUuid = actorUuidFromRow(row);
-
     const effectName = effectNameFromRow(row);
     const effectImg = effectImgFromRow(row);
-
-    const category = categoryFromRow(row);
-    const categoryCls = categoryClass(row);
-
-    const status = statusLabel(row);
-    const statusCls = statusClass(row);
-
-    const reason = reasonText(row);
-    const actorTitle = actorUuid ? ` title="${escapeHtml(actorUuid)}"` : "";
+    const narration = buildNarration(row);
 
     return `
       <div class="oni-aem-chat-row">
         <img class="oni-aem-chat-row-icon" src="${escapeHtml(effectImg)}" alt="${escapeHtml(effectName)}">
-
         <div class="oni-aem-chat-row-main">
-          <div class="oni-aem-chat-row-line"${actorTitle}>
-            <span class="oni-aem-chat-actor">${escapeHtml(actorName)}</span>
-            <span> — </span>
-            <span class="oni-aem-chat-effect">${escapeHtml(effectName)}</span>
-          </div>
-          ${reason ? `<div class="oni-aem-chat-row-note">${escapeHtml(reason)}</div>` : ""}
-        </div>
-
-        <div class="oni-aem-chat-tags">
-          <span class="oni-aem-chat-chip ${escapeHtml(categoryCls)}">${escapeHtml(category)}</span>
-          <span class="oni-aem-chat-chip ${escapeHtml(statusCls)}">${escapeHtml(status)}</span>
+          <div class="oni-aem-chat-row-line">${escapeHtml(narration)}</div>
         </div>
       </div>
     `;
@@ -686,74 +532,13 @@
         <div class="oni-aem-chat-row">
           <img class="oni-aem-chat-row-icon" src="icons/svg/aura.svg" alt="Active Effect">
           <div class="oni-aem-chat-row-main">
-            <div class="oni-aem-chat-row-line">
-              <span class="oni-aem-chat-effect">No effect results.</span>
-            </div>
-          </div>
-          <div class="oni-aem-chat-tags">
-            <span class="oni-aem-chat-chip other">Other</span>
+            <div class="oni-aem-chat-row-line">No active effect results.</div>
           </div>
         </div>
       `;
     }
 
     return rows.map(renderRow).join("");
-  }
-
-  function renderReportContent(report = {}, options = {}) {
-    ensureCss();
-
-    const cardType = classifyCard(report);
-    const rows = getRows(report);
-    const counts = countRows(report);
-
-    const title = getActionLabel(report);
-    const subtitle = compactSummary(report);
-
-    const runId = safeString(report.runId);
-    const footerParts = [];
-
-    if (rows.length > MAX_VISIBLE_ROWS_BEFORE_SCROLL) {
-      footerParts.push(`${rows.length} rows. Scroll inside the card to view all results.`);
-    }
-
-    if (runId) {
-      footerParts.push(`Run: ${runId}`);
-    }
-
-    const showDebug = options.showDebug === true;
-
-    return `
-      <div class="oni-aem-chat-card type-${escapeHtml(cardType)}">
-        <div class="oni-aem-chat-head">
-          <div class="oni-aem-chat-symbol">💫</div>
-
-          <div class="oni-aem-chat-title">
-            <div class="oni-aem-chat-title-main">${escapeHtml(title)}</div>
-            <div class="oni-aem-chat-title-sub">${escapeHtml(subtitle)}</div>
-          </div>
-
-          <div class="oni-aem-chat-count">${escapeHtml(counts.total)}</div>
-        </div>
-
-        <div class="oni-aem-chat-rows">
-          ${renderRows(report)}
-        </div>
-
-        ${footerParts.length ? `
-          <div class="oni-aem-chat-foot">
-            ${escapeHtml(footerParts.join(" • "))}
-          </div>
-        ` : ""}
-
-        ${showDebug ? `
-          <details class="oni-aem-chat-debug">
-            <summary>Debug Report</summary>
-            <pre>${escapeHtml(JSON.stringify(compactReportForDebug(report), null, 2))}</pre>
-          </details>
-        ` : ""}
-      </div>
-    `;
   }
 
   function compactReportForDebug(report = {}) {
@@ -769,6 +554,46 @@
     };
   }
 
+  function renderReportContent(report = {}, options = {}) {
+    ensureCss();
+
+    const cardType = classifyCard(report);
+    const rows = getRows(report);
+    const counts = countRows(report);
+
+    const title = getCardTitle(report);
+    const subtitle = compactSummary(report);
+    const symbol = getCardSymbol(report);
+
+    const showDebug = options.showDebug === true;
+
+    return `
+      <div class="oni-aem-chat-card type-${escapeHtml(cardType)}">
+        <div class="oni-aem-chat-head">
+          <div class="oni-aem-chat-symbol">${escapeHtml(symbol)}</div>
+
+          <div class="oni-aem-chat-title">
+            <div class="oni-aem-chat-title-main">${escapeHtml(title)}</div>
+            <div class="oni-aem-chat-title-sub">${escapeHtml(subtitle)}</div>
+          </div>
+
+          <div class="oni-aem-chat-count">${escapeHtml(counts.total)}</div>
+        </div>
+
+        <div class="oni-aem-chat-rows">
+          ${renderRows(report)}
+        </div>
+
+        ${showDebug ? `
+          <details class="oni-aem-chat-debug">
+            <summary>Debug Report</summary>
+            <pre>${escapeHtml(JSON.stringify(compactReportForDebug(report), null, 2))}</pre>
+          </details>
+        ` : ""}
+      </div>
+    `;
+  }
+
   // --------------------------------------------------------------------------
   // Chat creation
   // --------------------------------------------------------------------------
@@ -780,9 +605,7 @@
     }
 
     if (options.silent === true || report?.options?.silent === true) {
-      log("Skipping chat render due to silent option.", {
-        runId: report.runId
-      });
+      log("Skipping chat render due to silent option.", { runId: report.runId });
       return null;
     }
 
@@ -858,11 +681,10 @@
   // --------------------------------------------------------------------------
 
   const api = {
-    version: "0.2.0",
+    version: "0.3.0",
 
     renderResults,
     renderPreview,
-
     ensureCss,
 
     _internal: {
@@ -872,7 +694,8 @@
       compactReportForDebug,
       getRows,
       classifyCard,
-      countRows
+      countRows,
+      buildNarration
     }
   };
 
