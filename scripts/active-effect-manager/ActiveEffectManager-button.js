@@ -3,242 +3,327 @@
 // Foundry VTT V12 — Fabula Ultima Companion
 //
 // Purpose:
-// - Adds a GM-only "AE" button near the chat controls.
-// - Clicking it opens the Active Effect Manager UI.
-// - This script does not apply/remove effects directly.
+// - Installs a floating "Active Effect Manager" button (💫) on the client UI.
+// - GM only.
+// - Follows the same fixed-button style/format as Combat Button and Check Roller.
+// - No fuzzy EXP detection.
+// - No side rail.
+// - Click -> opens FUCompanion.api.activeEffectManager.ui.open()
 // ============================================================================
 
-(() => {
-  const MODULE_ID = "fabula-ultima-companion";
-  const TAG = "[ONI][ActiveEffectManager:Button]";
-  const DEBUG = true;
+Hooks.once("ready", () => {
+  (() => {
+    const TAG = "[ONI][ActiveEffectManager:Button]";
+    const STATE_KEY = "__ONI_ACTIVE_EFFECT_MANAGER_BUTTON_STATE__";
 
-  const BUTTON_ID = "oni-active-effect-manager-chat-button";
-  const STYLE_ID = "oni-active-effect-manager-button-style";
+    // -------------------------------------------------------------------------
+    // CONFIG
+    // -------------------------------------------------------------------------
+    const CFG = {
+      moduleId: "fabula-ultima-companion",
 
-  const log = (...a) => DEBUG && console.log(TAG, ...a);
-  const warn = (...a) => console.warn(TAG, ...a);
+      // GM-only button
+      gmOnly: true,
 
-  // --------------------------------------------------------------------------
-  // API root
-  // --------------------------------------------------------------------------
+      // Placement
+      // Check Roller: bottom 38
+      // Combat:       bottom 110
+      // EXP Awarder:  expected above Combat
+      // AEM:          above EXP Awarder
+      offsetRightPx: 313,
+      offsetBottomPx: 254,
 
-  function ensureApiRoot() {
-    globalThis.FUCompanion = globalThis.FUCompanion || {};
-    globalThis.FUCompanion.api = globalThis.FUCompanion.api || {};
-    globalThis.FUCompanion.api.activeEffectManager = globalThis.FUCompanion.api.activeEffectManager || {};
-    return globalThis.FUCompanion.api.activeEffectManager;
-  }
+      // Visual
+      sizePx: 60,
+      zIndex: 82,
+      iconText: "💫",
 
-  function getManagerRoot() {
-    return globalThis.FUCompanion?.api?.activeEffectManager ?? null;
-  }
+      // Tooltip
+      label: "Active Effect Manager",
 
-  // --------------------------------------------------------------------------
-  // Style
-  // --------------------------------------------------------------------------
+      // Optional click sound
+      clickSound: null,
 
-  function injectStyle() {
-    if (document.getElementById(STYLE_ID)) return;
+      // No spam logs
+      debug: false,
+    };
 
-    const style = document.createElement("style");
-    style.id = STYLE_ID;
-    style.textContent = `
-      #${BUTTON_ID} {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        gap: 4px;
+    // -------------------------------------------------------------------------
+    // DOM ids/classes
+    // -------------------------------------------------------------------------
+    const DOM = {
+      ROOT_ID: "oni-aem-button-root",
+      BTN_ID: "oni-aem-button",
+      STYLE_ID: "oni-aem-button-style",
 
-        min-width: 34px;
-        height: 28px;
-        padding: 0 8px;
-        margin: 2px;
+      // Old versions used these; remove them so they don't overlap anything.
+      LEGACY_RAIL_ID: "oni-active-effect-manager-side-rail",
+      LEGACY_BTN_ID: "oni-active-effect-manager-chat-button",
+      LEGACY_STYLE_ID: "oni-active-effect-manager-button-style",
+    };
 
-        border-radius: 7px;
-        border: 1px solid rgba(255,255,255,.24);
+    // -------------------------------------------------------------------------
+    // Shared state
+    // -------------------------------------------------------------------------
+    const STATE = (globalThis[STATE_KEY] ??= {
+      installed: false,
+    });
 
-        background: rgba(24, 20, 18, .95);
-        color: #f7efe2;
+    const debug = (...args) => {
+      if (CFG.debug) console.log(TAG, ...args);
+    };
 
-        font-size: 12px;
-        font-weight: 800;
-        letter-spacing: .02em;
+    const cleanupUI = () => {
+      try { document.getElementById(DOM.ROOT_ID)?.remove(); } catch (_) {}
+      try { document.getElementById(DOM.STYLE_ID)?.remove(); } catch (_) {}
 
-        cursor: pointer;
-        box-shadow: 0 1px 4px rgba(0,0,0,.35);
-      }
+      // Clean old rail/button version.
+      try { document.getElementById(DOM.LEGACY_RAIL_ID)?.remove(); } catch (_) {}
+      try { document.getElementById(DOM.LEGACY_BTN_ID)?.remove(); } catch (_) {}
+      try { document.getElementById(DOM.LEGACY_STYLE_ID)?.remove(); } catch (_) {}
+    };
 
-      #${BUTTON_ID}:hover {
-        background: rgba(58, 45, 34, .98);
-        color: #ffffff;
-        border-color: rgba(255,255,255,.38);
-      }
-
-      #${BUTTON_ID}:active {
-        transform: translateY(1px);
-      }
-
-      #${BUTTON_ID}.missing-ui {
-        background: rgba(90, 20, 20, .95);
-      }
-    `;
-
-    document.head.appendChild(style);
-  }
-
-  // --------------------------------------------------------------------------
-  // DOM placement
-  // --------------------------------------------------------------------------
-
-  function findChatButtonContainer() {
-    return (
-      document.querySelector("#chat-controls") ??
-      document.querySelector("#chat-form") ??
-      document.querySelector("#chat") ??
-      document.querySelector("#ui-right") ??
-      null
-    );
-  }
-
-  function findPreferredInsertBeforeTarget() {
-    return (
-      document.querySelector("#oni-exp-awarder-chat-button") ??
-      document.querySelector("[data-oni-exp-awarder]") ??
-      document.querySelector(".oni-exp-awarder-button") ??
-      null
-    );
-  }
-
-  function openManagerUi() {
-    const root = getManagerRoot();
-
-    const open =
-      root?.ui?.open ??
-      root?.openUI ??
-      null;
-
-    if (typeof open !== "function") {
-      ui.notifications?.warn?.("Active Effect Manager UI is not loaded yet.");
-      warn("UI API missing. Make sure ActiveEffectManager-ui.js is loaded before ActiveEffectManager-button.js.");
+    // -------------------------------------------------------------------------
+    // GM-only guard
+    // -------------------------------------------------------------------------
+    if (CFG.gmOnly && !game.user?.isGM) {
+      cleanupUI();
+      STATE.installed = false;
       return;
     }
 
-    return open();
-  }
+    // -------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------
+    const getManagerRoot = () => {
+      return globalThis.FUCompanion?.api?.activeEffectManager ?? null;
+    };
 
-  function createButton() {
-    const btn = document.createElement("button");
-    btn.id = BUTTON_ID;
-    btn.type = "button";
-    btn.innerHTML = "AE";
-    btn.title = "Open Active Effect Manager";
-    btn.dataset.oniActiveEffectManagerButton = "1";
+    const openManagerUi = async () => {
+      const root = getManagerRoot();
 
-    btn.addEventListener("click", (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      openManagerUi();
-    });
+      const open =
+        root?.ui?.open ??
+        root?.openUI ??
+        null;
 
-    return btn;
-  }
-
-  function installButton() {
-    if (!game.user?.isGM) return false;
-
-    injectStyle();
-
-    const existing = document.getElementById(BUTTON_ID);
-    if (existing) return true;
-
-    const container = findChatButtonContainer();
-
-    if (!container) {
-      warn("Could not find chat button container yet.");
-      return false;
-    }
-
-    const btn = createButton();
-
-    const beforeTarget = findPreferredInsertBeforeTarget();
-
-    if (beforeTarget?.parentElement) {
-      beforeTarget.parentElement.insertBefore(btn, beforeTarget);
-    } else {
-      container.prepend(btn);
-    }
-
-    log("Installed Active Effect Manager chat button.");
-
-    return true;
-  }
-
-  function scheduleInstall(delayMs = 50) {
-    setTimeout(() => {
-      try {
-        installButton();
-      } catch (e) {
-        warn("Scheduled button install failed.", e);
+      if (typeof open !== "function") {
+        ui?.notifications?.warn?.("Active Effect Manager UI is not loaded yet.");
+        console.warn(`${TAG} UI API missing. Expected FUCompanion.api.activeEffectManager.ui.open()`);
+        return;
       }
-    }, delayMs);
-  }
 
-  // --------------------------------------------------------------------------
-  // Public API
-  // --------------------------------------------------------------------------
+      return open();
+    };
 
-  const api = {
-    version: "0.1.0",
-    installButton,
-    scheduleInstall,
-    open: openManagerUi,
-    buttonId: BUTTON_ID
-  };
+    const ensureNamespace = () => {
+      globalThis.FUCompanion = globalThis.FUCompanion || {};
+      globalThis.FUCompanion.api = globalThis.FUCompanion.api || {};
+      globalThis.FUCompanion.api.activeEffectManager =
+        globalThis.FUCompanion.api.activeEffectManager || {};
 
-  const root = ensureApiRoot();
-  root.button = api;
-  root.installButton = installButton;
+      return globalThis.FUCompanion.api.activeEffectManager;
+    };
 
-  try {
-    const mod = game.modules?.get?.(MODULE_ID);
-    if (mod) {
-      mod.api = mod.api || {};
-      mod.api.activeEffectManager = mod.api.activeEffectManager || {};
-      mod.api.activeEffectManager.button = api;
-      mod.api.activeEffectManager.installButton = installButton;
+    // -------------------------------------------------------------------------
+    // Install CSS
+    // -------------------------------------------------------------------------
+    const ensureStyle = () => {
+      let style = document.getElementById(DOM.STYLE_ID);
+      if (style) return style;
+
+      style = document.createElement("style");
+      style.id = DOM.STYLE_ID;
+      style.textContent = `
+        /* [ActiveEffectManager] Floating Button */
+        #${DOM.ROOT_ID} {
+          position: fixed;
+          right: ${CFG.offsetRightPx}px;
+          bottom: ${CFG.offsetBottomPx}px;
+          z-index: ${CFG.zIndex};
+          pointer-events: none;
+        }
+
+        #${DOM.BTN_ID} {
+          pointer-events: auto;
+          width: ${CFG.sizePx}px;
+          height: ${CFG.sizePx}px;
+          border-radius: 999px;
+          border: 1px solid rgba(255,255,255,0.22);
+          background: rgba(18, 18, 22, 0.86);
+          box-shadow:
+            0 10px 24px rgba(0,0,0,0.35),
+            0 2px 0 rgba(255,255,255,0.06) inset;
+          display: grid;
+          place-items: center;
+          cursor: pointer;
+          user-select: none;
+          -webkit-user-select: none;
+          transform: translateZ(0);
+          transition: transform 120ms ease, background 120ms ease, border-color 120ms ease, opacity 120ms ease;
+          position: relative;
+        }
+
+        #${DOM.BTN_ID}:hover {
+          transform: translateY(-1px) scale(1.02);
+          background: rgba(28, 28, 34, 0.92);
+          border-color: rgba(255,255,255,0.32);
+        }
+
+        #${DOM.BTN_ID}:active {
+          transform: translateY(0px) scale(0.99);
+        }
+
+        #${DOM.BTN_ID} .oni-aem-button-icon {
+          font-size: 22px;
+          line-height: 1;
+          filter: drop-shadow(0 2px 2px rgba(0,0,0,0.45));
+        }
+
+        #${DOM.BTN_ID} .oni-aem-button-tip {
+          position: absolute;
+          right: 0;
+          bottom: calc(100% + 10px);
+          background: rgba(10,10,12,0.92);
+          border: 1px solid rgba(255,255,255,0.18);
+          border-radius: 10px;
+          padding: 8px 10px;
+          font-size: 12px;
+          color: rgba(255,255,255,0.9);
+          white-space: nowrap;
+          opacity: 0;
+          transform: translateY(4px);
+          transition: opacity 120ms ease, transform 120ms ease;
+          pointer-events: none;
+          box-shadow: 0 10px 24px rgba(0,0,0,0.35);
+        }
+
+        #${DOM.BTN_ID}:hover .oni-aem-button-tip {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      `;
+
+      document.head.appendChild(style);
+      return style;
+    };
+
+    // -------------------------------------------------------------------------
+    // Install DOM
+    // -------------------------------------------------------------------------
+    const ensureRoot = () => {
+      let root = document.getElementById(DOM.ROOT_ID);
+
+      if (!root) {
+        root = document.createElement("div");
+        root.id = DOM.ROOT_ID;
+        document.body.appendChild(root);
+      }
+
+      return root;
+    };
+
+    const buildButton = () => {
+      const root = ensureRoot();
+      root.innerHTML = "";
+
+      const btn = document.createElement("div");
+      btn.id = DOM.BTN_ID;
+      btn.setAttribute("role", "button");
+      btn.setAttribute("tabindex", "0");
+      btn.setAttribute("aria-label", CFG.label);
+
+      btn.innerHTML = `
+        <div class="oni-aem-button-tip">${CFG.label}</div>
+        <div class="oni-aem-button-icon">${CFG.iconText}</div>
+      `;
+
+      const onClick = async (ev) => {
+        ev?.preventDefault?.();
+        ev?.stopPropagation?.();
+
+        if (CFG.clickSound) {
+          try {
+            AudioHelper.play({
+              src: CFG.clickSound,
+              volume: 0.6,
+              autoplay: true,
+              loop: false
+            }, true);
+          } catch (_) {}
+        }
+
+        try {
+          await openManagerUi();
+        } catch (e) {
+          console.error(`${TAG} Button click error:`, e);
+          ui?.notifications?.error?.("Active Effect Manager: An error occurred. Check console.");
+        }
+      };
+
+      const onKeyDown = (ev) => {
+        if (ev.key === "Enter" || ev.key === " ") onClick(ev);
+      };
+
+      btn.addEventListener("click", onClick);
+      btn.addEventListener("keydown", onKeyDown);
+
+      root.appendChild(btn);
+      return btn;
+    };
+
+    // -------------------------------------------------------------------------
+    // Public API
+    // -------------------------------------------------------------------------
+    const installButton = () => {
+      cleanupUI();
+      ensureStyle();
+      buildButton();
+      STATE.installed = true;
+
+      debug("Installed", {
+        user: game.user?.name,
+        right: CFG.offsetRightPx,
+        bottom: CFG.offsetBottomPx
+      });
+
+      return true;
+    };
+
+    const removeButton = () => {
+      cleanupUI();
+      STATE.installed = false;
+      return true;
+    };
+
+    const api = {
+      version: "0.4.0",
+      installButton,
+      removeButton,
+      open: openManagerUi,
+      config: CFG,
+      dom: DOM
+    };
+
+    const ns = ensureNamespace();
+    ns.button = api;
+    ns.installButton = installButton;
+
+    try {
+      const mod = game.modules?.get?.(CFG.moduleId);
+      if (mod) {
+        mod.api = mod.api || {};
+        mod.api.activeEffectManager = mod.api.activeEffectManager || {};
+        mod.api.activeEffectManager.button = api;
+        mod.api.activeEffectManager.installButton = installButton;
+      }
+    } catch (e) {
+      console.warn(`${TAG} Could not expose API on module object.`, e);
     }
-  } catch (e) {
-    warn("Could not expose button API on module object.", e);
-  }
 
-  // --------------------------------------------------------------------------
-  // Hooks
-  // --------------------------------------------------------------------------
-
-  Hooks.once("ready", () => {
-    const root = ensureApiRoot();
-    root.button = api;
-    root.installButton = installButton;
-
-    scheduleInstall(50);
-    scheduleInstall(400);
-    scheduleInstall(1200);
-
-    log("Ready. Active Effect Manager button script installed.");
-  });
-
-  Hooks.on("renderChatLog", () => {
-    scheduleInstall(50);
-  });
-
-  Hooks.on("collapseSidebar", () => {
-    scheduleInstall(100);
-  });
-
-  Hooks.on("renderSidebarTab", (_app, _html, data) => {
-    if (data?.tabName === "chat") {
-      scheduleInstall(50);
-    }
-  });
-})();
+    // -------------------------------------------------------------------------
+    // Boot
+    // -------------------------------------------------------------------------
+    installButton();
+  })();
+});
