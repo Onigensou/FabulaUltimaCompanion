@@ -2,7 +2,7 @@
   "id": "fabula-ultima-companion",
   "title": "FabulaUltimaCompanion",
   "description": "Adds custom hooks and cool functionality.",
-  "version": "1.0.420",
+  "version": "1.0.421",
   "compatibility": {
     "minimum": "12",
     "verified": "12"
@@ -36,6 +36,14 @@
   "scripts/action-editor/actionEditor-API.js",
   "scripts/action-editor/actionEditor-Rebuilder.js",
   "scripts/active-effect-tooltip/active-effect-tooltip.js",
+  "scripts/active-effect-manager/ActiveEffectManager-registry.js",
+  "scripts/active-effect-manager/ActiveEffectManager-field-catalogue.js",
+  "scripts/active-effect-manager/ActiveEffectManager-api.js",
+  "scripts/active-effect-manager/ActiveEffectManager-custom-builder.js",
+  "scripts/active-effect-manager/ActiveEffectManager-chat.js",
+  "scripts/active-effect-manager/ActiveEffectManager-fx.js",
+  "scripts/active-effect-manager/ActiveEffectManager-ui.js",
+  "scripts/active-effect-manager/ActiveEffectManager-button.js",
   "scripts/passive-system/autoPassive-targetResolver.js",
   "scripts/passive-system/autoPassive-manager.js",
   "scripts/passive-system/passive-card-ui.js",
@@ -158,5 +166,5 @@
   "styles": ["styles/style.css"],
   "packs": [],
   "manifest": "https://raw.githubusercontent.com/Onigensou/FabulaUltimaCompanion/refs/heads/main/module.json",
-  "download": "https://codeload.github.com/Onigensou/FabulaUltimaCompanion/zip/refs/tags/v1.0.420"
+  "download": "https://codeload.github.com/Onigensou/FabulaUltimaCompanion/zip/refs/tags/v1.0.421"
 }
