@@ -2,13 +2,13 @@
 // ActiveEffectManager-chat.js
 // Foundry VTT V12 — Fabula Ultima Companion
 //
-// Purpose:
-// - Render compact grouped chat cards for ActiveEffectManager API results.
+// Compact battle-log version:
 // - One manager operation = one chat card.
-// - Each applied/removed/skipped/failed result = one row inside that card.
-// - Styled as a video game log message instead of a backend/debug report.
+// - One actor = one row when possible.
+// - Effects are shown as small icon chips after the actor/action text.
 // - Buff card outline = blue.
 // - Debuff card outline = red.
+// - No frontend run-id/debug text unless renderPreview() is used.
 // ============================================================================
 
 (() => {
@@ -93,17 +93,17 @@
     return [value];
   }
 
-  function titleCase(value) {
-    return safeString(value, "unknown")
-      .replace(/[_-]+/g, " ")
-      .replace(/\b\w/g, m => m.toUpperCase());
-  }
-
   function normalizeCategory(value) {
     const s = safeString(value, "Other").toLowerCase();
     if (s === "buff") return "Buff";
     if (s === "debuff") return "Debuff";
     return "Other";
+  }
+
+  function titleCase(value) {
+    return safeString(value, "unknown")
+      .replace(/[_-]+/g, " ")
+      .replace(/\b\w/g, m => m.toUpperCase());
   }
 
   function effectNameFromRow(row = {}) {
@@ -140,12 +140,13 @@
       row?.actor?.name ??
       row?.actorName ??
       row?.targetActorName ??
-      "Unknown Actor"
+      "Unknown"
     );
   }
 
   function categoryFromFlags(effectLike = {}) {
     const flags = effectLike?.flags?.[MODULE_ID] ?? {};
+
     return safeString(
       flags?.category ??
       flags?.activeEffectManager?.sourceCategory ??
@@ -161,6 +162,7 @@
       row?.category ??
       ""
     );
+
     if (direct) return normalizeCategory(direct);
 
     const fromCreated = categoryFromFlags(row?.created);
@@ -180,6 +182,25 @@
 
   function statusFromRow(row = {}) {
     return safeString(row.status, row.ok === false ? "failed" : "applied").toLowerCase();
+  }
+
+  function getRows(report = {}) {
+    const rows = asArray(report.results);
+    if (rows.length) return rows;
+
+    if (report.action === "modify") {
+      return [{
+        ok: report.ok,
+        status: report.ok ? "applied" : "failed",
+        actor: report.actor,
+        before: report.before,
+        after: report.after,
+        reason: report.reason,
+        error: report.error
+      }];
+    }
+
+    return [];
   }
 
   function countRows(report = {}) {
@@ -217,25 +238,6 @@
     if (!parts.length) parts.push(`${counts.total} result${counts.total === 1 ? "" : "s"}`);
 
     return parts.join(" • ");
-  }
-
-  function getRows(report = {}) {
-    const rows = asArray(report.results);
-    if (rows.length) return rows;
-
-    if (report.action === "modify") {
-      return [{
-        ok: report.ok,
-        status: report.ok ? "applied" : "failed",
-        actor: report.actor,
-        before: report.before,
-        after: report.after,
-        reason: report.reason,
-        error: report.error
-      }];
-    }
-
-    return [];
   }
 
   function classifyCard(report = {}) {
@@ -279,31 +281,56 @@
     return "💫";
   }
 
-  function buildNarration(row = {}) {
-    const actorName = actorNameFromRow(row);
-    const effectName = effectNameFromRow(row);
-    const category = categoryFromRow(row);
-    const status = statusFromRow(row);
+  function verbForGroup(group = {}) {
+    const category = normalizeCategory(group.category);
+    const status = safeString(group.status, "applied").toLowerCase();
 
     if (["applied", "replaced", "stacked"].includes(status)) {
-      if (category === "Debuff") return `${actorName} is inflicted with ${effectName}!`;
-      if (category === "Buff") return `${actorName} gains ${effectName}!`;
-      return `${actorName} is affected by ${effectName}!`;
+      if (category === "Debuff") return "inflicted";
+      if (category === "Buff") return "gained";
+      return "affected";
     }
 
-    if (status === "removed") {
-      return `${actorName} is no longer affected by ${effectName}.`;
+    if (status === "removed") return "removed";
+    if (status === "skipped") return "already has";
+    if (status === "failed") return "failed";
+
+    return titleCase(status);
+  }
+
+  function groupRowsForLog(report = {}) {
+    const rows = getRows(report);
+    const groups = new Map();
+
+    for (const row of rows) {
+      const actorName = actorNameFromRow(row);
+      const category = categoryFromRow(row);
+      const status = statusFromRow(row);
+
+      const key = [
+        actorName,
+        category,
+        status
+      ].join("||");
+
+      if (!groups.has(key)) {
+        groups.set(key, {
+          actorName,
+          category,
+          status,
+          effects: []
+        });
+      }
+
+      const group = groups.get(key);
+      group.effects.push({
+        name: effectNameFromRow(row),
+        img: effectImgFromRow(row),
+        row
+      });
     }
 
-    if (status === "skipped") {
-      return `${actorName} already has ${effectName}.`;
-    }
-
-    if (status === "failed") {
-      return `Failed to apply ${effectName} to ${actorName}.`;
-    }
-
-    return `${actorName} is affected by ${effectName}.`;
+    return Array.from(groups.values());
   }
 
   // --------------------------------------------------------------------------
@@ -432,21 +459,21 @@
   box-shadow: 0 1px 2px rgba(0,0,0,.18);
 }
 
-/* Rows */
+/* Compact actor rows */
 .oni-aem-chat-rows {
   display: grid;
   gap: 0;
-  max-height: ${MAX_VISIBLE_ROWS_BEFORE_SCROLL * 44}px;
+  max-height: ${MAX_VISIBLE_ROWS_BEFORE_SCROLL * 36}px;
   overflow: auto;
 }
 
 .oni-aem-chat-row {
   display: grid;
-  grid-template-columns: 30px 1fr;
-  gap: 10px;
-  align-items: center;
-  min-height: 42px;
-  padding: 8px 10px;
+  grid-template-columns: 62px 54px 1fr;
+  gap: 6px;
+  align-items: start;
+  min-height: 32px;
+  padding: 6px 8px;
   border-bottom: 1px solid rgba(60,45,25,.12);
 }
 
@@ -458,26 +485,65 @@
   background: rgba(255,255,255,.22);
 }
 
-.oni-aem-chat-row-icon {
-  width: 28px;
-  height: 28px;
-  border: 0;
-  border-radius: 5px;
-  object-fit: cover;
-  background: rgba(0,0,0,.08);
-  box-shadow: 0 0 0 1px rgba(0,0,0,.14);
+.oni-aem-chat-actor {
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.oni-aem-chat-row-main {
+.oni-aem-chat-verb {
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1.35;
+  opacity: .72;
+  text-transform: uppercase;
+  letter-spacing: .02em;
+  padding-top: 1px;
+}
+
+.oni-aem-chat-effects {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
   min-width: 0;
 }
 
-.oni-aem-chat-row-line {
-  font-size: 12px;
-  line-height: 1.25;
-  font-weight: 700;
+.oni-aem-effect-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 108px;
+  min-height: 20px;
+  padding: 1px 5px 1px 2px;
+  border-radius: 999px;
+  background: rgba(255,255,255,.56);
+  border: 1px solid rgba(60,45,25,.18);
+  box-shadow: 0 1px 1px rgba(0,0,0,.04);
+  line-height: 1;
+}
+
+.oni-aem-effect-chip img {
+  width: 17px;
+  height: 17px;
+  border: 0;
+  border-radius: 4px;
+  object-fit: cover;
+  background: rgba(0,0,0,.08);
+  box-shadow: 0 0 0 1px rgba(0,0,0,.12);
+}
+
+.oni-aem-effect-chip-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 800;
   color: #241c15;
-  word-break: break-word;
 }
 
 .oni-aem-chat-debug {
@@ -509,36 +575,53 @@
   // Render
   // --------------------------------------------------------------------------
 
-  function renderRow(row = {}) {
-    const effectName = effectNameFromRow(row);
-    const effectImg = effectImgFromRow(row);
-    const narration = buildNarration(row);
+  function renderEffectChip(effect = {}) {
+    const name = safeString(effect.name, "Effect");
+    const img = safeString(effect.img, "icons/svg/aura.svg");
+
+    return `
+      <span class="oni-aem-effect-chip" title="${escapeHtml(name)}">
+        <img src="${escapeHtml(img)}" alt="${escapeHtml(name)}">
+        <span class="oni-aem-effect-chip-name">${escapeHtml(name)}</span>
+      </span>
+    `;
+  }
+
+  function renderGroupedRow(group = {}) {
+    const actorName = safeString(group.actorName, "Unknown");
+    const verb = verbForGroup(group);
+    const effectsHtml = (group.effects ?? []).map(renderEffectChip).join("");
 
     return `
       <div class="oni-aem-chat-row">
-        <img class="oni-aem-chat-row-icon" src="${escapeHtml(effectImg)}" alt="${escapeHtml(effectName)}">
-        <div class="oni-aem-chat-row-main">
-          <div class="oni-aem-chat-row-line">${escapeHtml(narration)}</div>
+        <div class="oni-aem-chat-actor" title="${escapeHtml(actorName)}">${escapeHtml(actorName)}</div>
+        <div class="oni-aem-chat-verb">${escapeHtml(verb)}</div>
+        <div class="oni-aem-chat-effects">
+          ${effectsHtml}
         </div>
       </div>
     `;
   }
 
   function renderRows(report = {}) {
-    const rows = getRows(report);
+    const groups = groupRowsForLog(report);
 
-    if (!rows.length) {
+    if (!groups.length) {
       return `
         <div class="oni-aem-chat-row">
-          <img class="oni-aem-chat-row-icon" src="icons/svg/aura.svg" alt="Active Effect">
-          <div class="oni-aem-chat-row-main">
-            <div class="oni-aem-chat-row-line">No active effect results.</div>
+          <div class="oni-aem-chat-actor">System</div>
+          <div class="oni-aem-chat-verb">Log</div>
+          <div class="oni-aem-chat-effects">
+            <span class="oni-aem-effect-chip">
+              <img src="icons/svg/aura.svg" alt="Active Effect">
+              <span class="oni-aem-effect-chip-name">No results</span>
+            </span>
           </div>
         </div>
       `;
     }
 
-    return rows.map(renderRow).join("");
+    return groups.map(renderGroupedRow).join("");
   }
 
   function compactReportForDebug(report = {}) {
@@ -558,7 +641,6 @@
     ensureCss();
 
     const cardType = classifyCard(report);
-    const rows = getRows(report);
     const counts = countRows(report);
 
     const title = getCardTitle(report);
@@ -681,7 +763,7 @@
   // --------------------------------------------------------------------------
 
   const api = {
-    version: "0.3.0",
+    version: "0.4.0",
 
     renderResults,
     renderPreview,
@@ -690,12 +772,13 @@
     _internal: {
       renderReportContent,
       renderRows,
-      renderRow,
+      renderGroupedRow,
+      groupRowsForLog,
       compactReportForDebug,
       getRows,
       classifyCard,
       countRows,
-      buildNarration
+      verbForGroup
     }
   };
 
