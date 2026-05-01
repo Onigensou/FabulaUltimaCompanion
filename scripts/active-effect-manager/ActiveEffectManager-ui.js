@@ -2,15 +2,12 @@
 // ActiveEffectManager-ui.js
 // Foundry VTT V12 — Fabula Ultima Companion
 //
-// Purpose:
-// - GM UI for applying/removing Active Effects through ActiveEffectManager-api.
-// - Uses dynamic registry when available.
-// - Uses field catalogue for custom modifier key suggestions when available.
-// - Targeting polish:
-//   1. If GM has selected tokens, use those actors as default targets.
-//   2. If no selected token, use DB Resolver to load current party members.
-//   3. Targeting is shown as portrait cards, not a huge actor UUID list.
-//   4. Multiple target actors can be selected in one operation.
+// Polished UI version:
+// - Target list is auto-built on open
+// - Includes party members + currently selected token actors
+// - No target load buttons
+// - Debug tools moved into collapsed panel
+// - Custom Effect Builder moved into separate dialog
 // ============================================================================
 
 (() => {
@@ -26,6 +23,7 @@
   const FALLBACK_IMG = "icons/svg/mystery-man.svg";
 
   let ACTIVE_DIALOG = null;
+  let BUILDER_DIALOG = null;
 
   // --------------------------------------------------------------------------
   // API helpers
@@ -188,11 +186,9 @@
   function normalizeActorRef(ref) {
     const raw = safeString(ref);
     if (!raw) return "";
-
     if (raw.startsWith("Actor.")) return raw;
     if (raw.startsWith("Scene.")) return raw;
     if (raw.includes(".")) return raw;
-
     return `Actor.${raw}`;
   }
 
@@ -203,12 +199,10 @@
     try {
       const doc = await fromUuid(uuid);
       if (!doc) return null;
-
       if (doc.documentName === "Actor") return doc;
       if (doc.actor) return doc.actor;
       if (doc.object?.actor) return doc.object.actor;
       if (doc.document?.actor) return doc.document.actor;
-
       return null;
     } catch (_e) {
       return null;
@@ -234,7 +228,7 @@
     actorName,
     img,
     source = "Target",
-    selected = true,
+    selected = false,
     note = ""
   } = {}) {
     const uuid = actorUuid ?? actor?.uuid ?? "";
@@ -259,14 +253,21 @@
 
       const existing = byUuid.get(row.actorUuid);
       if (!existing) {
-        byUuid.set(row.actorUuid, row);
+        byUuid.set(row.actorUuid, { ...row });
         continue;
       }
 
       existing.selected = existing.selected || row.selected;
       existing.img = existing.img || row.img;
-      existing.source = existing.source || row.source;
       existing.note = existing.note || row.note;
+
+      const sourceSet = new Set(
+        String(`${existing.source || ""}|${row.source || ""}`)
+          .split("|")
+          .map(s => s.trim())
+          .filter(Boolean)
+      );
+      existing.source = Array.from(sourceSet).join(" • ");
     }
 
     return Array.from(byUuid.values());
@@ -307,54 +308,27 @@
       });
     });
 
-    return {
-      ok: rows.length > 0,
-      source: "selected-tokens",
-      label: rows.length ? "Using selected token target(s)." : "No token selected.",
-      rows
-    };
+    return rows;
   }
 
   async function loadPartyMemberTargets() {
     const getCurrentGameDb = getDbResolverApi();
-
-    if (typeof getCurrentGameDb !== "function") {
-      return {
-        ok: false,
-        source: "party-db",
-        label: "DB Resolver API not found.",
-        rows: []
-      };
-    }
+    if (typeof getCurrentGameDb !== "function") return [];
 
     let resolved = null;
-
     try {
       resolved = await getCurrentGameDb();
     } catch (e) {
-      return {
-        ok: false,
-        source: "party-db",
-        label: `DB Resolver failed: ${compactError(e)}`,
-        rows: []
-      };
+      warn("DB Resolver failed.", e);
+      return [];
     }
 
     const db = resolved?.source ?? resolved?.db ?? null;
     const props = db?.system?.props ?? {};
-
-    if (!db) {
-      return {
-        ok: false,
-        source: "party-db",
-        label: "Current game DB not found.",
-        rows: []
-      };
-    }
+    if (!db) return [];
 
     const rows = [];
 
-    // Main party members.
     for (let i = 1; i <= 12; i++) {
       const name = safeString(props[`member_name_${i}`]);
       const id = safeString(props[`member_id_${i}`]);
@@ -363,7 +337,6 @@
       if (!id && !name) continue;
 
       const actor = await resolveActorFromRef(id);
-
       if (!actor && !id) continue;
 
       rows.push(makeTargetRow({
@@ -372,45 +345,28 @@
         actorName: actor?.name ?? name,
         img: sprite || actorImg(actor),
         source: "Party Member",
-        selected: true,
+        selected: false,
         note: name
       }));
     }
 
-    return {
-      ok: rows.length > 0,
-      source: "party-db",
-      label: rows.length
-        ? `Using current party from ${resolved?.gameName ?? db.name ?? "Database"}.`
-        : "No party members found in current DB.",
-      rows
-    };
+    return rows;
   }
 
-  async function loadInitialTargets() {
-    const selected = await loadSelectedTokenTargets();
-
-    if (selected.ok) return selected;
-
-    return await loadPartyMemberTargets();
+  async function loadAvailableTargets() {
+    const selectedRows = await loadSelectedTokenTargets();
+    const partyRows = await loadPartyMemberTargets();
+    return mergeTargetRows([
+      ...selectedRows,
+      ...partyRows
+    ]);
   }
 
-  async function reloadTargets(state, mode = "auto") {
-    let result = null;
-
-    if (mode === "selected") {
-      result = await loadSelectedTokenTargets();
-    } else if (mode === "party") {
-      result = await loadPartyMemberTargets();
-    } else {
-      result = await loadInitialTargets();
-    }
-
-    setSelectedTargetsFromRows(state, result.rows ?? []);
-    state.targetSourceLabel = result.label ?? "";
-    state.targetSourceMode = result.source ?? mode;
-
-    return result;
+  async function reloadTargets(state) {
+    const rows = await loadAvailableTargets();
+    setSelectedTargetsFromRows(state, rows);
+    state.targetSourceLabel = "Target list includes current party members and selected token actors.";
+    return rows;
   }
 
   // --------------------------------------------------------------------------
@@ -599,7 +555,7 @@
       }
 
       .oni-aem .aem-effect-list {
-        max-height: 265px;
+        max-height: 445px;
         overflow: auto;
         border: 1px solid rgba(60,45,25,.18);
         border-radius: 7px;
@@ -693,14 +649,6 @@
         color: white;
       }
 
-      .oni-aem .aem-mod-row {
-        display: grid;
-        grid-template-columns: 1.3fr .8fr .7fr .5fr 28px;
-        gap: 5px;
-        align-items: end;
-        margin-bottom: 5px;
-      }
-
       .oni-aem .aem-output {
         width: 100%;
         min-height: 105px;
@@ -708,6 +656,39 @@
         font-size: 11px;
         color: #111;
         background: rgba(255,255,255,.82);
+      }
+
+      .oni-aem .aem-empty {
+        padding: 10px;
+        opacity: .65;
+        text-align: center;
+      }
+
+      .oni-aem .aem-builder-launch {
+        margin-top: 8px;
+      }
+
+      .oni-aem details.aem-debug {
+        margin-top: 8px;
+      }
+
+      .oni-aem details.aem-debug > summary {
+        cursor: pointer;
+        font-weight: 700;
+        padding: 4px 2px;
+        user-select: none;
+      }
+
+      .oni-aem .aem-debug-inner {
+        margin-top: 8px;
+      }
+
+      .oni-aem .aem-builder-dialog .aem-mod-row {
+        display: grid;
+        grid-template-columns: 1.35fr .8fr .7fr .5fr 28px;
+        gap: 5px;
+        align-items: end;
+        margin-bottom: 5px;
       }
 
       .oni-aem .aem-warning {
@@ -718,10 +699,11 @@
         font-size: 11px;
       }
 
-      .oni-aem .aem-empty {
-        padding: 10px;
-        opacity: .65;
-        text-align: center;
+      .oni-aem .aem-builder-preview {
+        min-height: 110px;
+        font-family: monospace;
+        font-size: 11px;
+        background: rgba(255,255,255,.82);
       }
     `;
 
@@ -741,11 +723,7 @@
     const rows = state.targetRows ?? [];
 
     if (!rows.length) {
-      return `
-        <div class="aem-empty">
-          No target found. Select token(s), or load current party from DB.
-        </div>
-      `;
+      return `<div class="aem-empty">No available targets found.</div>`;
     }
 
     return rows.map(row => {
@@ -845,11 +823,9 @@
     }).join("");
   }
 
-  function fieldDatalistHtml(state) {
-    const entries = state.fieldEntries ?? [];
-
+  function fieldDatalistHtml(entries = []) {
     return `
-      <datalist id="aem-field-key-list">
+      <datalist id="aem-field-key-list-builder">
         ${entries.map(entry => {
           const label = `${entry.label || entry.key} — ${entry.category || "Other"} — ${entry.valueKind || "unknown"}`;
           return `<option value="${escapeHtml(entry.activeEffectKey || entry.key)}" label="${escapeHtml(label)}"></option>`;
@@ -858,25 +834,25 @@
     `;
   }
 
-  function modifierRowsHtml(state) {
-    if (!state.customRows.length) {
-      state.customRows.push({
-        id: randomId("mod"),
-        key: "",
-        mode: modeValue("ADD"),
-        value: "1",
-        priority: 20
-      });
-    }
+  function modifierRowsHtml(rows = []) {
+    const safeRows = rows.length
+      ? rows
+      : [{
+          id: randomId("mod"),
+          key: "",
+          mode: modeValue("ADD"),
+          value: "1",
+          priority: 20
+        }];
 
-    return state.customRows.map(row => `
+    return safeRows.map(row => `
       <div class="aem-mod-row" data-mod-row-id="${escapeHtml(row.id)}">
         <div>
           <label>Key</label>
           <input
             type="text"
             name="customChangeKey"
-            list="aem-field-key-list"
+            list="aem-field-key-list-builder"
             value="${escapeHtml(row.key)}"
             data-row-field="key"
             placeholder="damage_receiving_mod_all"
@@ -914,7 +890,7 @@
         <button
           type="button"
           title="Remove row"
-          data-aem-action="remove-modifier-row"
+          data-aem-builder-action="remove-modifier-row"
           data-row-id="${escapeHtml(row.id)}"
         >×</button>
       </div>
@@ -931,14 +907,9 @@
             <div class="aem-card">
               <h3>Targets</h3>
 
-              <div class="aem-actions">
-                <button type="button" data-aem-action="use-selected-tokens">Use Selected Tokens</button>
-                <button type="button" data-aem-action="load-party-members">Load Party Members</button>
-              </div>
-
               <div class="aem-target-summary">
                 <b>${selectedCount}</b> target${selectedCount === 1 ? "" : "s"} selected.
-                ${state.targetSourceLabel ? `<br>${escapeHtml(state.targetSourceLabel)}` : ""}
+                <br>${escapeHtml(state.targetSourceLabel || "Target list loaded automatically.")}
               </div>
 
               <div class="aem-target-grid" data-aem-target-grid>
@@ -946,7 +917,8 @@
               </div>
 
               <div class="aem-mini">
-                Select one or more portraits. Active Effects apply directly to Actors, even if their tokens are not on this scene.
+                Select one or more portraits. Selected scene token actors are included automatically when the window opens.
+                If you change token selection later, close and reopen this UI to refresh the list.
               </div>
             </div>
 
@@ -987,6 +959,7 @@
 
             <div class="aem-card">
               <h3>Selected Effects</h3>
+
               <div class="aem-selected-list" data-aem-selected-list>
                 ${selectedEffectsHtml(state)}
               </div>
@@ -996,22 +969,11 @@
                 <button type="button" data-aem-action="clear-selected-effects">Clear Effects</button>
               </div>
             </div>
-
-            <div class="aem-card">
-              <h3>Output</h3>
-              <textarea class="aem-output" readonly data-aem-output>${escapeHtml(state.outputText || "")}</textarea>
-            </div>
           </div>
 
           <div>
             <div class="aem-card">
               <h3>Effect Registry</h3>
-
-              <div class="aem-actions-3">
-                <button type="button" data-aem-action="refresh-registry">Refresh</button>
-                <button type="button" data-aem-action="refresh-registry-compendiums">Refresh + Compendiums</button>
-                <button type="button" data-aem-action="debug-registry">Debug</button>
-              </div>
 
               <label>Search</label>
               <input type="text" name="effectSearch" value="${escapeHtml(state.search)}" placeholder="Search effect name, source, tag...">
@@ -1027,63 +989,31 @@
                 ${effectListHtml(state)}
               </div>
 
-              <div class="aem-mini">
-                Registry entries are scanned from Foundry data. Add more preset effects to your game, then press Refresh.
-              </div>
-            </div>
-
-            <div class="aem-card">
-              <h3>Custom Active Effect Builder</h3>
-
-              ${fieldDatalistHtml(state)}
-
-              <div class="aem-row">
-                <div>
-                  <label>Name</label>
-                  <input type="text" name="customName" value="${escapeHtml(state.customName)}" placeholder="Defense Boost">
-                </div>
-
-                <div>
-                  <label>Category</label>
-                  <select name="customCategory">
-                    <option value="Buff" ${state.customCategory === "Buff" ? "selected" : ""}>Buff</option>
-                    <option value="Debuff" ${state.customCategory === "Debuff" ? "selected" : ""}>Debuff</option>
-                    <option value="Other" ${state.customCategory === "Other" ? "selected" : ""}>Other</option>
-                  </select>
-                </div>
+              <div class="aem-builder-launch">
+                <button type="button" data-aem-action="open-custom-builder">Open Custom Effect Builder</button>
               </div>
 
-              <label>Icon</label>
-              <input type="text" name="customIcon" value="${escapeHtml(state.customIcon)}" placeholder="icons/svg/aura.svg">
-
-              <label>Status IDs / Marker Tags</label>
-              <input type="text" name="customStatuses" value="${escapeHtml(state.customStatuses)}" placeholder="Optional, comma-separated. Example: bleed, mark">
-
-              <label>Description</label>
-              <textarea name="customDescription" rows="2" placeholder="Optional description">${escapeHtml(state.customDescription)}</textarea>
-
-              <h4>Modifier Rows</h4>
-              <div data-aem-modifier-rows>
-                ${modifierRowsHtml(state)}
-              </div>
-
-              <div class="aem-actions-3">
-                <button type="button" data-aem-action="add-modifier-row">Add Row</button>
-                <button type="button" data-aem-action="refresh-fields">Refresh Fields</button>
-                <button type="button" data-aem-action="preview-custom">Preview</button>
-              </div>
-
-              <div class="aem-actions" style="margin-top:6px;">
-                <button type="button" data-aem-action="add-custom-marker">Add Marker Effect</button>
-                <button type="button" data-aem-action="add-custom-modifier">Add Modifier Effect</button>
-              </div>
-
-              <div class="aem-warning" style="margin-top:6px;">
-                Custom marker effects can have no changes. Custom modifier effects use the rows above.
-                Old legacy keys like <code>isSlow</code> are intentionally not suggested.
+              <div class="aem-mini" style="margin-top:6px;">
+                Add preset effects from the registry, or open the builder to create a custom one.
               </div>
             </div>
           </div>
+        </div>
+
+        <div class="aem-card">
+          <details class="aem-debug">
+            <summary>Debug</summary>
+            <div class="aem-debug-inner">
+              <div class="aem-actions-3">
+                <button type="button" data-aem-action="refresh-registry">Refresh</button>
+                <button type="button" data-aem-action="refresh-registry-compendiums">Refresh + Compendiums</button>
+                <button type="button" data-aem-action="debug-registry">Debug</button>
+              </div>
+
+              <label style="margin-top:8px;">Output</label>
+              <textarea class="aem-output" readonly data-aem-output>${escapeHtml(state.outputText || "")}</textarea>
+            </div>
+          </details>
         </div>
       </div>
     `;
@@ -1116,40 +1046,11 @@
     state.durationTurns = root.querySelector('[name="durationTurns"]')?.value ?? state.durationTurns;
 
     state.search = root.querySelector('[name="effectSearch"]')?.value ?? state.search;
-
-    state.customName = root.querySelector('[name="customName"]')?.value ?? state.customName;
-    state.customCategory = root.querySelector('[name="customCategory"]')?.value ?? state.customCategory;
-    state.customIcon = root.querySelector('[name="customIcon"]')?.value ?? state.customIcon;
-    state.customStatuses = root.querySelector('[name="customStatuses"]')?.value ?? state.customStatuses;
-    state.customDescription = root.querySelector('[name="customDescription"]')?.value ?? state.customDescription;
-
-    syncModifierRowsFromDom(root, state);
-  }
-
-  function syncModifierRowsFromDom(root, state) {
-    const rows = Array.from(root.querySelectorAll("[data-mod-row-id]"));
-
-    state.customRows = rows.map(row => {
-      const id = row.dataset.modRowId || randomId("mod");
-      const key = row.querySelector('[data-row-field="key"]')?.value ?? "";
-      const mode = Number(row.querySelector('[data-row-field="mode"]')?.value ?? modeValue("ADD"));
-      const value = row.querySelector('[data-row-field="value"]')?.value ?? "";
-      const priority = Number(row.querySelector('[data-row-field="priority"]')?.value ?? 20);
-
-      return {
-        id,
-        key,
-        mode,
-        value,
-        priority
-      };
-    });
   }
 
   function rerender(root, state) {
     const holder = root.querySelector("[data-aem-root-holder]");
     if (!holder) return;
-
     holder.innerHTML = renderMainContent(state);
   }
 
@@ -1248,20 +1149,19 @@
     const turns = Number(state.durationTurns);
 
     const duration = {};
-
     if (Number.isFinite(rounds)) duration.rounds = rounds;
     if (Number.isFinite(turns)) duration.turns = turns;
 
     return duration;
   }
 
-  function buildCustomEffectData(state, { includeChanges = true } = {}) {
-    const name = safeString(state.customName, "Custom Active Effect");
-    const img = safeString(state.customIcon, "icons/svg/aura.svg");
-    const category = safeString(state.customCategory, "Other");
+  function buildCustomEffectData(builderState, parentState, { includeChanges = true } = {}) {
+    const name = safeString(builderState.customName, "Custom Active Effect");
+    const img = safeString(builderState.customIcon, "icons/svg/aura.svg");
+    const category = safeString(builderState.customCategory, "Other");
 
     const changes = includeChanges
-      ? state.customRows
+      ? builderState.customRows
           .map(row => ({
             key: safeString(row.key),
             mode: Number(row.mode ?? modeValue("ADD")),
@@ -1271,7 +1171,7 @@
           .filter(row => row.key)
       : [];
 
-    const duration = getGlobalDurationFromState(state) ?? {
+    const duration = getGlobalDurationFromState(parentState) ?? {
       rounds: 3,
       turns: 0
     };
@@ -1283,9 +1183,9 @@
       icon: img,
       disabled: false,
       transfer: false,
-      description: state.customDescription ?? "",
+      description: builderState.customDescription ?? "",
       changes,
-      statuses: parseStatuses(state.customStatuses),
+      statuses: parseStatuses(builderState.customStatuses),
       duration,
       flags: {
         [MODULE_ID]: {
@@ -1327,8 +1227,307 @@
     });
   }
 
+  function readBuilderStateFromDom(root, builderState) {
+    builderState.customName = root.querySelector('[name="customName"]')?.value ?? builderState.customName;
+    builderState.customCategory = root.querySelector('[name="customCategory"]')?.value ?? builderState.customCategory;
+    builderState.customIcon = root.querySelector('[name="customIcon"]')?.value ?? builderState.customIcon;
+    builderState.customStatuses = root.querySelector('[name="customStatuses"]')?.value ?? builderState.customStatuses;
+    builderState.customDescription = root.querySelector('[name="customDescription"]')?.value ?? builderState.customDescription;
+
+    const rows = Array.from(root.querySelectorAll("[data-mod-row-id]"));
+    builderState.customRows = rows.map(row => {
+      const id = row.dataset.modRowId || randomId("mod");
+      const key = row.querySelector('[data-row-field="key"]')?.value ?? "";
+      const mode = Number(row.querySelector('[data-row-field="mode"]')?.value ?? modeValue("ADD"));
+      const value = row.querySelector('[data-row-field="value"]')?.value ?? "";
+      const priority = Number(row.querySelector('[data-row-field="priority"]')?.value ?? 20);
+
+      return {
+        id,
+        key,
+        mode,
+        value,
+        priority
+      };
+    });
+
+    if (!builderState.customRows.length) {
+      builderState.customRows = [{
+        id: randomId("mod"),
+        key: "",
+        mode: modeValue("ADD"),
+        value: "1",
+        priority: 20
+      }];
+    }
+  }
+
+  function renderBuilderContent(builderState) {
+    return `
+      <div class="oni-aem aem-builder-dialog">
+        ${fieldDatalistHtml(builderState.fieldEntries ?? [])}
+
+        <div class="aem-card">
+          <h3>Custom Active Effect Builder</h3>
+
+          <div class="aem-row">
+            <div>
+              <label>Name</label>
+              <input type="text" name="customName" value="${escapeHtml(builderState.customName)}" placeholder="Defense Boost">
+            </div>
+
+            <div>
+              <label>Category</label>
+              <select name="customCategory">
+                <option value="Buff" ${builderState.customCategory === "Buff" ? "selected" : ""}>Buff</option>
+                <option value="Debuff" ${builderState.customCategory === "Debuff" ? "selected" : ""}>Debuff</option>
+                <option value="Other" ${builderState.customCategory === "Other" ? "selected" : ""}>Other</option>
+              </select>
+            </div>
+          </div>
+
+          <label>Icon</label>
+          <input type="text" name="customIcon" value="${escapeHtml(builderState.customIcon)}" placeholder="icons/svg/aura.svg">
+
+          <label>Status IDs / Marker Tags</label>
+          <input type="text" name="customStatuses" value="${escapeHtml(builderState.customStatuses)}" placeholder="Optional, comma-separated. Example: bleed, mark">
+
+          <label>Description</label>
+          <textarea name="customDescription" rows="2" placeholder="Optional description">${escapeHtml(builderState.customDescription)}</textarea>
+
+          <h4>Modifier Rows</h4>
+          <div data-aem-builder-modifier-rows>
+            ${modifierRowsHtml(builderState.customRows)}
+          </div>
+
+          <div class="aem-actions-3" style="margin-top:6px;">
+            <button type="button" data-aem-builder-action="add-modifier-row">Add Row</button>
+            <button type="button" data-aem-builder-action="refresh-fields">Refresh Fields</button>
+            <button type="button" data-aem-builder-action="preview-custom">Preview</button>
+          </div>
+
+          <div class="aem-actions" style="margin-top:6px;">
+            <button type="button" data-aem-builder-action="add-custom-marker">Add Marker Effect</button>
+            <button type="button" data-aem-builder-action="add-custom-modifier">Add Modifier Effect</button>
+          </div>
+
+          <div class="aem-warning" style="margin-top:6px;">
+            Custom marker effects can have no changes. Custom modifier effects use the rows above.
+            Old legacy keys like <code>isSlow</code> are intentionally not suggested.
+          </div>
+
+          <label style="margin-top:8px;">Preview</label>
+          <textarea class="aem-builder-preview" readonly data-aem-builder-preview>${escapeHtml(builderState.previewText || "")}</textarea>
+        </div>
+      </div>
+    `;
+  }
+
+  function rerenderBuilder(root, builderState) {
+    const holder = root.querySelector("[data-aem-builder-root-holder]");
+    if (!holder) return;
+    holder.innerHTML = renderBuilderContent(builderState);
+  }
+
+  function setBuilderPreview(root, builderState, data) {
+    const text =
+      typeof data === "string"
+        ? data
+        : JSON.stringify(data, null, 2);
+
+    builderState.previewText = text;
+
+    const el = root.querySelector("[data-aem-builder-preview]");
+    if (el) el.value = text;
+  }
+
+  async function openCustomBuilderDialog(parentState, parentRoot) {
+    if (BUILDER_DIALOG) {
+      try {
+        BUILDER_DIALOG.bringToTop?.();
+        return BUILDER_DIALOG;
+      } catch (_e) {}
+    }
+
+    const builderState = {
+      customName: parentState.customName ?? "Custom Active Effect",
+      customCategory: parentState.customCategory ?? "Buff",
+      customIcon: parentState.customIcon ?? "icons/svg/aura.svg",
+      customStatuses: parentState.customStatuses ?? "",
+      customDescription: parentState.customDescription ?? "",
+      customRows: clone(parentState.customRows, []) ?? [],
+      fieldEntries: clone(parentState.fieldEntries, []) ?? [],
+      previewText: ""
+    };
+
+    if (!builderState.customRows.length) {
+      builderState.customRows = [{
+        id: randomId("mod"),
+        key: "",
+        mode: modeValue("ADD"),
+        value: "1",
+        priority: 20
+      }];
+    }
+
+    const dialog = new Dialog({
+      title: "Custom Active Effect Builder",
+      content: `
+        <div data-aem-builder-root-holder>
+          ${renderBuilderContent(builderState)}
+        </div>
+      `,
+      buttons: {
+        close: {
+          label: "Close"
+        }
+      },
+      render: (html) => {
+        const root = normalizeHtmlRoot(html);
+        if (!root) return;
+
+        const holder = root.querySelector("[data-aem-builder-root-holder]");
+        if (!holder) return;
+
+        holder.addEventListener("input", () => {
+          readBuilderStateFromDom(root, builderState);
+        });
+
+        holder.addEventListener("change", () => {
+          readBuilderStateFromDom(root, builderState);
+        });
+
+        holder.addEventListener("click", async (ev) => {
+          const btn = ev.target.closest?.("[data-aem-builder-action]");
+          if (!btn) return;
+
+          ev.preventDefault();
+          ev.stopPropagation();
+
+          const action = btn.dataset.aemBuilderAction;
+
+          try {
+            btn.disabled = true;
+            readBuilderStateFromDom(root, builderState);
+
+            if (action === "add-modifier-row") {
+              builderState.customRows.push({
+                id: randomId("mod"),
+                key: "",
+                mode: modeValue("ADD"),
+                value: "1",
+                priority: 20
+              });
+              rerenderBuilder(root, builderState);
+              return;
+            }
+
+            if (action === "remove-modifier-row") {
+              const id = btn.dataset.rowId;
+              builderState.customRows = builderState.customRows.filter(r => r.id !== id);
+
+              if (!builderState.customRows.length) {
+                builderState.customRows.push({
+                  id: randomId("mod"),
+                  key: "",
+                  mode: modeValue("ADD"),
+                  value: "1",
+                  priority: 20
+                });
+              }
+
+              rerenderBuilder(root, builderState);
+              return;
+            }
+
+            if (action === "refresh-fields") {
+              parentState.fieldEntries = parentState.fieldEntries || [];
+              await refreshFields(parentState);
+              builderState.fieldEntries = clone(parentState.fieldEntries, []) ?? [];
+              setBuilderPreview(root, builderState, {
+                ok: true,
+                fieldCount: builderState.fieldEntries.length
+              });
+              rerenderBuilder(root, builderState);
+              return;
+            }
+
+            if (action === "preview-custom") {
+              const effectData = buildCustomEffectData(builderState, parentState, { includeChanges: true });
+              setBuilderPreview(root, builderState, {
+                ok: true,
+                preview: effectData
+              });
+              return;
+            }
+
+            if (action === "add-custom-marker") {
+              const effectData = buildCustomEffectData(builderState, parentState, { includeChanges: false });
+
+              parentState.customName = builderState.customName;
+              parentState.customCategory = builderState.customCategory;
+              parentState.customIcon = builderState.customIcon;
+              parentState.customStatuses = builderState.customStatuses;
+              parentState.customDescription = builderState.customDescription;
+              parentState.customRows = clone(builderState.customRows, []) ?? [];
+
+              addSelectedCustomEffect(parentState, effectData, builderState.customCategory);
+              rerender(parentRoot, parentState);
+              dialog.close();
+              return;
+            }
+
+            if (action === "add-custom-modifier") {
+              const effectData = buildCustomEffectData(builderState, parentState, { includeChanges: true });
+
+              if (!effectData.changes.length) {
+                setBuilderPreview(root, builderState, {
+                  ok: false,
+                  reason: "no_modifier_rows",
+                  hint: "Add at least one modifier row, or use Add Marker Effect instead."
+                });
+                return;
+              }
+
+              parentState.customName = builderState.customName;
+              parentState.customCategory = builderState.customCategory;
+              parentState.customIcon = builderState.customIcon;
+              parentState.customStatuses = builderState.customStatuses;
+              parentState.customDescription = builderState.customDescription;
+              parentState.customRows = clone(builderState.customRows, []) ?? [];
+
+              addSelectedCustomEffect(parentState, effectData, builderState.customCategory);
+              rerender(parentRoot, parentState);
+              dialog.close();
+              return;
+            }
+          } catch (e) {
+            setBuilderPreview(root, builderState, {
+              ok: false,
+              action,
+              error: compactError(e)
+            });
+          } finally {
+            btn.disabled = false;
+          }
+        });
+      },
+      close: () => {
+        BUILDER_DIALOG = null;
+      }
+    }, {
+      width: 760,
+      height: "auto",
+      resizable: true
+    });
+
+    BUILDER_DIALOG = dialog;
+    dialog.render(true);
+    return dialog;
+  }
+
   // --------------------------------------------------------------------------
-  // Actions
+  // Apply action
   // --------------------------------------------------------------------------
 
   async function applySelected(root, state) {
@@ -1405,7 +1604,6 @@
       targetRows: [],
       targetActorUuids: [],
       targetSourceLabel: "",
-      targetSourceMode: "auto",
 
       registryEntries: [],
       fieldEntries: [],
@@ -1426,22 +1624,19 @@
       customIcon: "icons/svg/aura.svg",
       customStatuses: "",
       customDescription: "",
-      customRows: [
-        {
-          id: randomId("mod"),
-          key: "",
-          mode: modeValue("ADD"),
-          value: "1",
-          priority: 20
-        }
-      ],
+      customRows: [{
+        id: randomId("mod"),
+        key: "",
+        mode: modeValue("ADD"),
+        value: "1",
+        priority: 20
+      }],
 
       outputText: ""
     };
 
     try {
-      const targetResult = await reloadTargets(state, "auto");
-      log("Initial target load.", targetResult);
+      await reloadTargets(state);
     } catch (e) {
       warn("Initial target load failed.", e);
       state.targetSourceLabel = `Target load failed: ${compactError(e)}`;
@@ -1523,34 +1718,6 @@
             btn.disabled = true;
             readCommonStateFromDom(root, state);
 
-            if (action === "use-selected-tokens") {
-              const result = await reloadTargets(state, "selected");
-
-              if (!result.ok) {
-                updateOutput(root, state, {
-                  ok: false,
-                  reason: "no_selected_tokens",
-                  hint: "Select token(s) on the scene first, or use Load Party Members."
-                });
-              }
-
-              await refreshFields(state);
-              rerender(root, state);
-              return;
-            }
-
-            if (action === "load-party-members") {
-              const result = await reloadTargets(state, "party");
-
-              if (!result.ok) {
-                updateOutput(root, state, result);
-              }
-
-              await refreshFields(state);
-              rerender(root, state);
-              return;
-            }
-
             if (action === "set-category") {
               state.categoryFilter = btn.dataset.category || "All";
               rerender(root, state);
@@ -1608,71 +1775,8 @@
               return;
             }
 
-            if (action === "add-modifier-row") {
-              state.customRows.push({
-                id: randomId("mod"),
-                key: "",
-                mode: modeValue("ADD"),
-                value: "1",
-                priority: 20
-              });
-              rerender(root, state);
-              return;
-            }
-
-            if (action === "remove-modifier-row") {
-              const id = btn.dataset.rowId;
-              state.customRows = state.customRows.filter(r => r.id !== id);
-              if (!state.customRows.length) {
-                state.customRows.push({
-                  id: randomId("mod"),
-                  key: "",
-                  mode: modeValue("ADD"),
-                  value: "1",
-                  priority: 20
-                });
-              }
-              rerender(root, state);
-              return;
-            }
-
-            if (action === "refresh-fields") {
-              const result = await refreshFields(state);
-              updateOutput(root, state, result);
-              rerender(root, state);
-              return;
-            }
-
-            if (action === "preview-custom") {
-              const effectData = buildCustomEffectData(state, { includeChanges: true });
-              updateOutput(root, state, {
-                ok: true,
-                preview: effectData
-              });
-              return;
-            }
-
-            if (action === "add-custom-marker") {
-              const effectData = buildCustomEffectData(state, { includeChanges: false });
-              addSelectedCustomEffect(state, effectData, state.customCategory);
-              rerender(root, state);
-              return;
-            }
-
-            if (action === "add-custom-modifier") {
-              const effectData = buildCustomEffectData(state, { includeChanges: true });
-
-              if (!effectData.changes.length) {
-                updateOutput(root, state, {
-                  ok: false,
-                  reason: "no_modifier_rows",
-                  hint: "Add at least one modifier row, or use Add Marker Effect instead."
-                });
-                return;
-              }
-
-              addSelectedCustomEffect(state, effectData, state.customCategory);
-              rerender(root, state);
+            if (action === "open-custom-builder") {
+              await openCustomBuilderDialog(state, root);
               return;
             }
 
@@ -1717,7 +1821,7 @@
   // --------------------------------------------------------------------------
 
   const api = {
-    version: "0.2.0",
+    version: "0.3.0",
     open,
     reopen: () => {
       try {
