@@ -570,6 +570,62 @@
         pointer-events: none;
       }
 
+      /* Target token name tooltip */
+.oni-aem .aem-target-tooltip {
+  position: absolute;
+  left: 50%;
+  bottom: 2px;
+  transform: translate(-50%, 5px);
+  z-index: 8;
+
+  max-width: 104px;
+  padding: 4px 7px;
+  border-radius: 999px;
+
+  background: rgba(18, 14, 10, 0.88);
+  border: 1px solid rgba(255, 218, 128, 0.42);
+  box-shadow:
+    0 4px 10px rgba(0, 0, 0, 0.32),
+    0 0 10px rgba(255, 180, 48, 0.18);
+
+  color: rgba(255, 244, 218, 0.96);
+  font-size: 10px;
+  font-weight: 850;
+  line-height: 1.1;
+  text-align: center;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+
+  opacity: 0;
+  pointer-events: none;
+
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+.oni-aem .aem-target-tooltip small {
+  display: block;
+  margin-top: 1px;
+  font-size: 9px;
+  font-weight: 650;
+  opacity: 0.72;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.oni-aem .aem-target-card:hover .aem-target-tooltip {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.oni-aem .aem-target-card.selected .aem-target-tooltip {
+  background: rgba(35, 24, 8, 0.92);
+  border-color: rgba(255, 206, 72, 0.72);
+}
+
       .oni-aem .aem-target-img-wrap {
         width: var(--aem-target-slot-size);
         height: var(--aem-target-slot-size);
@@ -1111,39 +1167,58 @@
     return `<button type="button" class="${active}" data-aem-action="set-category" data-category="${escapeHtml(category)}">${escapeHtml(label)}</button>`;
   }
 
-  function targetCardsHtml(state) {
-    const rows = state.targetRows ?? [];
+function targetCardsHtml(state) {
+  const rows = state.targetRows ?? [];
 
-    if (!rows.length) {
-      return `<div class="aem-empty">No available targets found.</div>`;
-    }
-
-    return rows.map(row => {
-      const checked = row.selected ? "checked" : "";
-      const selected = row.selected ? "selected" : "";
-
-      return `
-        <label
-          class="aem-target-card ${selected}"
-          data-aem-target-card
-          data-target-actor-uuid="${escapeHtml(row.actorUuid)}"
-          title="${escapeHtml(row.actorName)}"
-          aria-label="${escapeHtml(row.actorName)}"
-        >
-          <input
-            type="checkbox"
-            name="targetActorUuids"
-            value="${escapeHtml(row.actorUuid)}"
-            ${checked}
-          >
-
-          <div class="aem-target-img-wrap">
-            ${targetIconMediaHtml(row)}
-          </div>
-        </label>
-      `;
-    }).join("");
+  if (!rows.length) {
+    return `<div class="aem-empty">No available targets found.</div>`;
   }
+
+  return rows.map(row => {
+    const checked = row.selected ? "checked" : "";
+    const selected = row.selected ? "selected" : "";
+
+    // For selected scene tokens, row.note is the token name.
+    // Example: "Mushroom A", "Mushroom B", etc.
+    const tokenName = safeString(row.note, row.actorName || "Target");
+    const actorName = safeString(row.actorName, tokenName);
+    const source = safeString(row.source, "");
+
+    const tooltipSub = tokenName !== actorName
+      ? actorName
+      : source;
+
+    const titleText = tooltipSub
+      ? `${tokenName} — ${tooltipSub}`
+      : tokenName;
+
+    return `
+      <label
+        class="aem-target-card ${selected}"
+        data-aem-target-card
+        data-target-actor-uuid="${escapeHtml(row.actorUuid)}"
+        title="${escapeHtml(titleText)}"
+        aria-label="${escapeHtml(titleText)}"
+      >
+        <input
+          type="checkbox"
+          name="targetActorUuids"
+          value="${escapeHtml(row.actorUuid)}"
+          ${checked}
+        >
+
+        <div class="aem-target-img-wrap">
+          ${targetIconMediaHtml(row)}
+        </div>
+
+        <span class="aem-target-tooltip">
+          ${escapeHtml(tokenName)}
+          ${tooltipSub ? `<small>${escapeHtml(tooltipSub)}</small>` : ""}
+        </span>
+      </label>
+    `;
+  }).join("");
+}
 
   function effectListHtml(state) {
     const q = String(state.search ?? "").trim().toLowerCase();
