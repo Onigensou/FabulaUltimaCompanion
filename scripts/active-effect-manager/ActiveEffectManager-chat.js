@@ -86,6 +86,25 @@
     return s.length ? s : fallback;
   }
 
+    function getChatMessageStyleData() {
+    // Foundry V12 renamed ChatMessage#type to ChatMessage#style.
+    // Prefer the V12 field to avoid deprecation warnings.
+    if (CONST?.CHAT_MESSAGE_STYLES?.OTHER !== undefined) {
+      return {
+        style: CONST.CHAT_MESSAGE_STYLES.OTHER
+      };
+    }
+
+    // Older fallback only. In V12 this branch should not run.
+    if (CONST?.CHAT_MESSAGE_TYPES?.OTHER !== undefined) {
+      return {
+        type: CONST.CHAT_MESSAGE_TYPES.OTHER
+      };
+    }
+
+    return {};
+  }
+
   function asArray(value) {
     if (Array.isArray(value)) return value;
     if (value == null) return [];
@@ -698,7 +717,7 @@
     const messageData = {
       user: game.user?.id,
       speaker: null,
-      type: CONST?.CHAT_MESSAGE_TYPES?.OTHER ?? 0,
+      ...getChatMessageStyleData(),
       content,
       flags: {
         core: {
@@ -744,7 +763,7 @@
     return await ChatMessage.create({
       user: game.user?.id,
       speaker: null,
-      type: CONST?.CHAT_MESSAGE_TYPES?.OTHER ?? 0,
+      ...getChatMessageStyleData(),
       content,
       flags: {
         core: {

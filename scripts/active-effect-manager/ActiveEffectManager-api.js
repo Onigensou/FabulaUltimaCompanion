@@ -603,6 +603,77 @@
     return effectData;
   }
 
+    function parseActiveEffectUuidParts(uuid) {
+    const raw = safeString(uuid);
+    if (!raw || !raw.includes(".ActiveEffect.")) return null;
+
+    const parts = raw.split(".");
+    const aeIndex = parts.indexOf("ActiveEffect");
+
+    if (aeIndex < 2 || aeIndex + 1 >= parts.length) return null;
+
+    return {
+      parentType: parts[aeIndex - 2] ?? null,
+      parentId: parts[aeIndex - 1] ?? null,
+      effectId: parts[aeIndex + 1] ?? null,
+      originalUuid: raw
+    };
+  }
+
+  function stampCustomSystemBuilderFlags(effectData, { entry = null, overrides = {}, origin = null } = {}) {
+    effectData.flags = effectData.flags || {};
+
+    const csbScope = "custom-system-builder";
+    const existing = clone(effectData.flags[csbScope] ?? {}, {});
+
+    const candidateUuid =
+      existing.originalUuid ??
+      entry?.effectUuid ??
+      entry?.sourceUuid ??
+      entry?.registryId ??
+      overrides.sourceEffectUuid ??
+      overrides.sourceEffId ??
+      origin ??
+      effectData.origin ??
+      null;
+
+    const parsed = parseActiveEffectUuidParts(candidateUuid);
+
+    const originalUuid =
+      existing.originalUuid ??
+      parsed?.originalUuid ??
+      candidateUuid ??
+      null;
+
+    const originalParentId =
+      existing.originalParentId ??
+      parsed?.parentId ??
+      entry?.parentId ??
+      entry?.sourceParentId ??
+      null;
+
+    const originalId =
+      existing.originalId ??
+      parsed?.effectId ??
+      entry?.effectId ??
+      entry?.sourceEffId ??
+      null;
+
+    effectData.flags[csbScope] = {
+      ...existing,
+
+      // These are the exact keys Custom System Builder is currently setting
+      // after creation. Pre-stamping them lets our compat guard skip the costly
+      // post-create setFlag calls.
+      originalParentId,
+      originalId,
+      originalUuid,
+      isFromTemplate: existing.isFromTemplate ?? false
+    };
+
+    return effectData;
+  }
+
   function finalizeEffectData(effectData, {
     entry = null,
     overrides = {},
@@ -688,6 +759,12 @@
         null,
       sourceName: entry?.name ?? name,
       sourceCategory: category ?? entry?.category ?? overrides.category ?? null
+    });
+
+    stampCustomSystemBuilderFlags(data, {
+      entry,
+      overrides,
+      origin: data.origin
     });
 
     return data;
@@ -2076,6 +2153,9 @@
       getRegistryApi,
       ensureRegistryReady,
       findRegistryEntryLoose,
+
+      stampCustomSystemBuilderFlags,
+      parseActiveEffectUuidParts,
 
       finalizeEffectData,
       buildEffectIdentity,
