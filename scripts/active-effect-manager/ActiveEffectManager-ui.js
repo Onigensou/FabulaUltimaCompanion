@@ -2,12 +2,12 @@
 // ActiveEffectManager-ui.js
 // Foundry VTT V12 — Fabula Ultima Companion
 //
-// Polished UI version:
-// - Target list is auto-built on open
-// - Includes party members + currently selected token actors
-// - No target load buttons
-// - Debug tools moved into collapsed panel
-// - Custom Effect Builder moved into separate dialog
+// Clean polished UI version:
+// - Target list auto-builds on open from party DB + selected token actors.
+// - Selected Effects stays badge-style.
+// - Apply Options is collapsed by default and sits below Selected Effects.
+// - Debug tools/output are collapsed by default at the bottom.
+// - Custom Active Effect Builder opens as a separate JRPG-style dialog.
 // ============================================================================
 
 (() => {
@@ -138,6 +138,14 @@
     return `${prefix}-${id}`;
   }
 
+  function compactError(e) {
+    return String(e?.message ?? e);
+  }
+
+  function shortSource(entry = {}) {
+    return [entry.sourceType, entry.sourceName].filter(Boolean).join(" • ");
+  }
+
   function modeValue(name) {
     const modes = CONST?.ACTIVE_EFFECT_MODES ?? {};
     const fallback = {
@@ -166,17 +174,6 @@
       const sel = Number(selected) === Number(value) ? "selected" : "";
       return `<option value="${Number(value)}" ${sel}>${escapeHtml(label)} (${Number(value)})</option>`;
     }).join("");
-  }
-
-  function compactError(e) {
-    return String(e?.message ?? e);
-  }
-
-  function shortSource(entry = {}) {
-    return [
-      entry.sourceType,
-      entry.sourceName
-    ].filter(Boolean).join(" • ");
   }
 
   // --------------------------------------------------------------------------
@@ -222,15 +219,7 @@
     return Array.from(canvas?.tokens?.controlled ?? []).filter(t => t?.actor);
   }
 
-  function makeTargetRow({
-    actor,
-    actorUuid,
-    actorName,
-    img,
-    source = "Target",
-    selected = false,
-    note = ""
-  } = {}) {
+  function makeTargetRow({ actor, actorUuid, actorName, img, source = "Target", selected = false, note = "" } = {}) {
     const uuid = actorUuid ?? actor?.uuid ?? "";
     const name = actorName ?? actor?.name ?? "Unknown Actor";
 
@@ -275,7 +264,6 @@
 
   function syncTargetRowsSelection(state) {
     const selected = new Set(state.targetActorUuids ?? []);
-
     state.targetRows = (state.targetRows ?? []).map(row => ({
       ...row,
       selected: selected.has(row.actorUuid)
@@ -293,7 +281,7 @@
   async function loadSelectedTokenTargets() {
     const tokens = selectedCanvasTokens();
 
-    const rows = tokens.map(token => {
+    return tokens.map(token => {
       const textureSrc =
         token?.document?.texture?.src ??
         token?.texture?.src ??
@@ -307,8 +295,6 @@
         note: token.name ?? ""
       });
     });
-
-    return rows;
   }
 
   async function loadPartyMemberTargets() {
@@ -356,10 +342,7 @@
   async function loadAvailableTargets() {
     const selectedRows = await loadSelectedTokenTargets();
     const partyRows = await loadPartyMemberTargets();
-    return mergeTargetRows([
-      ...selectedRows,
-      ...partyRows
-    ]);
+    return mergeTargetRows([...selectedRows, ...partyRows]);
   }
 
   async function reloadTargets(state) {
@@ -374,7 +357,8 @@
   // --------------------------------------------------------------------------
 
   function injectStyle() {
-    if (document.getElementById(STYLE_ID)) return;
+    const old = document.getElementById(STYLE_ID);
+    if (old) old.remove();
 
     const style = document.createElement("style");
     style.id = STYLE_ID;
@@ -382,55 +366,6 @@
       .oni-aem {
         color: #16130e;
         font-family: var(--font-primary);
-      }
-
-            .oni-aem .aem-apply-compact {
-        padding-bottom: 7px;
-      }
-
-      .oni-aem .aem-apply-grid {
-        display: grid;
-        grid-template-columns: 1.4fr 0.9fr;
-        gap: 8px;
-        align-items: end;
-      }
-
-      .oni-aem .aem-duration-mini {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 5px;
-      }
-
-      .oni-aem .aem-toggle-row {
-        display: flex;
-        gap: 6px;
-        margin-top: 7px;
-      }
-
-      .oni-aem .aem-toggle-pill {
-        flex: 1;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 5px;
-        padding: 5px 6px;
-        border-radius: 8px;
-        border: 1px solid rgba(60,45,25,.20);
-        background: rgba(255,255,255,.45);
-        font-size: 11px;
-        font-weight: 700;
-        cursor: pointer;
-      }
-
-      .oni-aem .aem-toggle-pill input {
-        width: auto;
-        margin: 0;
-      }
-
-      .oni-aem .aem-inline-label {
-        font-size: 11px;
-        opacity: .82;
-        margin-bottom: 2px;
       }
 
       .oni-aem * {
@@ -648,6 +583,28 @@
         line-height: 1.15;
       }
 
+      .oni-aem .aem-category-tabs {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 5px;
+        margin-bottom: 6px;
+      }
+
+      .oni-aem .aem-category-tabs button.active {
+        background: rgba(40,34,26,.88);
+        color: white;
+      }
+
+      .oni-aem .aem-selected-list {
+        min-height: 54px;
+        max-height: 140px;
+        overflow: auto;
+        padding: 4px;
+        border: 1px solid rgba(60,45,25,.18);
+        border-radius: 7px;
+        background: rgba(255,255,255,.45);
+      }
+
       .oni-aem .aem-pill {
         display: inline-flex;
         align-items: center;
@@ -676,37 +633,6 @@
         border-radius: 50%;
       }
 
-      .oni-aem .aem-selected-list {
-        min-height: 54px;
-        max-height: 140px;
-        overflow: auto;
-        padding: 4px;
-        border: 1px solid rgba(60,45,25,.18);
-        border-radius: 7px;
-        background: rgba(255,255,255,.45);
-      }
-
-      .oni-aem .aem-category-tabs {
-        display: grid;
-        grid-template-columns: repeat(4, 1fr);
-        gap: 5px;
-        margin-bottom: 6px;
-      }
-
-      .oni-aem .aem-category-tabs button.active {
-        background: rgba(40,34,26,.88);
-        color: white;
-      }
-
-      .oni-aem .aem-output {
-        width: 100%;
-        min-height: 105px;
-        font-family: monospace;
-        font-size: 11px;
-        color: #111;
-        background: rgba(255,255,255,.82);
-      }
-
       .oni-aem .aem-empty {
         padding: 10px;
         opacity: .65;
@@ -715,6 +641,96 @@
 
       .oni-aem .aem-builder-launch {
         margin-top: 8px;
+      }
+
+      .oni-aem .aem-apply-compact {
+        padding: 0;
+        overflow: hidden;
+      }
+
+      .oni-aem .aem-apply-details > summary {
+        cursor: pointer;
+        list-style: none;
+        padding: 8px;
+        font-weight: 850;
+        border-radius: 8px;
+        user-select: none;
+      }
+
+      .oni-aem .aem-apply-details > summary::-webkit-details-marker {
+        display: none;
+      }
+
+      .oni-aem .aem-apply-details > summary::before {
+        content: "▶";
+        display: inline-block;
+        margin-right: 6px;
+        font-size: 10px;
+        transform: translateY(-1px);
+      }
+
+      .oni-aem .aem-apply-details[open] > summary::before {
+        content: "▼";
+      }
+
+      .oni-aem .aem-apply-details > summary:hover {
+        background: rgba(0,0,0,.055);
+      }
+
+      .oni-aem .aem-apply-details-body {
+        padding: 0 8px 8px 8px;
+      }
+
+      .oni-aem .aem-apply-grid {
+        display: grid;
+        grid-template-columns: 1.4fr 0.9fr;
+        gap: 8px;
+        align-items: end;
+      }
+
+      .oni-aem .aem-duration-mini {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 5px;
+      }
+
+      .oni-aem .aem-toggle-row {
+        display: flex;
+        gap: 6px;
+        margin-top: 7px;
+      }
+
+      .oni-aem .aem-toggle-pill {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 5px;
+        padding: 5px 6px;
+        border-radius: 8px;
+        border: 1px solid rgba(60,45,25,.20);
+        background: rgba(255,255,255,.45);
+        font-size: 11px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      .oni-aem .aem-toggle-pill input {
+        width: auto;
+        margin: 0;
+      }
+
+      .oni-aem .aem-inline-label {
+        font-size: 11px;
+        opacity: .82;
+        margin-bottom: 2px;
+      }
+
+      .oni-aem .aem-apply-details-note {
+        margin-top: 5px;
+        font-size: 11px;
+        opacity: .68;
+        line-height: 1.25;
       }
 
       .oni-aem details.aem-debug {
@@ -732,12 +748,13 @@
         margin-top: 8px;
       }
 
-      .oni-aem .aem-builder-dialog .aem-mod-row {
-        display: grid;
-        grid-template-columns: 1.35fr .8fr .7fr .5fr 28px;
-        gap: 5px;
-        align-items: end;
-        margin-bottom: 5px;
+      .oni-aem .aem-output {
+        width: 100%;
+        min-height: 105px;
+        font-family: monospace;
+        font-size: 11px;
+        color: #111;
+        background: rgba(255,255,255,.82);
       }
 
       .oni-aem .aem-warning {
@@ -748,11 +765,209 @@
         font-size: 11px;
       }
 
+      /* JRPG-style custom builder dialog */
+      .oni-aem .aem-builder-shell {
+        display: grid;
+        gap: 8px;
+      }
+
+      .oni-aem .aem-builder-hero {
+        position: relative;
+        overflow: hidden;
+        border-radius: 12px;
+        border: 1px solid rgba(80, 58, 30, .34);
+        background:
+          linear-gradient(135deg, rgba(48, 38, 28, .92), rgba(18, 16, 15, .94)),
+          radial-gradient(circle at top left, rgba(255, 226, 142, .25), transparent 40%);
+        color: #f7efe2;
+        padding: 12px;
+        box-shadow: 0 3px 10px rgba(0,0,0,.22);
+      }
+
+      .oni-aem .aem-builder-hero::after {
+        content: "";
+        position: absolute;
+        inset: auto -30px -50px auto;
+        width: 170px;
+        height: 170px;
+        border-radius: 999px;
+        background: rgba(255,255,255,.055);
+        pointer-events: none;
+      }
+
+      .oni-aem .aem-builder-hero-main {
+        position: relative;
+        display: grid;
+        grid-template-columns: 58px 1fr;
+        gap: 10px;
+        align-items: center;
+        z-index: 1;
+      }
+
+      .oni-aem .aem-builder-icon-preview {
+        width: 58px;
+        height: 58px;
+        border-radius: 12px;
+        border: 1px solid rgba(255,255,255,.22);
+        background: rgba(255,255,255,.10);
+        object-fit: cover;
+        box-shadow: 0 2px 6px rgba(0,0,0,.28);
+      }
+
+      .oni-aem .aem-builder-title {
+        font-size: 18px;
+        font-weight: 900;
+        letter-spacing: .02em;
+        line-height: 1.05;
+      }
+
+      .oni-aem .aem-builder-subtitle {
+        margin-top: 3px;
+        color: rgba(247,239,226,.74);
+        font-size: 11px;
+        line-height: 1.25;
+      }
+
+      .oni-aem .aem-builder-type-row {
+        position: relative;
+        z-index: 1;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 6px;
+        margin-top: 10px;
+      }
+
+      .oni-aem .aem-builder-chip {
+        border-radius: 999px;
+        border: 1px solid rgba(255,255,255,.16);
+        background: rgba(255,255,255,.09);
+        color: rgba(247,239,226,.86);
+        padding: 5px 7px;
+        text-align: center;
+        font-size: 11px;
+        font-weight: 800;
+      }
+
+      .oni-aem .aem-builder-chip.buff {
+        border-color: rgba(108, 232, 135, .35);
+        background: rgba(108, 232, 135, .13);
+      }
+
+      .oni-aem .aem-builder-chip.debuff {
+        border-color: rgba(255, 116, 136, .35);
+        background: rgba(255, 116, 136, .13);
+      }
+
+      .oni-aem .aem-builder-chip.other {
+        border-color: rgba(255, 211, 106, .35);
+        background: rgba(255, 211, 106, .13);
+      }
+
+      .oni-aem .aem-builder-section {
+        border-radius: 11px;
+        border: 1px solid rgba(60,45,25,.20);
+        background: rgba(255,255,255,.62);
+        padding: 9px;
+      }
+
+      .oni-aem .aem-builder-section-title {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 7px;
+        padding-bottom: 5px;
+        border-bottom: 1px solid rgba(60,45,25,.18);
+        font-weight: 900;
+        font-size: 13px;
+      }
+
+      .oni-aem .aem-builder-section-title .mark {
+        width: 22px;
+        height: 22px;
+        display: inline-grid;
+        place-items: center;
+        border-radius: 7px;
+        background: rgba(40,34,26,.86);
+        color: white;
+        font-size: 12px;
+      }
+
+      .oni-aem .aem-builder-form-grid {
+        display: grid;
+        grid-template-columns: 1.1fr .75fr;
+        gap: 8px;
+      }
+
+      .oni-aem .aem-builder-dialog label {
+        font-size: 11px;
+        opacity: .88;
+      }
+
+      .oni-aem .aem-builder-dialog input,
+      .oni-aem .aem-builder-dialog select,
+      .oni-aem .aem-builder-dialog textarea {
+        border-radius: 6px;
+      }
+
+      .oni-aem .aem-builder-dialog .aem-mod-row {
+        display: grid;
+        grid-template-columns: 1.25fr .75fr .65fr .5fr 28px;
+        gap: 5px;
+        align-items: end;
+        margin-bottom: 5px;
+        padding: 6px;
+        border-radius: 8px;
+        border: 1px solid rgba(60,45,25,.16);
+        background: rgba(255,255,255,.46);
+      }
+
+      .oni-aem .aem-builder-command-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 7px;
+        margin-top: 8px;
+      }
+
+      .oni-aem .aem-builder-command-row button {
+        min-height: 32px;
+        font-weight: 850;
+      }
+
+      .oni-aem .aem-builder-primary {
+        background: rgba(48, 42, 34, .90);
+        color: white;
+        border-color: rgba(255,255,255,.22);
+      }
+
+      .oni-aem .aem-builder-primary:hover {
+        background: rgba(68, 58, 44, .96);
+      }
+
+      .oni-aem .aem-builder-secondary {
+        background: rgba(255,255,255,.55);
+      }
+
+      .oni-aem .aem-builder-preview-wrap {
+        border-radius: 10px;
+        border: 1px solid rgba(60,45,25,.18);
+        background: rgba(0,0,0,.06);
+        padding: 7px;
+      }
+
       .oni-aem .aem-builder-preview {
-        min-height: 110px;
+        min-height: 92px;
+        max-height: 180px;
         font-family: monospace;
         font-size: 11px;
-        background: rgba(255,255,255,.82);
+        color: #111;
+        background: rgba(255,255,255,.86);
+      }
+
+      .oni-aem .aem-builder-hint {
+        margin-top: 5px;
+        font-size: 11px;
+        opacity: .72;
+        line-height: 1.25;
       }
     `;
 
@@ -946,6 +1161,67 @@
     `).join("");
   }
 
+  function renderApplyOptionsDetails(state) {
+    return `
+      <div class="aem-card aem-apply-compact">
+        <details class="aem-apply-details">
+          <summary>Apply Options</summary>
+
+          <div class="aem-apply-details-body">
+            <div class="aem-apply-grid">
+              <div>
+                <div class="aem-inline-label">Duplicate</div>
+                <select name="duplicateMode">
+                  <option value="skip" ${state.duplicateMode === "skip" ? "selected" : ""}>Skip existing</option>
+                  <option value="replace" ${state.duplicateMode === "replace" ? "selected" : ""}>Replace existing</option>
+                  <option value="stack" ${state.duplicateMode === "stack" ? "selected" : ""}>Stack duplicate</option>
+                  <option value="remove" ${state.duplicateMode === "remove" ? "selected" : ""}>Remove instead</option>
+                  <option value="ask" ${state.duplicateMode === "ask" ? "selected" : ""}>Ask each time</option>
+                </select>
+              </div>
+
+              <div>
+                <div class="aem-inline-label">Duration</div>
+                <div class="aem-duration-mini">
+                  <input
+                    type="number"
+                    name="durationRounds"
+                    value="${escapeHtml(state.durationRounds)}"
+                    title="Rounds"
+                    placeholder="Rounds"
+                  >
+                  <input
+                    type="number"
+                    name="durationTurns"
+                    value="${escapeHtml(state.durationTurns)}"
+                    title="Turns"
+                    placeholder="Turns"
+                  >
+                </div>
+              </div>
+            </div>
+
+            <div class="aem-toggle-row">
+              <label class="aem-toggle-pill">
+                <input type="checkbox" name="overrideDuration" ${state.overrideDuration ? "checked" : ""}>
+                Override Duration
+              </label>
+
+              <label class="aem-toggle-pill">
+                <input type="checkbox" name="silent" ${state.silent ? "checked" : ""}>
+                Silent
+              </label>
+            </div>
+
+            <div class="aem-apply-details-note">
+              These are advanced options. Default behavior is usually fine for normal use.
+            </div>
+          </div>
+        </details>
+      </div>
+    `;
+  }
+
   function renderMainContent(state) {
     const selectedCount = (state.targetActorUuids ?? []).length;
 
@@ -971,55 +1247,6 @@
               </div>
             </div>
 
-            <div class="aem-card aem-apply-compact">
-              <h3>Apply Options</h3>
-
-              <div class="aem-apply-grid">
-                <div>
-                  <div class="aem-inline-label">Duplicate</div>
-                  <select name="duplicateMode">
-                    <option value="skip" ${state.duplicateMode === "skip" ? "selected" : ""}>Skip existing</option>
-                    <option value="replace" ${state.duplicateMode === "replace" ? "selected" : ""}>Replace existing</option>
-                    <option value="stack" ${state.duplicateMode === "stack" ? "selected" : ""}>Stack duplicate</option>
-                    <option value="remove" ${state.duplicateMode === "remove" ? "selected" : ""}>Remove instead</option>
-                    <option value="ask" ${state.duplicateMode === "ask" ? "selected" : ""}>Ask each time</option>
-                  </select>
-                </div>
-
-                <div>
-                  <div class="aem-inline-label">Duration</div>
-                  <div class="aem-duration-mini">
-                    <input
-                      type="number"
-                      name="durationRounds"
-                      value="${escapeHtml(state.durationRounds)}"
-                      title="Rounds"
-                      placeholder="Rounds"
-                    >
-                    <input
-                      type="number"
-                      name="durationTurns"
-                      value="${escapeHtml(state.durationTurns)}"
-                      title="Turns"
-                      placeholder="Turns"
-                    >
-                  </div>
-                </div>
-              </div>
-
-              <div class="aem-toggle-row">
-                <label class="aem-toggle-pill">
-                  <input type="checkbox" name="overrideDuration" ${state.overrideDuration ? "checked" : ""}>
-                  Override Duration
-                </label>
-
-                <label class="aem-toggle-pill">
-                  <input type="checkbox" name="silent" ${state.silent ? "checked" : ""}>
-                  Silent
-                </label>
-              </div>
-            </div>
-
             <div class="aem-card">
               <h3>Selected Effects</h3>
 
@@ -1032,6 +1259,8 @@
                 <button type="button" data-aem-action="clear-selected-effects">Clear Effects</button>
               </div>
             </div>
+
+            ${renderApplyOptionsDetails(state)}
           </div>
 
           <div>
@@ -1083,11 +1312,7 @@
   }
 
   function updateOutput(root, state, data) {
-    const text =
-      typeof data === "string"
-        ? data
-        : JSON.stringify(data, null, 2);
-
+    const text = typeof data === "string" ? data : JSON.stringify(data, null, 2);
     state.outputText = text;
 
     const out = root?.querySelector?.("[data-aem-output]");
@@ -1126,10 +1351,7 @@
 
     if (!registry) {
       state.registryEntries = [];
-      return {
-        ok: false,
-        reason: "registry_api_not_found"
-      };
+      return { ok: false, reason: "registry_api_not_found" };
     }
 
     const sampleActorUuid = state.targetActorUuids?.[0] ?? null;
@@ -1147,10 +1369,7 @@
 
     state.registryEntries = Array.isArray(entries) ? entries : [];
 
-    return {
-      ok: true,
-      count: state.registryEntries.length
-    };
+    return { ok: true, count: state.registryEntries.length };
   }
 
   async function refreshFields(state) {
@@ -1158,10 +1377,7 @@
 
     if (!catalogue) {
       state.fieldEntries = [];
-      return {
-        ok: false,
-        reason: "field_catalogue_api_not_found"
-      };
+      return { ok: false, reason: "field_catalogue_api_not_found" };
     }
 
     const actorUuid = state.targetActorUuids?.[0] ?? null;
@@ -1184,10 +1400,7 @@
 
     state.fieldEntries = Array.isArray(entries) ? entries : [];
 
-    return {
-      ok: true,
-      count: state.fieldEntries.length
-    };
+    return { ok: true, count: state.fieldEntries.length };
   }
 
   function findRegistryEntry(state, registryId) {
@@ -1305,13 +1518,7 @@
       const value = row.querySelector('[data-row-field="value"]')?.value ?? "";
       const priority = Number(row.querySelector('[data-row-field="priority"]')?.value ?? 20);
 
-      return {
-        id,
-        key,
-        mode,
-        value,
-        priority
-      };
+      return { id, key, mode, value, priority };
     });
 
     if (!builderState.customRows.length) {
@@ -1326,61 +1533,129 @@
   }
 
   function renderBuilderContent(builderState) {
+    const previewIcon = safeString(builderState.customIcon, "icons/svg/aura.svg");
+    const name = safeString(builderState.customName, "Custom Active Effect");
+    const category = safeString(builderState.customCategory, "Other");
+    const catClass = category.toLowerCase() === "buff"
+      ? "buff"
+      : category.toLowerCase() === "debuff"
+        ? "debuff"
+        : "other";
+
     return `
       <div class="oni-aem aem-builder-dialog">
         ${fieldDatalistHtml(builderState.fieldEntries ?? [])}
 
-        <div class="aem-card">
-          <h3>Custom Active Effect Builder</h3>
-
-          <div class="aem-row">
-            <div>
-              <label>Name</label>
-              <input type="text" name="customName" value="${escapeHtml(builderState.customName)}" placeholder="Defense Boost">
+        <div class="aem-builder-shell">
+          <div class="aem-builder-hero">
+            <div class="aem-builder-hero-main">
+              <img class="aem-builder-icon-preview" src="${escapeHtml(previewIcon)}">
+              <div>
+                <div class="aem-builder-title">${escapeHtml(name)}</div>
+                <div class="aem-builder-subtitle">
+                  Build a real Active Effect document. Add it to the main queue when ready.
+                </div>
+              </div>
             </div>
 
-            <div>
-              <label>Category</label>
-              <select name="customCategory">
-                <option value="Buff" ${builderState.customCategory === "Buff" ? "selected" : ""}>Buff</option>
-                <option value="Debuff" ${builderState.customCategory === "Debuff" ? "selected" : ""}>Debuff</option>
-                <option value="Other" ${builderState.customCategory === "Other" ? "selected" : ""}>Other</option>
-              </select>
+            <div class="aem-builder-type-row">
+              <div class="aem-builder-chip ${escapeHtml(catClass)}">${escapeHtml(category)}</div>
+              <div class="aem-builder-chip">Marker or Modifier</div>
+              <div class="aem-builder-chip">${builderState.customRows?.length ?? 0} Modifier Row(s)</div>
             </div>
           </div>
 
-          <label>Icon</label>
-          <input type="text" name="customIcon" value="${escapeHtml(builderState.customIcon)}" placeholder="icons/svg/aura.svg">
+          <div class="aem-builder-section">
+            <div class="aem-builder-section-title">
+              <span class="mark">1</span>
+              Effect Identity
+            </div>
 
-          <label>Status IDs / Marker Tags</label>
-          <input type="text" name="customStatuses" value="${escapeHtml(builderState.customStatuses)}" placeholder="Optional, comma-separated. Example: bleed, mark">
+            <div class="aem-builder-form-grid">
+              <div>
+                <label>Name</label>
+                <input type="text" name="customName" value="${escapeHtml(builderState.customName)}" placeholder="Defense Boost">
+              </div>
 
-          <label>Description</label>
-          <textarea name="customDescription" rows="2" placeholder="Optional description">${escapeHtml(builderState.customDescription)}</textarea>
+              <div>
+                <label>Category</label>
+                <select name="customCategory">
+                  <option value="Buff" ${builderState.customCategory === "Buff" ? "selected" : ""}>Buff</option>
+                  <option value="Debuff" ${builderState.customCategory === "Debuff" ? "selected" : ""}>Debuff</option>
+                  <option value="Other" ${builderState.customCategory === "Other" ? "selected" : ""}>Other</option>
+                </select>
+              </div>
+            </div>
 
-          <h4>Modifier Rows</h4>
-          <div data-aem-builder-modifier-rows>
-            ${modifierRowsHtml(builderState.customRows)}
+            <label>Icon</label>
+            <input type="text" name="customIcon" value="${escapeHtml(builderState.customIcon)}" placeholder="icons/svg/aura.svg">
+
+            <label>Status IDs / Marker Tags</label>
+            <input type="text" name="customStatuses" value="${escapeHtml(builderState.customStatuses)}" placeholder="Optional, comma-separated. Example: bleed, mark">
+
+            <label>Description</label>
+            <textarea name="customDescription" rows="2" placeholder="Optional description">${escapeHtml(builderState.customDescription)}</textarea>
           </div>
 
-          <div class="aem-actions-3" style="margin-top:6px;">
-            <button type="button" data-aem-builder-action="add-modifier-row">Add Row</button>
-            <button type="button" data-aem-builder-action="refresh-fields">Refresh Fields</button>
-            <button type="button" data-aem-builder-action="preview-custom">Preview</button>
+          <div class="aem-builder-section">
+            <div class="aem-builder-section-title">
+              <span class="mark">2</span>
+              Modifier Rows
+            </div>
+
+            <div data-aem-builder-modifier-rows>
+              ${modifierRowsHtml(builderState.customRows)}
+            </div>
+
+            <div class="aem-actions-3" style="margin-top:7px;">
+              <button type="button" data-aem-builder-action="add-modifier-row">+ Add Row</button>
+              <button type="button" data-aem-builder-action="refresh-fields">Refresh Fields</button>
+              <button type="button" data-aem-builder-action="preview-custom">Preview</button>
+            </div>
+
+            <div class="aem-builder-hint">
+              Modifier rows are optional if you are creating a marker effect. For stat changes, use the field suggestions.
+            </div>
           </div>
 
-          <div class="aem-actions" style="margin-top:6px;">
-            <button type="button" data-aem-builder-action="add-custom-marker">Add Marker Effect</button>
-            <button type="button" data-aem-builder-action="add-custom-modifier">Add Modifier Effect</button>
+          <div class="aem-builder-section">
+            <div class="aem-builder-section-title">
+              <span class="mark">3</span>
+              Add to Queue
+            </div>
+
+            <div class="aem-builder-command-row">
+              <button
+                type="button"
+                class="aem-builder-secondary"
+                data-aem-builder-action="add-custom-marker"
+              >
+                Add Marker Effect
+              </button>
+
+              <button
+                type="button"
+                class="aem-builder-primary"
+                data-aem-builder-action="add-custom-modifier"
+              >
+                Add Modifier Effect
+              </button>
+            </div>
+
+            <div class="aem-warning" style="margin-top:7px;">
+              Marker effects can have no changes. Modifier effects use the rows above.
+              Legacy keys like <code>isSlow</code> are intentionally not suggested.
+            </div>
           </div>
 
-          <div class="aem-warning" style="margin-top:6px;">
-            Custom marker effects can have no changes. Custom modifier effects use the rows above.
-            Old legacy keys like <code>isSlow</code> are intentionally not suggested.
+          <div class="aem-builder-section">
+            <details>
+              <summary><b>Preview / Debug</b></summary>
+              <div class="aem-builder-preview-wrap" style="margin-top:7px;">
+                <textarea class="aem-builder-preview" readonly data-aem-builder-preview>${escapeHtml(builderState.previewText || "")}</textarea>
+              </div>
+            </details>
           </div>
-
-          <label style="margin-top:8px;">Preview</label>
-          <textarea class="aem-builder-preview" readonly data-aem-builder-preview>${escapeHtml(builderState.previewText || "")}</textarea>
         </div>
       </div>
     `;
@@ -1393,11 +1668,7 @@
   }
 
   function setBuilderPreview(root, builderState, data) {
-    const text =
-      typeof data === "string"
-        ? data
-        : JSON.stringify(data, null, 2);
-
+    const text = typeof data === "string" ? data : JSON.stringify(data, null, 2);
     builderState.previewText = text;
 
     const el = root.querySelector("[data-aem-builder-preview]");
@@ -1579,7 +1850,7 @@
         BUILDER_DIALOG = null;
       }
     }, {
-      width: 760,
+      width: 720,
       height: "auto",
       resizable: true
     });
@@ -1624,9 +1895,7 @@
 
     const effects = state.selectedEffects.map(sel => {
       if (sel.kind === "registry") return sel.registryId;
-      return {
-        effectData: clone(sel.effectData, {})
-      };
+      return { effectData: clone(sel.effectData, {}) };
     });
 
     const duration = getGlobalDurationFromState(state);
@@ -1709,9 +1978,7 @@
       await refreshRegistry(state, { includeCompendiums: false });
     } catch (e) {
       warn("Initial registry refresh failed.", e);
-      state.outputText = JSON.stringify({
-        registryRefreshFailed: compactError(e)
-      }, null, 2);
+      state.outputText = JSON.stringify({ registryRefreshFailed: compactError(e) }, null, 2);
     }
 
     try {
@@ -1803,12 +2070,10 @@
 
             if (action === "debug-registry") {
               const registry = getRegistryApi();
-              const report =
-                registry?.getLastReport?.() ??
-                {
-                  ok: false,
-                  reason: "registry_api_not_found"
-                };
+              const report = registry?.getLastReport?.() ?? {
+                ok: false,
+                reason: "registry_api_not_found"
+              };
 
               console.groupCollapsed(`${TAG} Registry Debug`);
               console.log(report);
@@ -1847,12 +2112,8 @@
               await applySelected(root, state);
               return;
             }
-
           } catch (e) {
-            err("UI action failed.", {
-              action,
-              error: e
-            });
+            err("UI action failed.", { action, error: e });
 
             updateOutput(root, state, {
               ok: false,
@@ -1884,7 +2145,7 @@
   // --------------------------------------------------------------------------
 
   const api = {
-    version: "0.3.0",
+    version: "0.4.0",
     open,
     reopen: () => {
       try {
