@@ -20,6 +20,7 @@
   "scripts/richtext-script-converter-api.js",
   "scripts/battle-log/battlelog-clear.js",
   "scripts/token-mask-bootstrapper.js",
+  "scripts/active-effect-syntax-extender.js",
   "scripts/resource-ui-manager.js",
   "scripts/dialog-system/dialog-ui.js",
   "scripts/dialog-system/dialog-core.js",
