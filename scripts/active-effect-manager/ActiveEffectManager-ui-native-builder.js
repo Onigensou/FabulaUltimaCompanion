@@ -107,6 +107,51 @@
     );
   }
 
+  function getGlobalKeySuggestionApi() {
+  return (
+    globalThis.FUCompanion?.api?.activeEffectKeySuggestions ??
+    globalThis.FUCompanion?.api?.activeEffectManager?.keySuggestions ??
+    game.modules?.get?.(MODULE_ID)?.api?.activeEffectKeySuggestions ??
+    game.modules?.get?.(MODULE_ID)?.api?.activeEffectManager?.keySuggestions ??
+    null
+  );
+}
+
+async function installGlobalKeySuggestionsForSheet(sheet, actor) {
+  const keySuggest = getGlobalKeySuggestionApi();
+
+  if (!keySuggest?.installIntoSheet) {
+    return {
+      ok: false,
+      reason: "global_key_suggestion_api_not_found"
+    };
+  }
+
+  let refreshReport = null;
+
+  try {
+    if (typeof keySuggest.refresh === "function") {
+      refreshReport = await keySuggest.refresh(actor, {
+        force: true
+      });
+    }
+  } catch (e) {
+    warn("Global key suggestion refresh failed.", e);
+  }
+
+  const installReport = await keySuggest.installIntoSheet(sheet, sheet?.element, {
+    actor,
+    forceRefresh: false
+  });
+
+  return {
+    ok: !!installReport?.ok,
+    refreshReport,
+    installReport,
+    entries: refreshReport?.entries ?? []
+  };
+}
+
   function getDomApi() {
     return globalThis.FUCompanion?.api?.activeEffectManager?.uiParts?.dom ?? null;
   }
@@ -1258,10 +1303,16 @@
     const root = getSheetRoot(session.sheet);
     if (!root) return false;
 
-    ensureNativeSuggestionStyle();
+    const keySuggestionReport = await installGlobalKeySuggestionsForSheet(
+  session.sheet,
+  session.actor
+);
 
-    const refreshReport = await refreshNativeFieldCatalogue(session.actor);
-    session.fieldEntries = refreshReport.entries ?? [];
+session.fieldEntries = keySuggestionReport.entries ?? [];
+
+if (!keySuggestionReport.ok) {
+  warn("Global key suggestion installer was not available. Native sheet will open without smart suggestions.", keySuggestionReport);
+}
 
     // Visually default the final queued effect to enabled while the real draft
     // remains disabled on the actor.
@@ -1276,31 +1327,11 @@
       nameInput.value = nameInput.value.replace(/^\[AEM Draft\]\s*/i, "");
     }
 
-    const dropdown = getOrCreateDropdown(session);
-    bindDropdownClick(dropdown);
-
-    const bindFields = () => {
-      const fields = findNativeAttributeKeyFields(root);
-      for (const field of fields) {
-        bindSuggestionDropdownToField(field, dropdown, session);
-      }
-    };
-
-    bindFields();
-
-    if (!session.observer) {
-      session.observer = new MutationObserver(() => bindFields());
-      session.observer.observe(root, {
-        childList: true,
-        subtree: true
-      });
-
-      session.cleanupFns.push(() => {
-        try {
-          session.observer?.disconnect?.();
-        } catch (_e) {}
-      });
-    }
+// Smart Attribute Key suggestions are now handled globally by
+// ActiveEffectManager-key-suggestions.js.
+// The global installer owns dropdown creation, field binding, scrolling,
+// filtering, and MutationObserver handling.
+await installGlobalKeySuggestionsForSheet(session.sheet, session.actor);
 
     log("Installed native builder helpers into ActiveEffect sheet.", {
       actor: session.actor?.name,
