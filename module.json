@@ -39,6 +39,7 @@
   "scripts/active-effect-tooltip/active-effect-tooltip.js",
   "scripts/active-effect-manager/ActiveEffectManager-registry.js",
   "scripts/active-effect-manager/ActiveEffectManager-field-catalog.js",
+  "scripts/active-effect-manager/ActiveEffectManager-key-suggestions.js",
   "scripts/active-effect-manager/ActiveEffectManager-api.js",
   "scripts/active-effect-manager/ActiveEffectManager-csb-compat.js",
   "scripts/active-effect-manager/ActiveEffectManager-combat-counter-refresh.js",
