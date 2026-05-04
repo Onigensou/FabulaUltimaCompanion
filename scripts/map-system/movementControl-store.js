@@ -108,6 +108,51 @@
     }
   }
 
+    function stableStringify(value) {
+    const seen = new WeakSet();
+
+    const sorter = (_key, val) => {
+      if (val && typeof val === "object") {
+        if (seen.has(val)) return "[Circular]";
+        seen.add(val);
+
+        if (!Array.isArray(val)) {
+          return Object.keys(val)
+            .sort()
+            .reduce((out, key) => {
+              out[key] = val[key];
+              return out;
+            }, {});
+        }
+      }
+
+      return val;
+    };
+
+    try {
+      return JSON.stringify(value, sorter);
+    } catch {
+      return String(value);
+    }
+  }
+
+  function getMeaningfulStateForCompare(state = {}) {
+    const clone = deepClone(normalizeState(state));
+
+    // These are bookkeeping fields.
+    // They should not force an actor flag write by themselves.
+    delete clone.lastResolvedAt;
+    delete clone.updatedAt;
+    delete clone.updatedByUserId;
+    delete clone.updateReason;
+
+    return clone;
+  }
+
+  function isMeaningfullySameState(a, b) {
+    return stableStringify(getMeaningfulStateForCompare(a)) === stableStringify(getMeaningfulStateForCompare(b));
+  }
+
   function getDefaultState() {
     return {
       version: STATE_VERSION,
@@ -251,11 +296,36 @@
     const existing = await getState(actor);
     const base = merge ? existing : getDefaultState();
 
-    const next = normalizeState(
+        const meaningfulNext = normalizeState(
       mergeObjectSafe(base, {
         ...(patch ?? {}),
         currentGameActorId: actor.id ?? null,
-        currentGameActorUuid: actor.uuid ?? null,
+        currentGameActorUuid: actor.uuid ?? null
+      })
+    );
+
+    if (isMeaningfullySameState(existing, meaningfulNext)) {
+      DBG.verbose("Store", "Movement Control state write skipped because only bookkeeping fields changed", {
+        actorId: actor.id,
+        actorName: actor.name,
+        reason,
+        patch,
+        existing,
+        meaningfulNext
+      });
+
+      return {
+        ok: true,
+        reason: "unchanged",
+        skipped: true,
+        actor,
+        state: existing
+      };
+    }
+
+    const next = normalizeState(
+      mergeObjectSafe(meaningfulNext, {
+        lastResolvedAt: patch?.lastResolvedAt ?? meaningfulNext.lastResolvedAt ?? Date.now(),
         updatedAt: Date.now(),
         updatedByUserId: game.user?.id ?? null,
         updateReason: toNullableString(reason) ?? toNullableString(patch?.updateReason) ?? null
@@ -263,7 +333,17 @@
     );
 
     try {
-      await actor.setFlag(MODULE_ID, FLAG_KEY, next);
+      await actor.update(
+        {
+          [`flags.${MODULE_ID}.${FLAG_KEY}`]: next
+        },
+        {
+          render: false,
+          diff: true,
+          recursive: true,
+          movementControlWrite: true
+        }
+      );
 
       DBG.groupCollapsed("Store", "Movement Control state written", {
         actorId: actor.id,
@@ -273,7 +353,7 @@
         nextState: next
       });
 
-      return { ok: true, reason: "written", actor, state: next };
+      return { ok: true, reason: "written", skipped: false, actor, state: next };
     } catch (err) {
       DBG.error("Store", "Failed to write Movement Control state", {
         actorId: actor.id,
