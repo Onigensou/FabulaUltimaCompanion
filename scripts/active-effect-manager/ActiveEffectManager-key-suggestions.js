@@ -857,66 +857,12 @@ function keyMatchesAnyAllowedKeyword(key) {
   return isAllowedGameplayKeyFamily(key);
 }
 
-function isAllowedGameplayKeyFamily(key) {
-  const k = normalizeKeyText(key);
-
-  if (!k) return false;
-
-  // Exact resource keys only.
-  // This prevents skill_hp, member_currenthp_1, bench_maxhp_1, etc.
-  if (/^(current|max)_(hp|mp|ip)$/.test(k)) return true;
-
-  // Attribute dice.
-  if (/^(dex|ins|mig|wlp)_(base|current)$/.test(k)) return true;
-  if (/^base_(dex|ins|mig|wlp)$/.test(k)) return true;
-  if (/^(bonus|override)_(dex|ins|mig|wlp)$/.test(k)) return true;
-
-  // Defense.
-  if (/^(defense|magic_defense)$/.test(k)) return true;
-  if (/^(bonus|override)_(defense|magic_defense)$/.test(k)) return true;
-
-  // Accuracy.
-  if (/^attack_accuracy_mod_(all|melee|ranged|magic)$/.test(k)) return true;
-
-  // Extra damage.
-  if (
-    /^extra_damage_mod_(all|melee|ranged|spell|physical|air|bolt|dark|earth|fire|ice|light|poison|arcane|bow|brawling|dagger|firearm|flail|heavy|spear|sword|thrown)$/.test(k)
-  ) {
-    return true;
-  }
-
-  // Damage reduction.
-  if (
-    /^damage_receiving_(mod|percentage)_(all|melee|range|ranged|physical|air|bolt|dark|earth|fire|ice|light|poison)$/.test(k)
-  ) {
-    return true;
-  }
-
-  // Weapon efficiency.
-  if (/^(arcane|bow|brawling|dagger|firearm|flail|heavy|spear|sword|thrown)_ef$/.test(k)) {
-    return true;
-  }
-
-  return false;
-}
-
-function keyMatchesAnyAllowedKeyword(key) {
-  return isAllowedGameplayKeyFamily(key);
-}
-
 function entryMatchesAllowedKeyword(entry = {}) {
   const key = getEntryKey(entry);
   if (isBlockedFocusedKey(key, entry)) return false;
 
   return isAllowedGameplayKeyFamily(key);
 }
-
-  function entryMatchesAllowedKeyword(entry = {}) {
-    const key = getEntryKey(entry);
-    if (isBlockedFocusedKey(key, entry)) return false;
-
-    return keyMatchesAnyAllowedKeyword(key);
-  }
 
   function focusedEntryMatchesQuery(entry = {}, query = "") {
     const q = safeString(query);
@@ -1771,7 +1717,7 @@ try {
   }
 
   const api = {
-    version: "2.0.0",
+    version: "2.0.1",
     status,
     setEnabled,
     installHooks,

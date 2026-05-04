@@ -34,14 +34,6 @@
   const TAG = "[ONI][ActiveEffectManager:UI:NativeBuilder]";
   const DEBUG = true;
 
-  const SUGGESTION_STYLE_ID = "oni-aem-native-key-suggestion-style";
-  const SUGGESTION_CLASS = "oni-aem-native-key-suggestion-dropdown";
-
-  // "short" = defense
-  // "path"  = system.props.defense
-  // Your current AEM/CSB setup wants short keys.
-  const NATIVE_SUGGESTION_VALUE = "short";
-
   const DRAFT_FLAG_PATH = `flags.${MODULE_ID}.activeEffectManager.nativeBuilderDraft`;
 
   let ACTIVE_SESSION = null;
@@ -93,18 +85,6 @@
     } catch (e) {
       warn("Could not expose native builder API on module object.", e);
     }
-  }
-
-  function getFieldCatalogueApi() {
-    const root = globalThis.FUCompanion?.api ?? {};
-
-    return (
-      root.activeEffectManager?.fieldCatalogue ??
-      root.activeEffectManager?.fieldCatalog ??
-      game.modules?.get?.(MODULE_ID)?.api?.activeEffectManager?.fieldCatalogue ??
-      game.modules?.get?.(MODULE_ID)?.api?.activeEffectManager?.fieldCatalog ??
-      null
-    );
   }
 
   function getGlobalKeySuggestionApi() {
@@ -682,427 +662,12 @@ async function installGlobalKeySuggestionsForSheet(sheet, actor) {
   // Native suggestion CSS/dropdown
   // --------------------------------------------------------------------------
 
-  function ensureNativeSuggestionStyle() {
-    const old = document.getElementById(SUGGESTION_STYLE_ID);
-    if (old) old.remove();
-
-    const style = document.createElement("style");
-    style.id = SUGGESTION_STYLE_ID;
-    style.textContent = `
-      .${SUGGESTION_CLASS} {
-        position: fixed;
-        z-index: 9999999;
-        display: none;
-        min-width: 260px;
-        max-width: 460px;
-        max-height: 260px;
-        overflow: auto;
-        padding: 5px;
-        border: 1px solid rgba(40, 32, 24, .34);
-        border-radius: 8px;
-        background: rgba(248, 242, 224, .98);
-        box-shadow: 0 10px 28px rgba(0,0,0,.28);
-        color: #1f1a14;
-        font-family: var(--font-primary, "Signika"), sans-serif;
-      }
-
-      .${SUGGESTION_CLASS} .aem-suggest-head {
-        padding: 4px 6px 6px;
-        font-size: 10px;
-        font-weight: 900;
-        text-transform: uppercase;
-        letter-spacing: .04em;
-        opacity: .62;
-      }
-
-      .${SUGGESTION_CLASS} .aem-suggest-row {
-        display: grid;
-        gap: 2px;
-        padding: 6px 7px;
-        border-radius: 6px;
-        cursor: pointer;
-      }
-
-      .${SUGGESTION_CLASS} .aem-suggest-row:hover,
-      .${SUGGESTION_CLASS} .aem-suggest-row.active {
-        background: rgba(65, 50, 32, .14);
-      }
-
-      .${SUGGESTION_CLASS} .aem-suggest-key {
-        font-family: monospace;
-        font-size: 12px;
-        font-weight: 900;
-        color: #15110c;
-        overflow-wrap: anywhere;
-      }
-
-      .${SUGGESTION_CLASS} .aem-suggest-meta {
-        font-size: 10px;
-        opacity: .7;
-        line-height: 1.2;
-      }
-    `;
-
-    document.head.appendChild(style);
-    return style;
-  }
-
   function getSheetRoot(sheet) {
     return normalizeHtmlRoot(sheet?.element) ??
       document.getElementById(sheet?.id) ??
       document.querySelector(`[data-appid="${sheet?.appId}"]`) ??
       document.querySelector(`#app-${sheet?.appId}`) ??
       null;
-  }
-
-  function getOrCreateDropdown(session) {
-    if (session.dropdown?.isConnected) return session.dropdown;
-
-    const dropdown = document.createElement("div");
-    dropdown.className = SUGGESTION_CLASS;
-    dropdown.dataset.sessionId = session.id;
-    document.body.appendChild(dropdown);
-
-    const onDocMouseDown = ev => {
-      if (dropdown.contains(ev.target)) return;
-      dropdown.style.display = "none";
-    };
-
-    document.addEventListener("mousedown", onDocMouseDown);
-
-    session.cleanupFns.push(() => {
-      document.removeEventListener("mousedown", onDocMouseDown);
-
-      try {
-        dropdown.remove();
-      } catch (_e) {}
-    });
-
-    session.dropdown = dropdown;
-    return dropdown;
-  }
-
-  // --------------------------------------------------------------------------
-  // Field catalogue / suggestions
-  // --------------------------------------------------------------------------
-
-  async function refreshNativeFieldCatalogue(actor) {
-    const catalogue = getFieldCatalogueApi();
-
-    if (!catalogue) {
-      return {
-        ok: false,
-        reason: "field_catalogue_api_not_found",
-        entries: []
-      };
-    }
-
-    try {
-      if (typeof catalogue.refresh === "function") {
-        await catalogue.refresh({
-          actorUuid: actor?.uuid ?? null,
-          includeLegacyConditionKeys: false,
-          includeReadOnly: false,
-          suggestionsOnly: false
-        });
-      }
-
-      const entries =
-        typeof catalogue.getRecommended === "function"
-          ? catalogue.getRecommended({ cloneResult: false })
-          : typeof catalogue.getAll === "function"
-            ? catalogue.getAll({ cloneResult: false })
-            : [];
-
-      return {
-        ok: true,
-        count: Array.isArray(entries) ? entries.length : 0,
-        entries: Array.isArray(entries) ? entries : []
-      };
-    } catch (e) {
-      warn("Field catalogue refresh failed.", e);
-
-      return {
-        ok: false,
-        reason: "field_catalogue_refresh_failed",
-        error: compactError(e),
-        entries: []
-      };
-    }
-  }
-
-  function normalizeSuggestionEntry(entry = {}) {
-    const key = safeString(
-      NATIVE_SUGGESTION_VALUE === "path"
-        ? entry.propPath
-        : entry.activeEffectKey ?? entry.key
-    );
-
-    if (!key) return null;
-
-    return {
-      key,
-      rawKey: safeString(entry.key ?? entry.activeEffectKey, key),
-      label: safeString(entry.label, key),
-      category: safeString(entry.category, "Other"),
-      valueKind: safeString(entry.valueKind, "unknown"),
-      source: safeString(entry.source, ""),
-      currentValue: entry.currentValue,
-      recommendedChange: entry.recommendedChange ?? null,
-      entry
-    };
-  }
-
-  function scoreLocalSuggestion(query, entry = {}) {
-    const q = safeString(query).toLowerCase();
-    if (!q) return entry.isRecommended ? 80 : 0;
-
-    const text = [
-      entry.key,
-      entry.activeEffectKey,
-      entry.propPath,
-      entry.label,
-      entry.category,
-      entry.valueKind,
-      ...(entry.section ?? [])
-    ].join(" ").toLowerCase();
-
-    let score = 0;
-
-    const key = safeString(entry.key ?? entry.activeEffectKey).toLowerCase();
-    const label = safeString(entry.label).toLowerCase();
-
-    if (key === q) score += 1000;
-    if (label === q) score += 900;
-    if (key.includes(q)) score += 700;
-    if (label.includes(q)) score += 600;
-    if (text.includes(q)) score += 300;
-
-    const parts = q.split(/[\s._-]+/g).filter(Boolean);
-    for (const part of parts) {
-      if (key.includes(part)) score += 120;
-      if (label.includes(part)) score += 90;
-      if (text.includes(part)) score += 40;
-    }
-
-    if (entry.isRecommended) score += 80;
-    if (entry.isLegacyConditionKey) score -= 1000;
-    if (entry.isReadOnly) score -= 500;
-
-    return score;
-  }
-
-  function getNativeSuggestions(query, session, limit = 12) {
-    const catalogue = getFieldCatalogueApi();
-    const q = safeString(query);
-
-    try {
-      if (typeof catalogue?.getSuggestions === "function") {
-        const rows = catalogue.getSuggestions(q, {
-          limit,
-          cloneResult: false
-        });
-
-        if (Array.isArray(rows) && rows.length) {
-          return rows
-            .map(normalizeSuggestionEntry)
-            .filter(Boolean)
-            .slice(0, limit);
-        }
-      }
-    } catch (_e) {}
-
-    const localRows = asArray(session.fieldEntries)
-      .map(entry => ({
-        entry,
-        score: scoreLocalSuggestion(q, entry)
-      }))
-      .filter(row => row.score > 0 || !q)
-      .sort((a, b) => b.score - a.score)
-      .map(row => normalizeSuggestionEntry(row.entry))
-      .filter(Boolean)
-      .slice(0, limit);
-
-    return localRows;
-  }
-
-  function renderDropdown(dropdown, field, suggestions) {
-    if (!dropdown || !field) return;
-
-    if (!suggestions.length) {
-      dropdown.style.display = "none";
-      dropdown.innerHTML = "";
-      return;
-    }
-
-    dropdown.innerHTML = `
-      <div class="aem-suggest-head">AEM Smart Suggestions</div>
-      ${suggestions.map((row, index) => `
-        <div
-          class="aem-suggest-row ${index === 0 ? "active" : ""}"
-          data-suggestion-index="${index}"
-          data-suggestion-key="${escapeHtml(row.key)}"
-        >
-          <div class="aem-suggest-key">${escapeHtml(row.key)}</div>
-          <div class="aem-suggest-meta">
-            ${escapeHtml(row.label)}
-            ${row.category ? " • " + escapeHtml(row.category) : ""}
-            ${row.valueKind ? " • " + escapeHtml(row.valueKind) : ""}
-          </div>
-        </div>
-      `).join("")}
-    `;
-
-    dropdown.__aemSuggestions = suggestions;
-    dropdown.__aemField = field;
-
-    const rect = field.getBoundingClientRect();
-
-    dropdown.style.left = `${Math.max(6, rect.left)}px`;
-    dropdown.style.top = `${Math.max(6, rect.bottom + 4)}px`;
-    dropdown.style.minWidth = `${Math.max(260, rect.width)}px`;
-    dropdown.style.display = "block";
-  }
-
-  function chooseSuggestion(dropdown, index = 0) {
-    const suggestions = dropdown?.__aemSuggestions ?? [];
-    const field = dropdown?.__aemField ?? null;
-    const row = suggestions[index];
-
-    if (!field || !row) return false;
-
-    field.value = row.key;
-
-    field.dispatchEvent(new Event("input", {
-      bubbles: true
-    }));
-
-    field.dispatchEvent(new Event("change", {
-      bubbles: true
-    }));
-
-    dropdown.style.display = "none";
-
-    try {
-      field.focus();
-    } catch (_e) {}
-
-    return true;
-  }
-
-  function moveActiveSuggestion(dropdown, dir) {
-    const rows = Array.from(dropdown?.querySelectorAll?.(".aem-suggest-row") ?? []);
-    if (!rows.length) return;
-
-    const current = rows.findIndex(row => row.classList.contains("active"));
-    const next = Math.max(0, Math.min(rows.length - 1, current + dir));
-
-    for (const row of rows) row.classList.remove("active");
-    rows[next]?.classList.add("active");
-    rows[next]?.scrollIntoView?.({
-      block: "nearest"
-    });
-  }
-
-  function getActiveSuggestionIndex(dropdown) {
-    const active = dropdown?.querySelector?.(".aem-suggest-row.active");
-    if (!active) return 0;
-    return Number(active.dataset.suggestionIndex ?? 0) || 0;
-  }
-
-  function findNativeAttributeKeyFields(root) {
-    const candidates = Array.from(root?.querySelectorAll?.("input, textarea") ?? []);
-
-    return candidates.filter(input => {
-      const name = String(input.getAttribute("name") ?? "");
-      const placeholder = String(input.getAttribute("placeholder") ?? "");
-      const aria = String(input.getAttribute("aria-label") ?? "");
-      const title = String(input.getAttribute("title") ?? "");
-
-      const text = [name, placeholder, aria, title].join(" ").toLowerCase();
-
-      const looksLikeChangeKey =
-        /changes/i.test(name) && /key/i.test(name);
-
-      const simpleKey =
-        /^key$/i.test(name) ||
-        /\.key$/i.test(name) ||
-        /\[key\]$/i.test(name);
-
-      const labelNearby = (() => {
-        const label =
-          input.closest?.("label")?.textContent ??
-          root.querySelector?.(`label[for="${CSS.escape(input.id ?? "")}"]`)?.textContent ??
-          "";
-        return /attribute|key|path/i.test(label);
-      })();
-
-      return looksLikeChangeKey || simpleKey || labelNearby || /attribute key|data key|change key/.test(text);
-    });
-  }
-
-  function bindSuggestionDropdownToField(field, dropdown, session) {
-    if (!field || field.dataset.oniAemNativeSuggestBound) return;
-
-    field.dataset.oniAemNativeSuggestBound = "1";
-    field.setAttribute("autocomplete", "off");
-
-    const refresh = () => {
-      const suggestions = getNativeSuggestions(field.value, session, 12);
-      renderDropdown(dropdown, field, suggestions);
-    };
-
-    field.addEventListener("focus", () => {
-      refresh();
-    });
-
-    field.addEventListener("input", () => {
-      refresh();
-    });
-
-    field.addEventListener("keydown", ev => {
-      if (dropdown.style.display === "none") return;
-
-      if (ev.key === "ArrowDown") {
-        ev.preventDefault();
-        moveActiveSuggestion(dropdown, 1);
-        return;
-      }
-
-      if (ev.key === "ArrowUp") {
-        ev.preventDefault();
-        moveActiveSuggestion(dropdown, -1);
-        return;
-      }
-
-      if (ev.key === "Enter" || ev.key === "Tab") {
-        if (dropdown.__aemField === field && dropdown.__aemSuggestions?.length) {
-          ev.preventDefault();
-          chooseSuggestion(dropdown, getActiveSuggestionIndex(dropdown));
-        }
-        return;
-      }
-
-      if (ev.key === "Escape") {
-        dropdown.style.display = "none";
-      }
-    });
-  }
-
-  function bindDropdownClick(dropdown) {
-    if (!dropdown || dropdown.dataset.oniAemNativeClickBound) return;
-
-    dropdown.dataset.oniAemNativeClickBound = "1";
-
-    dropdown.addEventListener("mousedown", ev => {
-      const row = ev.target.closest?.(".aem-suggest-row");
-      if (!row) return;
-
-      ev.preventDefault();
-      ev.stopPropagation();
-
-      chooseSuggestion(dropdown, Number(row.dataset.suggestionIndex ?? 0) || 0);
-    });
   }
 
   // --------------------------------------------------------------------------
@@ -1299,49 +864,46 @@ async function installGlobalKeySuggestionsForSheet(sheet, actor) {
     return report;
   }
 
-  async function installIntoSheet(session) {
-    const root = getSheetRoot(session.sheet);
-    if (!root) return false;
+async function installIntoSheet(session) {
+  const root = getSheetRoot(session.sheet);
+  if (!root) return false;
 
-    const keySuggestionReport = await installGlobalKeySuggestionsForSheet(
-  session.sheet,
-  session.actor
-);
+  const keySuggestionReport = await installGlobalKeySuggestionsForSheet(
+    session.sheet,
+    session.actor
+  );
 
-session.fieldEntries = keySuggestionReport.entries ?? [];
+  session.fieldEntries = keySuggestionReport.entries ?? [];
 
-if (!keySuggestionReport.ok) {
-  warn("Global key suggestion installer was not available. Native sheet will open without smart suggestions.", keySuggestionReport);
-}
-
-    // Visually default the final queued effect to enabled while the real draft
-    // remains disabled on the actor.
-    const disabledBox = root.querySelector('input[name="disabled"]');
-    if (disabledBox && !disabledBox.dataset.oniAemNativeDefaulted) {
-      disabledBox.dataset.oniAemNativeDefaulted = "1";
-      disabledBox.checked = false;
-    }
-
-    const nameInput = root.querySelector('input[name="name"]');
-    if (nameInput && /^\[AEM Draft\]\s*/i.test(nameInput.value)) {
-      nameInput.value = nameInput.value.replace(/^\[AEM Draft\]\s*/i, "");
-    }
-
-// Smart Attribute Key suggestions are now handled globally by
-// ActiveEffectManager-key-suggestions.js.
-// The global installer owns dropdown creation, field binding, scrolling,
-// filtering, and MutationObserver handling.
-await installGlobalKeySuggestionsForSheet(session.sheet, session.actor);
-
-    log("Installed native builder helpers into ActiveEffect sheet.", {
-      actor: session.actor?.name,
-      draft: session.draft?.name,
-      fields: findNativeAttributeKeyFields(root).length,
-      fieldSuggestions: session.fieldEntries.length
-    });
-
-    return true;
+  if (!keySuggestionReport.ok) {
+    warn(
+      "Global key suggestion installer was not available. Native sheet will open without smart suggestions.",
+      keySuggestionReport
+    );
   }
+
+  // Visually default the final queued effect to enabled while the real draft
+  // remains disabled on the actor.
+  const disabledBox = root.querySelector('input[name="disabled"]');
+  if (disabledBox && !disabledBox.dataset.oniAemNativeDefaulted) {
+    disabledBox.dataset.oniAemNativeDefaulted = "1";
+    disabledBox.checked = false;
+  }
+
+  const nameInput = root.querySelector('input[name="name"]');
+  if (nameInput && /^\[AEM Draft\]\s*/i.test(nameInput.value)) {
+    nameInput.value = nameInput.value.replace(/^\[AEM Draft\]\s*/i, "");
+  }
+
+  log("Installed native builder helpers into ActiveEffect sheet.", {
+    actor: session.actor?.name,
+    draft: session.draft?.name,
+    fields: keySuggestionReport.installReport?.fields ?? null,
+    fieldSuggestions: session.fieldEntries.length
+  });
+
+  return true;
+}
 
   function installRenderHooks(session) {
     const hookNames = [
@@ -1604,7 +1166,7 @@ await installGlobalKeySuggestionsForSheet(session.sheet, session.actor);
   // --------------------------------------------------------------------------
 
   const api = {
-    version: "0.1.0",
+    version: "0.1.1",
 
     openForQueue,
     open,
@@ -1612,14 +1174,9 @@ await installGlobalKeySuggestionsForSheet(session.sheet, session.actor);
     cancelActiveSession,
     getActiveSessionInfo,
 
-    refreshNativeFieldCatalogue,
-
     _internal: {
       clone,
       safeString,
-      escapeHtml,
-      asArray,
-      uniq,
       randomId,
       nowIso,
       compactError,
@@ -1637,10 +1194,7 @@ await installGlobalKeySuggestionsForSheet(session.sheet, session.actor);
       resolveBuilderActor,
       createDraftEffect,
       deleteDraft,
-      ensureNativeSuggestionStyle,
       getSheetRoot,
-      findNativeAttributeKeyFields,
-      bindSuggestionDropdownToField,
       patchSheetUpdateObject,
       patchSheetClose,
       installIntoSheet,
