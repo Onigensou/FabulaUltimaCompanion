@@ -9,172 +9,265 @@
 //     2. Actor sheet embedded effects
 //     3. Item sheet embedded effects
 //     4. Any normal Foundry ActiveEffectConfig / CSB CustomActiveEffectConfig window
-// - Suggests CSB-style short keys such as "defense", "bonus_defense",
-//   "damage_receiving_mod_all", etc.
 //
-// Depends on:
-// - ActiveEffectManager-field-catalog.js
-//
-// Public API:
-//   FUCompanion.api.activeEffectKeySuggestions.status()
-//   FUCompanion.api.activeEffectKeySuggestions.refresh(actorOrUuid, options)
-//   FUCompanion.api.activeEffectKeySuggestions.installIntoSheet(app, html, options)
-//   FUCompanion.api.activeEffectKeySuggestions.getSuggestions(query, options)
+// New focused logic:
+// - Pulls actor data keys from actor.system.props.
+// - Also pulls compatible entries from the existing Field Catalogue.
+// - Only allows gameplay-relevant keys based on allowed keywords:
+//   dex, wlp, ins, mig, defense, mdef, elements, weapon types, hp/mp/ip, etc.
+// - Supports aliases such as dexterity -> dex, willpower -> wlp.
+// - Outputs short CSB-style keys such as bonus_dex, firearm_ef, current_hp.
 // ============================================================================
 
 (() => {
   const MODULE_ID = "fabula-ultima-companion";
   const TAG = "[ONI][AEKeySuggest]";
-  const PATCH_KEY = "__ONI_ACTIVE_EFFECT_KEY_SUGGESTIONS_GLOBAL_V1__";
+  const PATCH_KEY = "__ONI_ACTIVE_EFFECT_KEY_SUGGESTIONS_GLOBAL_V2__";
 
   const DEBUG = false;
 
   const STYLE_ID = "oni-aem-native-key-suggestion-style";
   const DROPDOWN_CLASS = "oni-aem-native-key-suggestion-dropdown";
 
-  // Keep this compatible with your current CSB ActiveEffect setup.
   // "short" => defense
   // "path"  => system.props.defense
   const SUGGESTION_VALUE_MODE = "short";
 
-const CFG = {
-  enabled: true,
-  limit: 12,
-  cacheMs: 8000,
+  const CFG = {
+    enabled: true,
+    limit: 12,
+    cacheMs: 8000,
 
-  // NEW:
-  // Keep the dropdown focused on actor modifier keys only.
-  focusedActorModifierSuggestions: true,
+    focusedActorModifierSuggestions: true,
+    showOnlyFocusedSuggestions: true,
+    includeFocusedFallbackKeys: true,
 
-  // If true, hide broad actor/item keys such as gacha_rate_junk,
-  // accessory_title_percentage, option_advanceConditions, etc.
-  showOnlyFocusedSuggestions: true,
+    hookNames: [
+      "renderActiveEffectConfig",
+      "renderCustomActiveEffectConfig"
+    ],
 
-  // Add important actor resource/base keys even if they are outside the Status tab.
-  includeFocusedFallbackKeys: true,
+    refreshOnRender: true,
+    includeLegacyConditionKeys: false,
+    includeReadOnly: false,
+    suggestionsOnly: false,
 
-  hookNames: [
-    "renderActiveEffectConfig",
-    "renderCustomActiveEffectConfig"
-  ],
-  refreshOnRender: true,
-  includeLegacyConditionKeys: false,
-  includeReadOnly: false,
-  suggestionsOnly: false
-};
+// Do not use broad Field Catalogue rows directly in the dropdown.
+// This prevents world/party/database actors from leaking keys like fish_*,
+// member_*, bench_*, skill_hp, etc.
+useFieldCatalogueRowsInDropdown: false,
 
-const FOCUSED_STATUS_SECTION_NAMES = [
-  "Attack Accuracy",
-  "Extra Damage",
-  "Damage Reduction",
-  "Parameter",
-  "Miscellaneous",
-  "Type Affinity",
-  "Weapon Efficiency",
-  "Condition Affinity",
-  "Condition Status"
-];
+// Never use party/database actors as the source actor for suggestions.
+skipPartyActors: true
+  };
 
-const FOCUSED_BLOCKED_KEYS = new Set([
-  "",
-  "status_tab",
-  "active_effect_list",
-  "type_affinity_panel",
-  "efficiency_tab",
-  "condition_affinity_panel",
-  "condition_status_panel",
-  "NA",
-  "RS",
-  "IM"
-]);
-
-const FOCUSED_EXTRA_KEYS = [
-
+  const FOCUSED_EXTRA_KEYS = [
     // Core actor modifier keys
-  { key: "bonus_dex", label: "Bonus DEX", category: "Parameter", valueKind: "number", alwaysShow: true },
-  { key: "bonus_mig", label: "Bonus MIG", category: "Parameter", valueKind: "number", alwaysShow: true },
-  { key: "bonus_ins", label: "Bonus INS", category: "Parameter", valueKind: "number", alwaysShow: true },
-  { key: "bonus_wlp", label: "Bonus WLP", category: "Parameter", valueKind: "number", alwaysShow: true },
+    { key: "bonus_dex", label: "Bonus DEX", category: "Parameter", valueKind: "number" },
+    { key: "bonus_mig", label: "Bonus MIG", category: "Parameter", valueKind: "number" },
+    { key: "bonus_ins", label: "Bonus INS", category: "Parameter", valueKind: "number" },
+    { key: "bonus_wlp", label: "Bonus WLP", category: "Parameter", valueKind: "number" },
 
-  { key: "override_dex", label: "Override DEX", category: "Parameter", valueKind: "number", alwaysShow: true },
-  { key: "override_mig", label: "Override MIG", category: "Parameter", valueKind: "number", alwaysShow: true },
-  { key: "override_ins", label: "Override INS", category: "Parameter", valueKind: "number", alwaysShow: true },
-  { key: "override_wlp", label: "Override WLP", category: "Parameter", valueKind: "number", alwaysShow: true },
+    { key: "override_dex", label: "Override DEX", category: "Parameter", valueKind: "number" },
+    { key: "override_mig", label: "Override MIG", category: "Parameter", valueKind: "number" },
+    { key: "override_ins", label: "Override INS", category: "Parameter", valueKind: "number" },
+    { key: "override_wlp", label: "Override WLP", category: "Parameter", valueKind: "number" },
 
-  { key: "bonus_defense", label: "Bonus Defense", category: "Parameter", valueKind: "number", alwaysShow: true },
-  { key: "bonus_magic_defense", label: "Bonus Magic Defense", category: "Parameter", valueKind: "number", alwaysShow: true },
-  { key: "override_defense", label: "Override Defense", category: "Parameter", valueKind: "number", alwaysShow: true },
-  { key: "override_magic_defense", label: "Override Magic Defense", category: "Parameter", valueKind: "number", alwaysShow: true },
+    { key: "bonus_defense", label: "Bonus Defense", category: "Parameter", valueKind: "number" },
+    { key: "bonus_magic_defense", label: "Bonus Magic Defense", category: "Parameter", valueKind: "number" },
+    { key: "override_defense", label: "Override Defense", category: "Parameter", valueKind: "number" },
+    { key: "override_magic_defense", label: "Override Magic Defense", category: "Parameter", valueKind: "number" },
 
-  { key: "defense", label: "Defense", category: "Parameter", valueKind: "number", alwaysShow: true },
-  { key: "magic_defense", label: "Magic Defense", category: "Parameter", valueKind: "number", alwaysShow: true },
+    { key: "defense", label: "Defense", category: "Parameter", valueKind: "number" },
+    { key: "magic_defense", label: "Magic Defense", category: "Parameter", valueKind: "number" },
 
-  // Resources
-  { key: "current_hp", label: "Current HP", category: "Resource", valueKind: "number" },
-  { key: "current_mp", label: "Current MP", category: "Resource", valueKind: "number" },
-  { key: "current_ip", label: "Current IP", category: "Resource", valueKind: "number" },
+    // Resources
+    { key: "current_hp", label: "Current HP", category: "Resource", valueKind: "number" },
+    { key: "current_mp", label: "Current MP", category: "Resource", valueKind: "number" },
+    { key: "current_ip", label: "Current IP", category: "Resource", valueKind: "number" },
 
-  { key: "max_hp", label: "Max HP", category: "Resource", valueKind: "number" },
-  { key: "max_mp", label: "Max MP", category: "Resource", valueKind: "number" },
-  { key: "max_ip", label: "Max IP", category: "Resource", valueKind: "number" },
+    { key: "max_hp", label: "Max HP", category: "Resource", valueKind: "number" },
+    { key: "max_mp", label: "Max MP", category: "Resource", valueKind: "number" },
+    { key: "max_ip", label: "Max IP", category: "Resource", valueKind: "number" },
 
-  // Your preferred base naming style.
-  { key: "base_dex", label: "Base DEX", category: "Base Attribute", valueKind: "number" },
-  { key: "base_mig", label: "Base MIG", category: "Base Attribute", valueKind: "number" },
-  { key: "base_ins", label: "Base INS", category: "Base Attribute", valueKind: "number" },
-  { key: "base_wlp", label: "Base WLP", category: "Base Attribute", valueKind: "number" },
+    // Base attribute naming variants
+    { key: "base_dex", label: "Base DEX", category: "Base Attribute", valueKind: "number" },
+    { key: "base_mig", label: "Base MIG", category: "Base Attribute", valueKind: "number" },
+    { key: "base_ins", label: "Base INS", category: "Base Attribute", valueKind: "number" },
+    { key: "base_wlp", label: "Base WLP", category: "Base Attribute", valueKind: "number" },
 
-  // Current Keren/Hina style naming fallback.
-  { key: "dex_base", label: "Base DEX", category: "Base Attribute", valueKind: "number" },
-  { key: "mig_base", label: "Base MIG", category: "Base Attribute", valueKind: "number" },
-  { key: "ins_base", label: "Base INS", category: "Base Attribute", valueKind: "number" },
-  { key: "wlp_base", label: "Base WLP", category: "Base Attribute", valueKind: "number" }
+    { key: "dex_base", label: "Base DEX", category: "Base Attribute", valueKind: "number" },
+    { key: "mig_base", label: "Base MIG", category: "Base Attribute", valueKind: "number" },
+    { key: "ins_base", label: "Base INS", category: "Base Attribute", valueKind: "number" },
+    { key: "wlp_base", label: "Base WLP", category: "Base Attribute", valueKind: "number" }
+  ];
+
+  const FOCUSED_KEYWORD_GROUPS = [
+    { id: "dex", terms: ["dex", "dexterity"] },
+    { id: "wlp", terms: ["wlp", "willpower"] },
+    { id: "ins", terms: ["ins", "insight"] },
+    { id: "mig", terms: ["mig", "might"] },
+
+    { id: "defense", terms: ["def", "defense"] },
+    { id: "magic_defense", terms: ["mdef", "magic_defense", "magicdefense", "magicDefense"] },
+
+    { id: "fire", terms: ["fire"] },
+    { id: "air", terms: ["air"] },
+    { id: "physical", terms: ["physical"] },
+    { id: "ice", terms: ["ice"] },
+    { id: "dark", terms: ["dark"] },
+    { id: "light", terms: ["light"] },
+    { id: "bolt", terms: ["bolt"] },
+    { id: "earth", terms: ["earth"] },
+    { id: "poison", terms: ["poison"] },
+
+    { id: "range", terms: ["range", "ranged"] },
+    { id: "melee", terms: ["melee"] },
+
+    { id: "sword", terms: ["sword"] },
+    { id: "arcane", terms: ["arcane"] },
+    { id: "firearm", terms: ["firearm"] },
+    { id: "bow", terms: ["bow", "now"] },
+    { id: "flail", terms: ["flail"] },
+    { id: "thrown", terms: ["thrown"] },
+    { id: "brawling", terms: ["brawling"] },
+    { id: "heavy", terms: ["heavy"] },
+    { id: "dagger", terms: ["dagger"] },
+    { id: "spear", terms: ["spear"] },
+
+    { id: "spell", terms: ["spell"] },
+    { id: "magic", terms: ["magic"] },
+
+    { id: "hp", terms: ["hp"] },
+    { id: "ip", terms: ["ip"] },
+    { id: "mp", terms: ["mp"] }
+  ];
+
+  const FOCUSED_BLOCKED_KEYS = new Set([
+    "",
+    "status_tab",
+    "active_effect_list",
+    "type_affinity_panel",
+    "efficiency_tab",
+    "condition_affinity_panel",
+    "condition_status_panel",
+    "NA",
+    "RS",
+    "IM"
+  ]);
+
+  const FOCUSED_BLOCKED_KEY_PATTERNS = [
+  // Party database actor keys
+  /^member_/i,
+  /^bench_/i,
+  /^party_/i,
+  /^total_zenit$/i,
+
+  // Fishing / collection / overworld database keys
+  /^fish_/i,
+  /^victory_/i,
+  /^battle_log_/i,
+
+  // Option/config keys
+  /^option_/i,
+
+  // Skill editor/input fields, not actor Active Effect modifier keys
+  /^skill_/i,
+
+  // Item/equipment template fields, not actor modifier keys
+  /^item_/i,
+
+  // Story/profile fields
+  /^bond_/i,
+  /^emotion_/i,
+  /^relationship_/i,
+  /^camp_/i,
+  /^quirk_/i,
+  /^char_/i,
+  /^theme$/i,
+  /^origin$/i,
+  /^memory/i,
+  /^memories_/i
 ];
 
-const FOCUSED_KEY_PATTERNS = [
-  // Attack Accuracy
-  /^attack_accuracy_mod_(all|melee|ranged|magic)$/i,
+const FOCUSED_BUILTIN_GAMEPLAY_KEYS = [
+  // Accuracy
+  { key: "attack_accuracy_mod_all", category: "Attack Accuracy" },
+  { key: "attack_accuracy_mod_melee", category: "Attack Accuracy" },
+  { key: "attack_accuracy_mod_ranged", category: "Attack Accuracy" },
+  { key: "attack_accuracy_mod_magic", category: "Attack Accuracy" },
 
-  // Extra Damage
-  /^extra_damage_mod_(all|melee|ranged|spell|physical|air|bolt|dark|earth|fire|ice|light|poison|arcane|bow|brawling|dagger|firearm|flail|heavy|spear|sword|thrown)$/i,
+  // Extra Damage — general / range / spell
+  { key: "extra_damage_mod_all", category: "Extra Damage" },
+  { key: "extra_damage_mod_melee", category: "Extra Damage" },
+  { key: "extra_damage_mod_ranged", category: "Extra Damage" },
+  { key: "extra_damage_mod_spell", category: "Extra Damage" },
 
-  // Damage Reduction
-  /^damage_receiving_(mod|percentage)_(all|melee|range|ranged|physical|air|bolt|dark|earth|fire|ice|light|poison)$/i,
+  // Extra Damage — element
+  { key: "extra_damage_mod_physical", category: "Extra Damage" },
+  { key: "extra_damage_mod_air", category: "Extra Damage" },
+  { key: "extra_damage_mod_bolt", category: "Extra Damage" },
+  { key: "extra_damage_mod_dark", category: "Extra Damage" },
+  { key: "extra_damage_mod_earth", category: "Extra Damage" },
+  { key: "extra_damage_mod_fire", category: "Extra Damage" },
+  { key: "extra_damage_mod_ice", category: "Extra Damage" },
+  { key: "extra_damage_mod_light", category: "Extra Damage" },
+  { key: "extra_damage_mod_poison", category: "Extra Damage" },
 
-  // Parameters
-  /^(base|bonus|override)_(defense|magic_defense)$/i,
-  /^(bonus|override)_(dex|mig|ins|wlp)$/i,
+  // Extra Damage — weapon
+  { key: "extra_damage_mod_arcane", category: "Extra Damage" },
+  { key: "extra_damage_mod_bow", category: "Extra Damage" },
+  { key: "extra_damage_mod_brawling", category: "Extra Damage" },
+  { key: "extra_damage_mod_dagger", category: "Extra Damage" },
+  { key: "extra_damage_mod_firearm", category: "Extra Damage" },
+  { key: "extra_damage_mod_flail", category: "Extra Damage" },
+  { key: "extra_damage_mod_heavy", category: "Extra Damage" },
+  { key: "extra_damage_mod_spear", category: "Extra Damage" },
+  { key: "extra_damage_mod_sword", category: "Extra Damage" },
+  { key: "extra_damage_mod_thrown", category: "Extra Damage" },
 
-  // Extra resource/base keys
-  /^(current|max)_(hp|mp|ip)$/i,
-  /^base_(dex|mig|ins|wlp)$/i,
-  /^(dex|mig|ins|wlp)_base$/i,
+  // Damage Reduction — flat
+  { key: "damage_receiving_mod_all", category: "Damage Reduction" },
+  { key: "damage_receiving_mod_melee", category: "Damage Reduction" },
+  { key: "damage_receiving_mod_range", category: "Damage Reduction" },
+  { key: "damage_receiving_mod_ranged", category: "Damage Reduction" },
+  { key: "damage_receiving_mod_physical", category: "Damage Reduction" },
+  { key: "damage_receiving_mod_air", category: "Damage Reduction" },
+  { key: "damage_receiving_mod_bolt", category: "Damage Reduction" },
+  { key: "damage_receiving_mod_dark", category: "Damage Reduction" },
+  { key: "damage_receiving_mod_earth", category: "Damage Reduction" },
+  { key: "damage_receiving_mod_fire", category: "Damage Reduction" },
+  { key: "damage_receiving_mod_ice", category: "Damage Reduction" },
+  { key: "damage_receiving_mod_light", category: "Damage Reduction" },
+  { key: "damage_receiving_mod_poison", category: "Damage Reduction" },
 
-  // Miscellaneous
-  /^(minimum_critical_dice|override_damage_type|critical_dice_range|lifesteal_percentage|manadrain_percentage|critical_damage_bonus|lifesteal_value|manadrain_value|critical_damage_multiplier|ip_reduction_value|character_exp_multiplier|character_zenit_multiplier|enmity|activation)$/i,
-
-  // Type Affinity
-  /^affinity_\d+$/i,
+  // Damage Reduction — percentage
+  { key: "damage_receiving_percentage_all", category: "Damage Reduction" },
+  { key: "damage_receiving_percentage_melee", category: "Damage Reduction" },
+  { key: "damage_receiving_percentage_range", category: "Damage Reduction" },
+  { key: "damage_receiving_percentage_ranged", category: "Damage Reduction" },
+  { key: "damage_receiving_percentage_physical", category: "Damage Reduction" },
+  { key: "damage_receiving_percentage_air", category: "Damage Reduction" },
+  { key: "damage_receiving_percentage_bolt", category: "Damage Reduction" },
+  { key: "damage_receiving_percentage_dark", category: "Damage Reduction" },
+  { key: "damage_receiving_percentage_earth", category: "Damage Reduction" },
+  { key: "damage_receiving_percentage_fire", category: "Damage Reduction" },
+  { key: "damage_receiving_percentage_ice", category: "Damage Reduction" },
+  { key: "damage_receiving_percentage_light", category: "Damage Reduction" },
+  { key: "damage_receiving_percentage_poison", category: "Damage Reduction" },
 
   // Weapon Efficiency
-  /^(arcane|bow|brawling|dagger|firearm|flail|heavy|spear|sword|thrown)_ef$/i,
-
-  // Condition Affinity
-  /^condition_[a-z0-9_]+$/i,
-
-  // Condition Status
-  /^[a-z0-9_]+_status$/i
+  { key: "arcane_ef", category: "Weapon Efficiency" },
+  { key: "bow_ef", category: "Weapon Efficiency" },
+  { key: "brawling_ef", category: "Weapon Efficiency" },
+  { key: "dagger_ef", category: "Weapon Efficiency" },
+  { key: "firearm_ef", category: "Weapon Efficiency" },
+  { key: "flail_ef", category: "Weapon Efficiency" },
+  { key: "heavy_ef", category: "Weapon Efficiency" },
+  { key: "spear_ef", category: "Weapon Efficiency" },
+  { key: "sword_ef", category: "Weapon Efficiency" },
+  { key: "thrown_ef", category: "Weapon Efficiency" }
 ];
-
-  if (globalThis[PATCH_KEY]) {
-    console.warn(TAG, "Already installed. Skipping duplicate install.");
-    return;
-  }
-
-  globalThis[PATCH_KEY] = true;
-
-  const log = (...args) => DEBUG && console.log(TAG, ...args);
-  const warn = (...args) => console.warn(TAG, ...args);
 
   const STATE = {
     installed: false,
@@ -186,8 +279,21 @@ const FOCUSED_KEY_PATTERNS = [
     refreshCache: new Map(),
     sheetSessions: new WeakMap(),
     lastInstallCount: 0,
-    lastRefreshReport: null
+    lastRefreshReport: null,
+    lastActorUuid: null,
+    lastActor: null,
+    lastEntries: []
   };
+
+  const log = (...args) => DEBUG && console.log(TAG, ...args);
+  const warn = (...args) => console.warn(TAG, ...args);
+
+  if (globalThis[PATCH_KEY]) {
+    console.warn(TAG, "V2 already installed. Re-exposing existing API if available.");
+    if (globalThis.FUCompanion?.api?.activeEffectKeySuggestions) return;
+  }
+
+  globalThis[PATCH_KEY] = true;
 
   // --------------------------------------------------------------------------
   // Namespace / API
@@ -205,7 +311,6 @@ const FOCUSED_KEY_PATTERNS = [
     root.activeEffectKeySuggestions = api;
     root.activeEffectSmartSuggestions = api;
 
-    // Friendly bridge alias under activeEffectManager too.
     root.activeEffectManager = root.activeEffectManager || {};
     root.activeEffectManager.keySuggestions = api;
     root.activeEffectManager.smartSuggestions = api;
@@ -217,6 +322,7 @@ const FOCUSED_KEY_PATTERNS = [
         mod.api = mod.api || {};
         mod.api.activeEffectKeySuggestions = api;
         mod.api.activeEffectSmartSuggestions = api;
+
         mod.api.activeEffectManager = mod.api.activeEffectManager || {};
         mod.api.activeEffectManager.keySuggestions = api;
         mod.api.activeEffectManager.smartSuggestions = api;
@@ -297,6 +403,24 @@ const FOCUSED_KEY_PATTERNS = [
     return null;
   }
 
+  function isPartyDatabaseActor(actor) {
+  if (!actor || actor.documentName !== "Actor") return false;
+
+  const props = actor.system?.props ?? {};
+  const name = String(actor.name ?? "").toLowerCase();
+
+  return (
+    CFG.skipPartyActors &&
+    (
+      props.isParty_boolean === true ||
+      String(props.isParty_boolean ?? "").toLowerCase() === "true" ||
+      name.includes("party") ||
+      Object.prototype.hasOwnProperty.call(props, "member_id_1") ||
+      Object.prototype.hasOwnProperty.call(props, "bench_id_1")
+    )
+  );
+}
+
   async function resolveActor(actorOrUuid = null) {
     if (!actorOrUuid) return null;
 
@@ -312,33 +436,48 @@ const FOCUSED_KEY_PATTERNS = [
     }
   }
 
-  function getSelectedOrFallbackActor() {
-    const selectedToken = canvas?.tokens?.controlled?.[0] ?? null;
-    if (selectedToken?.actor) return selectedToken.actor;
+function getSelectedOrFallbackActor() {
+  const selectedToken = canvas?.tokens?.controlled?.find(t => {
+    return t?.actor && !isPartyDatabaseActor(t.actor);
+  }) ?? null;
 
-    if (game.user?.character) return game.user.character;
+  if (selectedToken?.actor) return selectedToken.actor;
 
-    return Array.from(game.actors ?? []).find(actor => {
-      try {
-        return game.user?.isGM || actor.testUserPermission?.(game.user, "OWNER");
-      } catch (_e) {
-        return false;
-      }
-    }) ?? null;
+  if (game.user?.character && !isPartyDatabaseActor(game.user.character)) {
+    return game.user.character;
   }
 
-  async function resolveSuggestionActor(appOrActor = null, options = {}) {
-    const direct = await resolveActor(options.actor ?? options.actorUuid ?? appOrActor);
-    if (direct?.documentName === "Actor") return direct;
+  return Array.from(game.actors ?? []).find(actor => {
+    try {
+      if (isPartyDatabaseActor(actor)) return false;
+      return game.user?.isGM || actor.testUserPermission?.(game.user, "OWNER");
+    } catch (_e) {
+      return false;
+    }
+  }) ?? null;
+}
 
-    const docActor = actorFromDocument(documentFromSheet(appOrActor));
-    if (docActor) return docActor;
+async function resolveSuggestionActor(appOrActor = null, options = {}) {
+  const direct = await resolveActor(options.actor ?? options.actorUuid ?? appOrActor);
 
-    const fromSheetDocument = actorFromDocument(appOrActor?.document ?? appOrActor?.object);
-    if (fromSheetDocument) return fromSheetDocument;
-
-    return getSelectedOrFallbackActor();
+  if (direct?.documentName === "Actor" && !isPartyDatabaseActor(direct)) {
+    return direct;
   }
+
+  const docActor = actorFromDocument(documentFromSheet(appOrActor));
+  if (docActor && !isPartyDatabaseActor(docActor)) return docActor;
+
+  const fromSheetDocument = actorFromDocument(appOrActor?.document ?? appOrActor?.object);
+  if (fromSheetDocument && !isPartyDatabaseActor(fromSheetDocument)) {
+    return fromSheetDocument;
+  }
+
+  if (STATE.lastActor && !isPartyDatabaseActor(STATE.lastActor)) {
+    return STATE.lastActor;
+  }
+
+  return getSelectedOrFallbackActor();
+}
 
   function getSheetRoot(app, html) {
     return normalizeHtmlRoot(html) ??
@@ -347,6 +486,28 @@ const FOCUSED_KEY_PATTERNS = [
       document.querySelector(`[data-appid="${app?.appId}"]`) ??
       document.querySelector(`#app-${app?.appId}`) ??
       null;
+  }
+
+  function normalizeKeyText(value) {
+    return String(value ?? "")
+      .replace(/([a-z])([A-Z])/g, "$1_$2")
+      .replace(/[^a-zA-Z0-9]+/g, "_")
+      .replace(/_+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .toLowerCase();
+  }
+
+  function plainText(value) {
+    let s = String(value ?? "");
+
+    s = s.replace(/<style[\s\S]*?<\/style>/gi, "");
+    s = s.replace(/<script[\s\S]*?<\/script>/gi, "");
+    s = s.replace(/<[^>]*>/g, " ");
+    s = s.replace(/\$\{[\s\S]*?\}\$/g, " ");
+    s = s.replace(/&nbsp;/gi, " ");
+    s = s.replace(/\s+/g, " ").trim();
+
+    return s;
   }
 
   // --------------------------------------------------------------------------
@@ -366,8 +527,11 @@ const FOCUSED_KEY_PATTERNS = [
         display: none;
         min-width: 260px;
         max-width: 460px;
-        max-height: 260px;
-        overflow: auto;
+        max-height: 320px;
+        overflow-y: auto;
+        overflow-x: hidden;
+        overscroll-behavior: contain;
+        scrollbar-gutter: stable;
         padding: 5px;
         border: 1px solid rgba(40, 32, 24, .34);
         border-radius: 8px;
@@ -418,6 +582,36 @@ const FOCUSED_KEY_PATTERNS = [
     return style;
   }
 
+  function isInsideDropdownEvent(ev) {
+    const dropdown = STATE.dropdown;
+    if (!dropdown) return false;
+
+    const target = ev?.target ?? null;
+
+    if (target && dropdown.contains(target)) return true;
+
+    try {
+      const path = ev.composedPath?.() ?? [];
+      return path.includes(dropdown);
+    } catch (_e) {
+      return false;
+    }
+  }
+
+  function onGlobalScroll(ev) {
+    if (isInsideDropdownEvent(ev)) return;
+    hideDropdown();
+  }
+
+  function onGlobalPointerDown(ev) {
+    const dropdown = STATE.dropdown;
+
+    if (dropdown && isInsideDropdownEvent(ev)) return;
+    if (STATE.activeField && STATE.activeField.contains?.(ev.target)) return;
+
+    hideDropdown();
+  }
+
   function hideDropdown() {
     const dropdown = STATE.dropdown;
     if (!dropdown) return;
@@ -426,6 +620,7 @@ const FOCUSED_KEY_PATTERNS = [
     dropdown.innerHTML = "";
     dropdown.__oniAeSuggestions = [];
     dropdown.__oniAeField = null;
+
     STATE.activeField = null;
     STATE.activeRows = [];
     STATE.activeIndex = 0;
@@ -449,222 +644,35 @@ const FOCUSED_KEY_PATTERNS = [
       chooseSuggestion(Number(row.dataset.suggestionIndex ?? 0) || 0);
     });
 
-    document.addEventListener("mousedown", ev => {
-      if (dropdown.contains(ev.target)) return;
-      if (STATE.activeField?.contains?.(ev.target)) return;
-      hideDropdown();
+    dropdown.addEventListener("wheel", ev => {
+      ev.stopPropagation();
+    }, { passive: true });
+
+    dropdown.addEventListener("scroll", ev => {
+      ev.stopPropagation();
+    }, { passive: true });
+
+    dropdown.addEventListener("mousedown", ev => {
+      ev.stopPropagation();
     });
 
+    dropdown.addEventListener("pointerdown", ev => {
+      ev.stopPropagation();
+    });
+
+    document.addEventListener("mousedown", onGlobalPointerDown);
+    document.addEventListener("pointerdown", onGlobalPointerDown);
+
     window.addEventListener("resize", hideDropdown);
-    window.addEventListener("scroll", hideDropdown, true);
+    window.addEventListener("scroll", onGlobalScroll, true);
 
     STATE.dropdown = dropdown;
     return dropdown;
   }
 
   // --------------------------------------------------------------------------
-  // Field catalogue / suggestion rows
+  // Suggestion entry helpers
   // --------------------------------------------------------------------------
-
-  function normalizeSuggestionEntry(entry = {}) {
-    const key = safeString(
-      SUGGESTION_VALUE_MODE === "path"
-        ? entry.propPath
-        : entry.activeEffectKey ?? entry.key
-    );
-
-    if (!key) return null;
-
-    return {
-      key,
-      rawKey: safeString(entry.key ?? entry.activeEffectKey, key),
-      label: safeString(entry.label, key),
-      category: safeString(entry.category, "Other"),
-      valueKind: safeString(entry.valueKind, "unknown"),
-      source: safeString(entry.source, ""),
-      currentValue: entry.currentValue,
-      recommendedChange: entry.recommendedChange ?? null,
-      entry
-    };
-  }
-
-  function scoreLocalSuggestion(query, entry = {}) {
-    const q = safeString(query).toLowerCase();
-    if (!q) return entry.isRecommended ? 80 : 0;
-
-    const text = [
-      entry.key,
-      entry.activeEffectKey,
-      entry.propPath,
-      entry.label,
-      entry.category,
-      entry.valueKind,
-      ...(entry.section ?? [])
-    ].join(" ").toLowerCase();
-
-    let score = 0;
-    const key = safeString(entry.key ?? entry.activeEffectKey).toLowerCase();
-    const label = safeString(entry.label).toLowerCase();
-
-    if (key === q) score += 1000;
-    if (label === q) score += 900;
-    if (key.includes(q)) score += 700;
-    if (label.includes(q)) score += 600;
-    if (text.includes(q)) score += 300;
-
-    const parts = q.split(/[\s._-]+/g).filter(Boolean);
-    for (const part of parts) {
-      if (key.includes(part)) score += 120;
-      if (label.includes(part)) score += 90;
-      if (text.includes(part)) score += 40;
-    }
-
-    if (entry.isRecommended) score += 80;
-    if (entry.isLegacyConditionKey) score -= 1000;
-    if (entry.isReadOnly) score -= 500;
-
-    return score;
-  }
-
-  async function refresh(actorOrUuid = null, options = {}) {
-    const catalogue = getFieldCatalogueApi();
-
-    if (!catalogue) {
-      const report = {
-        ok: false,
-        reason: "field_catalogue_api_not_found",
-        entries: []
-      };
-      STATE.lastRefreshReport = report;
-      return report;
-    }
-
-    const actor = await resolveSuggestionActor(actorOrUuid, options);
-    const actorUuid = actor?.uuid ?? null;
-    const cacheKey = actorUuid ?? "fallback";
-    const now = Date.now();
-
-    const cached = STATE.refreshCache.get(cacheKey);
-    const cacheMs = Number(options.cacheMs ?? CFG.cacheMs) || 0;
-
-    if (!options.force && cached && now - cached.refreshedAt < cacheMs) {
-      const report = {
-        ok: true,
-        cached: true,
-        actorUuid,
-        actorName: actor?.name ?? null,
-        count: cached.entries.length,
-        entries: cached.entries
-      };
-      STATE.lastRefreshReport = report;
-      return report;
-    }
-
-    try {
-      if (typeof catalogue.refresh === "function") {
-        await catalogue.refresh({
-          actorUuid,
-          includeLegacyConditionKeys: options.includeLegacyConditionKeys ?? CFG.includeLegacyConditionKeys,
-          includeReadOnly: options.includeReadOnly ?? CFG.includeReadOnly,
-          suggestionsOnly: options.suggestionsOnly ?? CFG.suggestionsOnly
-        });
-      }
-
-      const entries =
-        typeof catalogue.getRecommended === "function"
-          ? catalogue.getRecommended({ cloneResult: false })
-          : typeof catalogue.getAll === "function"
-            ? catalogue.getAll({ cloneResult: false })
-            : [];
-
-      const rawEntries = Array.isArray(entries) ? entries : [];
-
-      const focusedEntries = applyFocusedSuggestionProfile(rawEntries, {
-        actor,
-        actorUuid,
-        query: ""
-      });
-
-      STATE.refreshCache.set(cacheKey, {
-        actorUuid,
-        actorName: actor?.name ?? null,
-        refreshedAt: now,
-        entries: focusedEntries
-      });
-
-      const report = {
-        ok: true,
-        cached: false,
-        actorUuid,
-        actorName: actor?.name ?? null,
-        count: focusedEntries.length,
-        rawCountBeforeFocusFilter: rawEntries.length,
-        entries: focusedEntries
-      };
-
-      STATE.lastRefreshReport = report;
-      return report;
-    } catch (e) {
-      const report = {
-        ok: false,
-        reason: "field_catalogue_refresh_failed",
-        error: compactError(e),
-        actorUuid,
-        actorName: actor?.name ?? null,
-        entries: cached?.entries ?? []
-      };
-
-      STATE.lastRefreshReport = report;
-      warn("Field catalogue refresh failed.", report);
-      return report;
-    }
-  }
-
-  function getSessionEntries(options = {}) {
-    const session = options.session ?? null;
-    if (Array.isArray(session?.fieldEntries)) return session.fieldEntries;
-
-    const actorUuid = options.actor?.uuid ?? options.actorUuid ?? null;
-    if (actorUuid && STATE.refreshCache.has(actorUuid)) {
-      return STATE.refreshCache.get(actorUuid).entries ?? [];
-    }
-
-    const fallback = STATE.refreshCache.get("fallback");
-    if (fallback) return fallback.entries ?? [];
-
-    // Last resort: use whatever the catalogue currently has.
-    const catalogue = getFieldCatalogueApi();
-
-    try {
-      const rows =
-        typeof catalogue?.getRecommended === "function"
-          ? catalogue.getRecommended({ cloneResult: false })
-          : typeof catalogue?.getAll === "function"
-            ? catalogue.getAll({ cloneResult: false })
-            : [];
-
-      return applyFocusedSuggestionProfile(Array.isArray(rows) ? rows : [], options);
-    } catch (_e) {
-      return [];
-    }
-  }
-
-    // --------------------------------------------------------------------------
-  // Focused actor modifier suggestion profile
-  // --------------------------------------------------------------------------
-
-  function plainText(value) {
-    let s = String(value ?? "");
-
-    s = s.replace(/<style[\s\S]*?<\/style>/gi, "");
-    s = s.replace(/<script[\s\S]*?<\/script>/gi, "");
-    s = s.replace(/<[^>]*>/g, " ");
-    s = s.replace(/\$\{[\s\S]*?\}\$/g, " ");
-    s = s.replace(/&nbsp;/gi, " ");
-    s = s.replace(/\s+/g, " ").trim();
-
-    return s;
-  }
 
   function getEntryKey(entry = {}) {
     const key = safeString(
@@ -699,56 +707,331 @@ const FOCUSED_KEY_PATTERNS = [
       .filter(Boolean);
   }
 
-  function hasFocusedStatusSection(entry = {}) {
-    const sections = getEntrySections(entry)
-      .map(s => s.toLowerCase());
+  function normalizeSuggestionEntry(entry = {}) {
+    const key = safeString(
+      SUGGESTION_VALUE_MODE === "path"
+        ? entry.propPath
+        : entry.activeEffectKey ?? entry.key
+    );
 
-    return FOCUSED_STATUS_SECTION_NAMES.some(sectionName => {
-      const wanted = sectionName.toLowerCase();
-      return sections.some(s => s === wanted || s.includes(wanted));
+    if (!key) return null;
+
+    return {
+      key,
+      rawKey: safeString(entry.key ?? entry.activeEffectKey, key),
+      label: safeString(entry.label, key),
+      category: safeString(entry.category, "Actor Key"),
+      valueKind: safeString(entry.valueKind, "unknown"),
+      source: safeString(entry.source, ""),
+      currentValue: entry.currentValue,
+      recommendedChange: entry.recommendedChange ?? null,
+      entry
+    };
+  }
+
+function isBlockedFocusedKey(key, entry = {}) {
+  const clean = safeString(key);
+  const normalized = normalizeKeyText(clean);
+
+  if (!clean) return true;
+  if (FOCUSED_BLOCKED_KEYS.has(clean)) return true;
+
+  // Avoid tiny option IDs.
+  if (/^[A-Z]{1,3}$/.test(clean)) return true;
+
+  // Avoid obvious containers.
+  if (/_panel$/i.test(clean)) return true;
+  if (/_tab$/i.test(clean)) return true;
+  if (/active_effect_list/i.test(clean)) return true;
+
+  // Avoid party/database/story/item/template keys.
+  if (FOCUSED_BLOCKED_KEY_PATTERNS.some(re => re.test(clean) || re.test(normalized))) {
+    return true;
+  }
+
+  const type = safeString(entry.type ?? entry.fieldType).toLowerCase();
+
+  if (["tab", "panel", "activeeffectcontainer", "dynamictable"].includes(type)) {
+    return true;
+  }
+
+  return false;
+}
+
+  function getKeywordGroupForQuery(query = "") {
+    const q = normalizeKeyText(query);
+    if (!q) return null;
+
+    return FOCUSED_KEYWORD_GROUPS.find(group => {
+      return group.terms.some(term => {
+        const t = normalizeKeyText(term);
+        return q === t || q.includes(t) || t.includes(q);
+      });
+    }) ?? null;
+  }
+
+  function keyMatchesKeywordGroup(key, group) {
+    if (!group) return false;
+
+    const k = normalizeKeyText(key);
+
+    if (group.id === "dex") return /(^|_)dex($|_)/i.test(k);
+    if (group.id === "wlp") return /(^|_)wlp($|_)/i.test(k);
+    if (group.id === "ins") return /(^|_)ins($|_)/i.test(k);
+    if (group.id === "mig") return /(^|_)mig($|_)/i.test(k);
+
+    if (group.id === "defense") {
+      return (
+        /(^|_)def($|_)/i.test(k) ||
+        /(^|_)defense($|_)/i.test(k) ||
+        k.includes("defense")
+      );
+    }
+
+    if (group.id === "magic_defense") {
+      return (
+        k.includes("magic_defense") ||
+        k.includes("magicdefense") ||
+        k.includes("mdef")
+      );
+    }
+
+    if (group.id === "range") {
+      return k.includes("range") || k.includes("ranged");
+    }
+
+    if (group.id === "bow") {
+      return k.includes("bow");
+    }
+
+    return group.terms.some(term => {
+      const t = normalizeKeyText(term);
+      return k.includes(t);
     });
   }
 
-  function isBlockedFocusedKey(key, entry = {}) {
-    const clean = safeString(key);
+function isAllowedGameplayKeyFamily(key) {
+  const k = normalizeKeyText(key);
 
-    if (!clean) return true;
-    if (FOCUSED_BLOCKED_KEYS.has(clean)) return true;
+  if (!k) return false;
 
-    // Avoid option rows like NA / RS / IM, or tiny raw option IDs.
-    if (/^[A-Z]{1,3}$/.test(clean)) return true;
+  // Exact resource keys only.
+  // This prevents skill_hp, member_currenthp_1, bench_maxhp_1, etc.
+  if (/^(current|max)_(hp|mp|ip)$/.test(k)) return true;
 
-    // Avoid panel/tab/container keys.
-    if (/_panel$/i.test(clean)) return true;
-    if (/_tab$/i.test(clean)) return true;
-    if (/active_effect_list/i.test(clean)) return true;
+  // Attribute dice.
+  if (/^(dex|ins|mig|wlp)_(base|current)$/.test(k)) return true;
+  if (/^base_(dex|ins|mig|wlp)$/.test(k)) return true;
+  if (/^(bonus|override)_(dex|ins|mig|wlp)$/.test(k)) return true;
 
-    const type = safeString(entry.type ?? entry.fieldType).toLowerCase();
+  // Defense.
+  if (/^(defense|magic_defense)$/.test(k)) return true;
+  if (/^(bonus|override)_(defense|magic_defense)$/.test(k)) return true;
 
-    if (["tab", "panel", "activeeffectcontainer", "dynamictable"].includes(type)) {
-      return true;
-    }
+  // Accuracy.
+  if (/^attack_accuracy_mod_(all|melee|ranged|magic)$/.test(k)) return true;
 
-    return false;
+  // Extra damage.
+  if (
+    /^extra_damage_mod_(all|melee|ranged|spell|physical|air|bolt|dark|earth|fire|ice|light|poison|arcane|bow|brawling|dagger|firearm|flail|heavy|spear|sword|thrown)$/.test(k)
+  ) {
+    return true;
   }
 
-  function matchesFocusedKeyPattern(key) {
-    return FOCUSED_KEY_PATTERNS.some(re => re.test(String(key ?? "")));
+  // Damage reduction.
+  if (
+    /^damage_receiving_(mod|percentage)_(all|melee|range|ranged|physical|air|bolt|dark|earth|fire|ice|light|poison)$/.test(k)
+  ) {
+    return true;
   }
 
-  function isFocusedSuggestionEntry(entry = {}) {
-    if (!CFG.focusedActorModifierSuggestions) return true;
+  // Weapon efficiency.
+  if (/^(arcane|bow|brawling|dagger|firearm|flail|heavy|spear|sword|thrown)_ef$/.test(k)) {
+    return true;
+  }
 
+  return false;
+}
+
+function keyMatchesAnyAllowedKeyword(key) {
+  return isAllowedGameplayKeyFamily(key);
+}
+
+function isAllowedGameplayKeyFamily(key) {
+  const k = normalizeKeyText(key);
+
+  if (!k) return false;
+
+  // Exact resource keys only.
+  // This prevents skill_hp, member_currenthp_1, bench_maxhp_1, etc.
+  if (/^(current|max)_(hp|mp|ip)$/.test(k)) return true;
+
+  // Attribute dice.
+  if (/^(dex|ins|mig|wlp)_(base|current)$/.test(k)) return true;
+  if (/^base_(dex|ins|mig|wlp)$/.test(k)) return true;
+  if (/^(bonus|override)_(dex|ins|mig|wlp)$/.test(k)) return true;
+
+  // Defense.
+  if (/^(defense|magic_defense)$/.test(k)) return true;
+  if (/^(bonus|override)_(defense|magic_defense)$/.test(k)) return true;
+
+  // Accuracy.
+  if (/^attack_accuracy_mod_(all|melee|ranged|magic)$/.test(k)) return true;
+
+  // Extra damage.
+  if (
+    /^extra_damage_mod_(all|melee|ranged|spell|physical|air|bolt|dark|earth|fire|ice|light|poison|arcane|bow|brawling|dagger|firearm|flail|heavy|spear|sword|thrown)$/.test(k)
+  ) {
+    return true;
+  }
+
+  // Damage reduction.
+  if (
+    /^damage_receiving_(mod|percentage)_(all|melee|range|ranged|physical|air|bolt|dark|earth|fire|ice|light|poison)$/.test(k)
+  ) {
+    return true;
+  }
+
+  // Weapon efficiency.
+  if (/^(arcane|bow|brawling|dagger|firearm|flail|heavy|spear|sword|thrown)_ef$/.test(k)) {
+    return true;
+  }
+
+  return false;
+}
+
+function keyMatchesAnyAllowedKeyword(key) {
+  return isAllowedGameplayKeyFamily(key);
+}
+
+function entryMatchesAllowedKeyword(entry = {}) {
+  const key = getEntryKey(entry);
+  if (isBlockedFocusedKey(key, entry)) return false;
+
+  return isAllowedGameplayKeyFamily(key);
+}
+
+  function entryMatchesAllowedKeyword(entry = {}) {
     const key = getEntryKey(entry);
     if (isBlockedFocusedKey(key, entry)) return false;
 
-    // Strongest filter: exact mechanical key pattern.
-    if (matchesFocusedKeyPattern(key)) return true;
+    return keyMatchesAnyAllowedKeyword(key);
+  }
 
-    // Backup filter: field catalogue says this came from a wanted Status tab section.
-    if (hasFocusedStatusSection(entry)) return true;
+  function focusedEntryMatchesQuery(entry = {}, query = "") {
+    const q = safeString(query);
+    if (!q) return true;
 
-    return false;
+    const key = getEntryKey(entry);
+    const normalizedKey = normalizeKeyText(key);
+    const normalizedQuery = normalizeKeyText(q);
+
+    if (!normalizedQuery) return true;
+
+    if (normalizedKey.includes(normalizedQuery)) return true;
+
+    const group = getKeywordGroupForQuery(q);
+    if (group && keyMatchesKeywordGroup(key, group)) return true;
+
+    const text = normalizeKeyText([
+      key,
+      entry.label,
+      entry.category,
+      entry.valueKind,
+      getEntrySections(entry).join(" ")
+    ].join(" "));
+
+    return text.includes(normalizedQuery);
+  }
+
+  function inferFocusedCategoryFromKey(key) {
+    const k = normalizeKeyText(key);
+
+    if (/^(current|max)_(hp|mp|ip)$/.test(k)) return "Resource";
+    if (/(^|_)(dex|mig|ins|wlp)($|_)/.test(k)) return "Parameter";
+    if (k.includes("magic_defense")) return "Parameter";
+    if (k.includes("defense") || k === "def") return "Parameter";
+
+    if (
+      k.includes("fire") ||
+      k.includes("air") ||
+      k.includes("physical") ||
+      k.includes("ice") ||
+      k.includes("dark") ||
+      k.includes("light") ||
+      k.includes("bolt") ||
+      k.includes("earth") ||
+      k.includes("poison")
+    ) {
+      return "Type Affinity / Damage";
+    }
+
+    if (
+      k.includes("sword") ||
+      k.includes("arcane") ||
+      k.includes("firearm") ||
+      k.includes("bow") ||
+      k.includes("flail") ||
+      k.includes("thrown") ||
+      k.includes("brawling") ||
+      k.includes("heavy") ||
+      k.includes("dagger") ||
+      k.includes("spear")
+    ) {
+      return "Weapon Efficiency";
+    }
+
+    if (k.includes("melee") || k.includes("range") || k.includes("ranged")) return "Range Type";
+    if (k.includes("spell") || k.includes("magic")) return "Magic / Spell";
+
+    return "Actor Key";
+  }
+
+  function inferValueKindFromValue(value) {
+    if (typeof value === "boolean") return "boolean";
+    if (typeof value === "number") return "number";
+
+    const n = Number(value);
+    if (value !== "" && value != null && Number.isFinite(n)) return "number";
+
+    return "text";
+  }
+
+  function makeActorPropEntry(key, value, actor = null) {
+    const cleanKey = safeString(key);
+    if (!cleanKey) return null;
+
+    return {
+      key: cleanKey,
+      activeEffectKey: cleanKey,
+      propPath: `system.props.${cleanKey}`,
+      label: cleanKey
+        .replace(/_/g, " ")
+        .replace(/\b\w/g, m => m.toUpperCase()),
+      category: inferFocusedCategoryFromKey(cleanKey),
+      section: [inferFocusedCategoryFromKey(cleanKey)],
+      valueKind: inferValueKindFromValue(value),
+      currentValue: value,
+      recommendedChange: {
+        key: cleanKey,
+        mode: CONST?.ACTIVE_EFFECT_MODES?.ADD ?? 2,
+        value: "1",
+        priority: 20
+      },
+      isRecommended: true,
+      isActorPropKey: true,
+      source: actor?.name ? `Actor Data: ${actor.name}` : "Actor Data"
+    };
+  }
+
+  function buildActorPropEntries(actor = null) {
+    const props = actor?.system?.props ?? {};
+    if (!props || typeof props !== "object") return [];
+
+    return Object.entries(props)
+      .map(([key, value]) => makeActorPropEntry(key, value, actor))
+      .filter(Boolean)
+      .filter(entry => entryMatchesAllowedKeyword(entry));
   }
 
   function makeFocusedManualEntry(row = {}, actor = null) {
@@ -757,15 +1040,6 @@ const FOCUSED_KEY_PATTERNS = [
 
     const props = actor?.system?.props ?? {};
     const hasProp = Object.prototype.hasOwnProperty.call(props, key);
-
-    // Base aliases are special because some actors use dex_base,
-    // while your preferred wording may be base_dex.
-    const isBaseAlias = /^(base_(dex|mig|ins|wlp)|(dex|mig|ins|wlp)_base)$/i.test(key);
-
-    // If this is a base alias, only include it when:
-    // - the actor actually owns the key, OR
-    // - the row explicitly says alwaysShow.
-    if (isBaseAlias && !hasProp && row.alwaysShow !== true) return null;
 
     return {
       key,
@@ -793,8 +1067,21 @@ const FOCUSED_KEY_PATTERNS = [
 
     return FOCUSED_EXTRA_KEYS
       .map(row => makeFocusedManualEntry(row, actor))
-      .filter(Boolean);
+      .filter(Boolean)
+      .filter(entry => entryMatchesAllowedKeyword(entry));
   }
+
+  function buildFocusedBuiltinEntries(actor = null) {
+  return FOCUSED_BUILTIN_GAMEPLAY_KEYS
+    .map(row => makeFocusedManualEntry({
+      key: row.key,
+      label: row.label ?? row.key.replace(/_/g, " ").replace(/\b\w/g, m => m.toUpperCase()),
+      category: row.category ?? inferFocusedCategoryFromKey(row.key),
+      valueKind: row.valueKind ?? "number"
+    }, actor))
+    .filter(Boolean)
+    .filter(entry => entryMatchesAllowedKeyword(entry));
+}
 
   function dedupeFocusedEntries(entries = []) {
     const byKey = new Map();
@@ -810,12 +1097,13 @@ const FOCUSED_KEY_PATTERNS = [
         continue;
       }
 
-      // Prefer manual focused entries, then recommended entries.
       const existingScore =
+        (existing.isActorPropKey ? 200 : 0) +
         (existing.isFocusedManual ? 100 : 0) +
         (existing.isRecommended ? 20 : 0);
 
       const nextScore =
+        (entry.isActorPropKey ? 200 : 0) +
         (entry.isFocusedManual ? 100 : 0) +
         (entry.isRecommended ? 20 : 0);
 
@@ -829,101 +1117,217 @@ const FOCUSED_KEY_PATTERNS = [
 
   function focusedRank(entry = {}, query = "") {
     const key = getEntryKey(entry);
-    const q = safeString(query).toLowerCase();
+    const q = safeString(query);
+    const normalizedKey = normalizeKeyText(key);
+    const normalizedQuery = normalizeKeyText(q);
 
     let rank = 0;
 
-    if (entry.isFocusedManual) rank += 10000;
-    if (hasFocusedStatusSection(entry)) rank += 5000;
+    if (entry.isActorPropKey) rank += 10000;
+    if (entry.isFocusedManual) rank += 9000;
+    if (entry.isRecommended) rank += 500;
 
-    if (/^(current|max)_(hp|mp|ip)$/i.test(key)) rank += 4500;
-    if (/^(base_(dex|mig|ins|wlp)|(dex|mig|ins|wlp)_base)$/i.test(key)) rank += 4300;
-    if (/^bonus_(dex|mig|ins|wlp)$/i.test(key)) rank += 4700;
-    if (/^override_(dex|mig|ins|wlp)$/i.test(key)) rank += 4600;
-    if (/^(bonus|override)_(defense|magic_defense)$/i.test(key)) rank += 4450;
-    if (/^(defense|magic_defense)$/i.test(key)) rank += 4350;
-    if (/^base_(dex|mig|ins|wlp)$/i.test(key) || /^(dex|mig|ins|wlp)_base$/i.test(key)) rank += 4300;
+    // Query relevance wins.
+    if (normalizedQuery) {
+      const group = getKeywordGroupForQuery(q);
 
-    if (/^attack_accuracy_mod_/i.test(key)) rank += 3500;
-    if (/^extra_damage_mod_/i.test(key)) rank += 3400;
-    if (/^damage_receiving_/i.test(key)) rank += 3300;
-    if (/^affinity_\d+$/i.test(key)) rank += 2500;
-    if (/_ef$/i.test(key)) rank += 2400;
-    if (/^condition_/i.test(key) || /_status$/i.test(key)) rank += 2300;
+      if (normalizedKey === normalizedQuery) rank += 100000;
+      else if (normalizedKey.startsWith(normalizedQuery)) rank += 80000;
+      else if (normalizedKey.includes(normalizedQuery)) rank += 60000;
 
-    if (q) {
-      const text = [
-        key,
-        entry.label,
-        entry.category,
-        getEntrySections(entry).join(" ")
-      ].join(" ").toLowerCase();
-
-      if (key.toLowerCase() === q) rank += 3000;
-      else if (key.toLowerCase().startsWith(q)) rank += 2000;
-      else if (key.toLowerCase().includes(q)) rank += 1200;
-      else if (text.includes(q)) rank += 400;
+      if (group && keyMatchesKeywordGroup(key, group)) rank += 50000;
     }
 
-    if (entry.isRecommended) rank += 100;
+    // Common Active Effect modifiers float higher inside their keyword group.
+    if (/^bonus_/.test(normalizedKey)) rank += 8000;
+    if (/^override_/.test(normalizedKey)) rank += 7500;
+    if (/^base_/.test(normalizedKey) || /_base$/.test(normalizedKey)) rank += 7000;
+    if (/^current_/.test(normalizedKey)) rank += 6500;
+    if (/^max_/.test(normalizedKey)) rank += 6200;
+
+    if (normalizedKey.includes("magic_defense")) rank += 5800;
+    if (normalizedKey.includes("defense")) rank += 5500;
+    if (normalizedKey.endsWith("_ef")) rank += 5000;
+    if (normalizedKey.includes("affinity")) rank += 4800;
+    if (normalizedKey.includes("damage")) rank += 4600;
+    if (normalizedKey.includes("accuracy")) rank += 4400;
 
     return rank;
   }
 
-    function focusedEntryMatchesQuery(entry = {}, query = "") {
-    const q = safeString(query).toLowerCase();
-    if (!q) return true;
-
-    const key = getEntryKey(entry).toLowerCase();
-
-    const text = [
-      key,
-      entry.label,
-      entry.category,
-      entry.valueKind,
-      getEntrySections(entry).join(" ")
-    ]
-      .join(" ")
-      .toLowerCase();
-
-    // Strong match: normal typing behavior.
-    if (key.includes(q)) return true;
-    if (text.includes(q)) return true;
-
-    // Small convenience aliases.
-    if (q === "bonus" && /^bonus_/i.test(key)) return true;
-    if (q === "override" && /^override_/i.test(key)) return true;
-    if (q === "base" && (/^base_/i.test(key) || /_base$/i.test(key))) return true;
-    if (q === "current" && /^current_/i.test(key)) return true;
-    if (q === "max" && /^max_/i.test(key)) return true;
-    if (q === "resource" && /^(current|max)_(hp|mp|ip)$/i.test(key)) return true;
-    if (q === "def" && /(defense|magic_defense)/i.test(key)) return true;
-    if (q === "mdef" && /magic_defense/i.test(key)) return true;
-
-    return false;
+function applyFocusedSuggestionProfile(entries = [], options = {}) {
+  if (!CFG.focusedActorModifierSuggestions) {
+    return dedupeFocusedEntries(entries);
   }
 
-  function applyFocusedSuggestionProfile(entries = [], options = {}) {
-    if (!CFG.focusedActorModifierSuggestions) {
-      return dedupeFocusedEntries(entries);
+  const q = safeString(options.query);
+  const actor = options.actor ?? STATE.lastActor ?? null;
+
+  const catalogueEntries = CFG.useFieldCatalogueRowsInDropdown
+    ? asArray(entries).filter(entry => entryMatchesAllowedKeyword(entry))
+    : [];
+
+  const combined = [
+    ...buildActorPropEntries(actor),
+    ...buildFocusedBuiltinEntries(actor),
+    ...buildFocusedManualEntries(actor),
+    ...catalogueEntries
+  ];
+
+  return dedupeFocusedEntries(combined)
+    .filter(entry => focusedEntryMatchesQuery(entry, q))
+    .sort((a, b) => focusedRank(b, q) - focusedRank(a, q));
+}
+
+  // --------------------------------------------------------------------------
+  // Field catalogue / refresh / public suggestion query
+  // --------------------------------------------------------------------------
+
+  async function refresh(actorOrUuid = null, options = {}) {
+    const catalogue = getFieldCatalogueApi();
+
+    const actor = await resolveSuggestionActor(actorOrUuid, options);
+    const actorUuid = actor?.uuid ?? null;
+    const cacheKey = actorUuid ?? "fallback";
+    const now = Date.now();
+
+    const cached = STATE.refreshCache.get(cacheKey);
+    const cacheMs = Number(options.cacheMs ?? CFG.cacheMs) || 0;
+
+    if (!options.force && cached && now - cached.refreshedAt < cacheMs) {
+      const report = {
+        ok: true,
+        cached: true,
+        actorUuid,
+        actorName: actor?.name ?? null,
+        count: cached.entries.length,
+        entries: cached.entries
+      };
+
+      STATE.lastRefreshReport = report;
+      STATE.lastActorUuid = actorUuid;
+      STATE.lastActor = actor;
+      STATE.lastEntries = cached.entries;
+
+      return report;
     }
 
-    const q = safeString(options.query);
+    let rawEntries = [];
 
-    const manualEntries = buildFocusedManualEntries(options.actor ?? null);
+    try {
+      if (catalogue && typeof catalogue.refresh === "function") {
+        await catalogue.refresh({
+          actorUuid,
+          includeLegacyConditionKeys: options.includeLegacyConditionKeys ?? CFG.includeLegacyConditionKeys,
+          includeReadOnly: options.includeReadOnly ?? CFG.includeReadOnly,
+          suggestionsOnly: options.suggestionsOnly ?? CFG.suggestionsOnly
+        });
+      }
 
-    const focused = [
-      ...asArray(entries),
-      ...manualEntries
-    ]
-      .filter(entry => !CFG.showOnlyFocusedSuggestions || isFocusedSuggestionEntry(entry))
-      // IMPORTANT:
-      // Once the user types, only keep rows that actually match what they typed.
-      // This fixes "bonus" still showing current_hp / max_hp / weapon efficiency.
-      .filter(entry => focusedEntryMatchesQuery(entry, q));
+      if (catalogue) {
+        const entries =
+          typeof catalogue.getRecommended === "function"
+            ? catalogue.getRecommended({ cloneResult: false })
+            : typeof catalogue.getAll === "function"
+              ? catalogue.getAll({ cloneResult: false })
+              : [];
 
-    return dedupeFocusedEntries(focused)
-      .sort((a, b) => focusedRank(b, q) - focusedRank(a, q));
+        rawEntries = Array.isArray(entries) ? entries : [];
+      }
+
+      const focusedEntries = applyFocusedSuggestionProfile(rawEntries, {
+        actor,
+        actorUuid,
+        query: ""
+      });
+
+      STATE.refreshCache.set(cacheKey, {
+        actorUuid,
+        actorName: actor?.name ?? null,
+        refreshedAt: now,
+        entries: focusedEntries
+      });
+
+      STATE.lastActorUuid = actorUuid;
+      STATE.lastActor = actor;
+      STATE.lastEntries = focusedEntries;
+
+      const report = {
+        ok: true,
+        cached: false,
+        actorUuid,
+        actorName: actor?.name ?? null,
+        count: focusedEntries.length,
+        rawCountBeforeFocusFilter: rawEntries.length,
+        fieldCatalogueLoaded: !!catalogue,
+        entries: focusedEntries
+      };
+
+      STATE.lastRefreshReport = report;
+      return report;
+    } catch (e) {
+      const fallbackEntries = applyFocusedSuggestionProfile([], {
+        actor,
+        actorUuid,
+        query: ""
+      });
+
+      const report = {
+        ok: false,
+        reason: "field_catalogue_refresh_failed",
+        error: compactError(e),
+        actorUuid,
+        actorName: actor?.name ?? null,
+        entries: cached?.entries ?? fallbackEntries
+      };
+
+      STATE.lastRefreshReport = report;
+      STATE.lastActorUuid = actorUuid;
+      STATE.lastActor = actor;
+      STATE.lastEntries = report.entries;
+
+      warn("Field catalogue refresh failed. Actor prop suggestions may still work.", report);
+      return report;
+    }
+  }
+
+  function getSessionEntries(options = {}) {
+    const session = options.session ?? null;
+
+    if (Array.isArray(session?.fieldEntries) && session.fieldEntries.length) {
+      return session.fieldEntries;
+    }
+
+    const actorUuid =
+      options.actor?.uuid ??
+      options.actorUuid ??
+      session?.actor?.uuid ??
+      STATE.lastActorUuid ??
+      null;
+
+    if (actorUuid && STATE.refreshCache.has(actorUuid)) {
+      return STATE.refreshCache.get(actorUuid).entries ?? [];
+    }
+
+    if (STATE.lastEntries?.length) return STATE.lastEntries;
+
+    const fallback = STATE.refreshCache.get("fallback");
+    if (fallback) return fallback.entries ?? [];
+
+    const catalogue = getFieldCatalogueApi();
+
+    try {
+      const rows =
+        typeof catalogue?.getRecommended === "function"
+          ? catalogue.getRecommended({ cloneResult: false })
+          : typeof catalogue?.getAll === "function"
+            ? catalogue.getAll({ cloneResult: false })
+            : [];
+
+      return applyFocusedSuggestionProfile(Array.isArray(rows) ? rows : [], options);
+    } catch (_e) {
+      return [];
+    }
   }
 
   function getSuggestions(query = "", options = {}) {
@@ -931,29 +1335,33 @@ const FOCUSED_KEY_PATTERNS = [
     const q = safeString(query);
     const limit = Number(options.limit ?? CFG.limit) || CFG.limit;
 
+    const actor =
+      options.actor ??
+      options.session?.actor ??
+      STATE.lastActor ??
+      null;
+
     const rawRows = [];
 
-    // First ask the field catalogue.
-    try {
-      if (typeof catalogue?.getSuggestions === "function") {
+try {
+  if (CFG.useFieldCatalogueRowsInDropdown && typeof catalogue?.getSuggestions === "function") {
         const rows = catalogue.getSuggestions(q, {
           limit: Math.max(limit * 4, 40),
           cloneResult: false
         });
 
-        if (Array.isArray(rows)) {
-          rawRows.push(...rows);
-        }
+        if (Array.isArray(rows)) rawRows.push(...rows);
       }
     } catch (_e) {}
 
-    // Then add cached/session rows so focused keys are still available even
-    // when the catalogue's broad search would otherwise rank junk above them.
-    rawRows.push(...getSessionEntries(options));
+    rawRows.push(...getSessionEntries({
+      ...options,
+      actor
+    }));
 
     const focusedRows = applyFocusedSuggestionProfile(rawRows, {
-      actor: options.actor ?? options.session?.actor ?? null,
-      actorUuid: options.actorUuid ?? options.session?.actor?.uuid ?? null,
+      actor,
+      actorUuid: options.actorUuid ?? actor?.uuid ?? STATE.lastActorUuid ?? null,
       query: q
     });
 
@@ -969,7 +1377,10 @@ const FOCUSED_KEY_PATTERNS = [
   // --------------------------------------------------------------------------
 
   function rowLooksLikeChangeRow(input, root) {
-    const row = input.closest?.("tr, .form-group, .form-fields, .effect-change, .changes-list, li, fieldset") ?? null;
+    const row =
+      input.closest?.("tr, .form-group, .form-fields, .effect-change, .changes-list, li, fieldset") ??
+      null;
+
     if (!row) return false;
 
     const names = Array.from(row.querySelectorAll?.("input, textarea, select") ?? [])
@@ -998,15 +1409,12 @@ const FOCUSED_KEY_PATTERNS = [
     const title = String(input.getAttribute("title") ?? "");
     const text = [name, placeholder, aria, title].join(" ").toLowerCase();
 
-    // Native Foundry/CSB rows usually look like changes.0.key or changes[0][key].
     const explicitChangeKey =
       /(^|\.|\[)changes(\.|\[|\])/i.test(name) &&
       /(\.|\[)key(\]|$|\.)/i.test(name);
 
     if (explicitChangeKey) return true;
 
-    // Some custom ActiveEffect sheets use a simpler field name, but only trust it
-    // if the surrounding row also contains value/mode/priority controls.
     const simpleKey =
       /^key$/i.test(name) ||
       /\.key$/i.test(name) ||
@@ -1117,8 +1525,7 @@ const FOCUSED_KEY_PATTERNS = [
   }
 
   function bindField(field, session) {
-    // Use the same dataset key as the old AEM native builder so both systems
-    // cannot bind the same input twice.
+    // Same marker as the old native builder so two systems do not bind one input twice.
     if (!field || field.dataset.oniAemNativeSuggestBound) return false;
 
     field.dataset.oniAemNativeSuggestBound = "1";
@@ -1275,7 +1682,7 @@ const FOCUSED_KEY_PATTERNS = [
       });
     }
 
-    log("Installed global key suggestions into ActiveEffect sheet.", {
+    log("Installed key suggestions into ActiveEffect sheet.", {
       sheet: app?.constructor?.name,
       actor: session.actor?.name,
       fields: secondBind.fields,
@@ -1302,8 +1709,6 @@ const FOCUSED_KEY_PATTERNS = [
           warn(`Could not install key suggestions from ${hookName}.`, e);
         });
 
-        // Some custom sheets render late/dynamically. These delayed passes make
-        // the feature reliable after users add new change rows.
         setTimeout(() => {
           installIntoSheet(app, html, { data }).catch(() => {});
         }, 80);
@@ -1318,7 +1723,7 @@ const FOCUSED_KEY_PATTERNS = [
 
     STATE.installed = true;
 
-    log("Installed global ActiveEffect key suggestion hooks.", CFG.hookNames);
+    log("Installed ActiveEffect key suggestion hooks.", CFG.hookNames);
   }
 
   function uninstallHooks() {
@@ -1334,11 +1739,15 @@ const FOCUSED_KEY_PATTERNS = [
   function status() {
     return {
       ok: true,
+      version: api.version,
       enabled: CFG.enabled,
       installed: STATE.installed,
       hooks: STATE.hookIds.map(row => row.hookName),
       dropdownConnected: !!STATE.dropdown?.isConnected,
       lastInstallCount: STATE.lastInstallCount,
+      lastActorUuid: STATE.lastActorUuid,
+      lastActorName: STATE.lastActor?.name ?? null,
+      lastEntriesCount: STATE.lastEntries?.length ?? 0,
       lastRefreshReport: STATE.lastRefreshReport
         ? {
             ok: STATE.lastRefreshReport.ok,
@@ -1347,7 +1756,8 @@ const FOCUSED_KEY_PATTERNS = [
             actorUuid: STATE.lastRefreshReport.actorUuid ?? null,
             actorName: STATE.lastRefreshReport.actorName ?? null,
             count: STATE.lastRefreshReport.count ?? STATE.lastRefreshReport.entries?.length ?? 0,
-            error: STATE.lastRefreshReport.error ?? null
+            error: STATE.lastRefreshReport.error ?? null,
+            fieldCatalogueLoaded: STATE.lastRefreshReport.fieldCatalogueLoaded ?? !!getFieldCatalogueApi()
           }
         : null,
       fieldCatalogueLoaded: !!getFieldCatalogueApi()
@@ -1361,7 +1771,7 @@ const FOCUSED_KEY_PATTERNS = [
   }
 
   const api = {
-    version: "1.0.0",
+    version: "2.0.0",
     status,
     setEnabled,
     installHooks,
@@ -1374,9 +1784,15 @@ const FOCUSED_KEY_PATTERNS = [
     _internal: {
       CFG,
       STATE,
+      FOCUSED_KEYWORD_GROUPS,
+      FOCUSED_EXTRA_KEYS,
       getFieldCatalogueApi,
       normalizeSuggestionEntry,
-      scoreLocalSuggestion,
+      getEntryKey,
+      normalizeKeyText,
+      entryMatchesAllowedKeyword,
+      focusedEntryMatchesQuery,
+      applyFocusedSuggestionProfile,
       isActiveEffectChangeKeyInput,
       bindFields
     }
