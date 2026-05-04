@@ -89,6 +89,26 @@ const FOCUSED_BLOCKED_KEYS = new Set([
 ]);
 
 const FOCUSED_EXTRA_KEYS = [
+
+    // Core actor modifier keys
+  { key: "bonus_dex", label: "Bonus DEX", category: "Parameter", valueKind: "number", alwaysShow: true },
+  { key: "bonus_mig", label: "Bonus MIG", category: "Parameter", valueKind: "number", alwaysShow: true },
+  { key: "bonus_ins", label: "Bonus INS", category: "Parameter", valueKind: "number", alwaysShow: true },
+  { key: "bonus_wlp", label: "Bonus WLP", category: "Parameter", valueKind: "number", alwaysShow: true },
+
+  { key: "override_dex", label: "Override DEX", category: "Parameter", valueKind: "number", alwaysShow: true },
+  { key: "override_mig", label: "Override MIG", category: "Parameter", valueKind: "number", alwaysShow: true },
+  { key: "override_ins", label: "Override INS", category: "Parameter", valueKind: "number", alwaysShow: true },
+  { key: "override_wlp", label: "Override WLP", category: "Parameter", valueKind: "number", alwaysShow: true },
+
+  { key: "bonus_defense", label: "Bonus Defense", category: "Parameter", valueKind: "number", alwaysShow: true },
+  { key: "bonus_magic_defense", label: "Bonus Magic Defense", category: "Parameter", valueKind: "number", alwaysShow: true },
+  { key: "override_defense", label: "Override Defense", category: "Parameter", valueKind: "number", alwaysShow: true },
+  { key: "override_magic_defense", label: "Override Magic Defense", category: "Parameter", valueKind: "number", alwaysShow: true },
+
+  { key: "defense", label: "Defense", category: "Parameter", valueKind: "number", alwaysShow: true },
+  { key: "magic_defense", label: "Magic Defense", category: "Parameter", valueKind: "number", alwaysShow: true },
+
   // Resources
   { key: "current_hp", label: "Current HP", category: "Resource", valueKind: "number" },
   { key: "current_mp", label: "Current MP", category: "Resource", valueKind: "number" },
@@ -738,11 +758,14 @@ const FOCUSED_KEY_PATTERNS = [
     const props = actor?.system?.props ?? {};
     const hasProp = Object.prototype.hasOwnProperty.call(props, key);
 
-    // For base aliases, only include them when the actor actually has that key.
-    // This prevents suggesting base_dex on an actor that only uses dex_base.
+    // Base aliases are special because some actors use dex_base,
+    // while your preferred wording may be base_dex.
     const isBaseAlias = /^(base_(dex|mig|ins|wlp)|(dex|mig|ins|wlp)_base)$/i.test(key);
 
-    if (isBaseAlias && !hasProp) return null;
+    // If this is a base alias, only include it when:
+    // - the actor actually owns the key, OR
+    // - the row explicitly says alwaysShow.
+    if (isBaseAlias && !hasProp && row.alwaysShow !== true) return null;
 
     return {
       key,
@@ -815,8 +838,11 @@ const FOCUSED_KEY_PATTERNS = [
 
     if (/^(current|max)_(hp|mp|ip)$/i.test(key)) rank += 4500;
     if (/^(base_(dex|mig|ins|wlp)|(dex|mig|ins|wlp)_base)$/i.test(key)) rank += 4300;
-    if (/^(bonus|override)_(dex|mig|ins|wlp)$/i.test(key)) rank += 4200;
-    if (/^(base|bonus|override)_(defense|magic_defense)$/i.test(key)) rank += 4100;
+    if (/^bonus_(dex|mig|ins|wlp)$/i.test(key)) rank += 4700;
+    if (/^override_(dex|mig|ins|wlp)$/i.test(key)) rank += 4600;
+    if (/^(bonus|override)_(defense|magic_defense)$/i.test(key)) rank += 4450;
+    if (/^(defense|magic_defense)$/i.test(key)) rank += 4350;
+    if (/^base_(dex|mig|ins|wlp)$/i.test(key) || /^(dex|mig|ins|wlp)_base$/i.test(key)) rank += 4300;
 
     if (/^attack_accuracy_mod_/i.test(key)) rank += 3500;
     if (/^extra_damage_mod_/i.test(key)) rank += 3400;
@@ -844,10 +870,45 @@ const FOCUSED_KEY_PATTERNS = [
     return rank;
   }
 
+    function focusedEntryMatchesQuery(entry = {}, query = "") {
+    const q = safeString(query).toLowerCase();
+    if (!q) return true;
+
+    const key = getEntryKey(entry).toLowerCase();
+
+    const text = [
+      key,
+      entry.label,
+      entry.category,
+      entry.valueKind,
+      getEntrySections(entry).join(" ")
+    ]
+      .join(" ")
+      .toLowerCase();
+
+    // Strong match: normal typing behavior.
+    if (key.includes(q)) return true;
+    if (text.includes(q)) return true;
+
+    // Small convenience aliases.
+    if (q === "bonus" && /^bonus_/i.test(key)) return true;
+    if (q === "override" && /^override_/i.test(key)) return true;
+    if (q === "base" && (/^base_/i.test(key) || /_base$/i.test(key))) return true;
+    if (q === "current" && /^current_/i.test(key)) return true;
+    if (q === "max" && /^max_/i.test(key)) return true;
+    if (q === "resource" && /^(current|max)_(hp|mp|ip)$/i.test(key)) return true;
+    if (q === "def" && /(defense|magic_defense)/i.test(key)) return true;
+    if (q === "mdef" && /magic_defense/i.test(key)) return true;
+
+    return false;
+  }
+
   function applyFocusedSuggestionProfile(entries = [], options = {}) {
     if (!CFG.focusedActorModifierSuggestions) {
       return dedupeFocusedEntries(entries);
     }
+
+    const q = safeString(options.query);
 
     const manualEntries = buildFocusedManualEntries(options.actor ?? null);
 
@@ -855,10 +916,14 @@ const FOCUSED_KEY_PATTERNS = [
       ...asArray(entries),
       ...manualEntries
     ]
-      .filter(entry => !CFG.showOnlyFocusedSuggestions || isFocusedSuggestionEntry(entry));
+      .filter(entry => !CFG.showOnlyFocusedSuggestions || isFocusedSuggestionEntry(entry))
+      // IMPORTANT:
+      // Once the user types, only keep rows that actually match what they typed.
+      // This fixes "bonus" still showing current_hp / max_hp / weapon efficiency.
+      .filter(entry => focusedEntryMatchesQuery(entry, q));
 
     return dedupeFocusedEntries(focused)
-      .sort((a, b) => focusedRank(b, options.query) - focusedRank(a, options.query));
+      .sort((a, b) => focusedRank(b, q) - focusedRank(a, q));
   }
 
   function getSuggestions(query = "", options = {}) {
