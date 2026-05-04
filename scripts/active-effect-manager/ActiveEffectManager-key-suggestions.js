@@ -37,19 +37,114 @@
   // "path"  => system.props.defense
   const SUGGESTION_VALUE_MODE = "short";
 
-  const CFG = {
-    enabled: true,
-    limit: 12,
-    cacheMs: 8000,
-    hookNames: [
-      "renderActiveEffectConfig",
-      "renderCustomActiveEffectConfig"
-    ],
-    refreshOnRender: true,
-    includeLegacyConditionKeys: false,
-    includeReadOnly: false,
-    suggestionsOnly: false
-  };
+const CFG = {
+  enabled: true,
+  limit: 12,
+  cacheMs: 8000,
+
+  // NEW:
+  // Keep the dropdown focused on actor modifier keys only.
+  focusedActorModifierSuggestions: true,
+
+  // If true, hide broad actor/item keys such as gacha_rate_junk,
+  // accessory_title_percentage, option_advanceConditions, etc.
+  showOnlyFocusedSuggestions: true,
+
+  // Add important actor resource/base keys even if they are outside the Status tab.
+  includeFocusedFallbackKeys: true,
+
+  hookNames: [
+    "renderActiveEffectConfig",
+    "renderCustomActiveEffectConfig"
+  ],
+  refreshOnRender: true,
+  includeLegacyConditionKeys: false,
+  includeReadOnly: false,
+  suggestionsOnly: false
+};
+
+const FOCUSED_STATUS_SECTION_NAMES = [
+  "Attack Accuracy",
+  "Extra Damage",
+  "Damage Reduction",
+  "Parameter",
+  "Miscellaneous",
+  "Type Affinity",
+  "Weapon Efficiency",
+  "Condition Affinity",
+  "Condition Status"
+];
+
+const FOCUSED_BLOCKED_KEYS = new Set([
+  "",
+  "status_tab",
+  "active_effect_list",
+  "type_affinity_panel",
+  "efficiency_tab",
+  "condition_affinity_panel",
+  "condition_status_panel",
+  "NA",
+  "RS",
+  "IM"
+]);
+
+const FOCUSED_EXTRA_KEYS = [
+  // Resources
+  { key: "current_hp", label: "Current HP", category: "Resource", valueKind: "number" },
+  { key: "current_mp", label: "Current MP", category: "Resource", valueKind: "number" },
+  { key: "current_ip", label: "Current IP", category: "Resource", valueKind: "number" },
+
+  { key: "max_hp", label: "Max HP", category: "Resource", valueKind: "number" },
+  { key: "max_mp", label: "Max MP", category: "Resource", valueKind: "number" },
+  { key: "max_ip", label: "Max IP", category: "Resource", valueKind: "number" },
+
+  // Your preferred base naming style.
+  { key: "base_dex", label: "Base DEX", category: "Base Attribute", valueKind: "number" },
+  { key: "base_mig", label: "Base MIG", category: "Base Attribute", valueKind: "number" },
+  { key: "base_ins", label: "Base INS", category: "Base Attribute", valueKind: "number" },
+  { key: "base_wlp", label: "Base WLP", category: "Base Attribute", valueKind: "number" },
+
+  // Current Keren/Hina style naming fallback.
+  { key: "dex_base", label: "Base DEX", category: "Base Attribute", valueKind: "number" },
+  { key: "mig_base", label: "Base MIG", category: "Base Attribute", valueKind: "number" },
+  { key: "ins_base", label: "Base INS", category: "Base Attribute", valueKind: "number" },
+  { key: "wlp_base", label: "Base WLP", category: "Base Attribute", valueKind: "number" }
+];
+
+const FOCUSED_KEY_PATTERNS = [
+  // Attack Accuracy
+  /^attack_accuracy_mod_(all|melee|ranged|magic)$/i,
+
+  // Extra Damage
+  /^extra_damage_mod_(all|melee|ranged|spell|physical|air|bolt|dark|earth|fire|ice|light|poison|arcane|bow|brawling|dagger|firearm|flail|heavy|spear|sword|thrown)$/i,
+
+  // Damage Reduction
+  /^damage_receiving_(mod|percentage)_(all|melee|range|ranged|physical|air|bolt|dark|earth|fire|ice|light|poison)$/i,
+
+  // Parameters
+  /^(base|bonus|override)_(defense|magic_defense)$/i,
+  /^(bonus|override)_(dex|mig|ins|wlp)$/i,
+
+  // Extra resource/base keys
+  /^(current|max)_(hp|mp|ip)$/i,
+  /^base_(dex|mig|ins|wlp)$/i,
+  /^(dex|mig|ins|wlp)_base$/i,
+
+  // Miscellaneous
+  /^(minimum_critical_dice|override_damage_type|critical_dice_range|lifesteal_percentage|manadrain_percentage|critical_damage_bonus|lifesteal_value|manadrain_value|critical_damage_multiplier|ip_reduction_value|character_exp_multiplier|character_zenit_multiplier|enmity|activation)$/i,
+
+  // Type Affinity
+  /^affinity_\d+$/i,
+
+  // Weapon Efficiency
+  /^(arcane|bow|brawling|dagger|firearm|flail|heavy|spear|sword|thrown)_ef$/i,
+
+  // Condition Affinity
+  /^condition_[a-z0-9_]+$/i,
+
+  // Condition Status
+  /^[a-z0-9_]+_status$/i
+];
 
   if (globalThis[PATCH_KEY]) {
     console.warn(TAG, "Already installed. Skipping duplicate install.");
@@ -462,13 +557,19 @@
             ? catalogue.getAll({ cloneResult: false })
             : [];
 
-      const cleanEntries = Array.isArray(entries) ? entries : [];
+      const rawEntries = Array.isArray(entries) ? entries : [];
+
+      const focusedEntries = applyFocusedSuggestionProfile(rawEntries, {
+        actor,
+        actorUuid,
+        query: ""
+      });
 
       STATE.refreshCache.set(cacheKey, {
         actorUuid,
         actorName: actor?.name ?? null,
         refreshedAt: now,
-        entries: cleanEntries
+        entries: focusedEntries
       });
 
       const report = {
@@ -476,8 +577,9 @@
         cached: false,
         actorUuid,
         actorName: actor?.name ?? null,
-        count: cleanEntries.length,
-        entries: cleanEntries
+        count: focusedEntries.length,
+        rawCountBeforeFocusFilter: rawEntries.length,
+        entries: focusedEntries
       };
 
       STATE.lastRefreshReport = report;
@@ -521,10 +623,242 @@
             ? catalogue.getAll({ cloneResult: false })
             : [];
 
-      return Array.isArray(rows) ? rows : [];
+      return applyFocusedSuggestionProfile(Array.isArray(rows) ? rows : [], options);
     } catch (_e) {
       return [];
     }
+  }
+
+    // --------------------------------------------------------------------------
+  // Focused actor modifier suggestion profile
+  // --------------------------------------------------------------------------
+
+  function plainText(value) {
+    let s = String(value ?? "");
+
+    s = s.replace(/<style[\s\S]*?<\/style>/gi, "");
+    s = s.replace(/<script[\s\S]*?<\/script>/gi, "");
+    s = s.replace(/<[^>]*>/g, " ");
+    s = s.replace(/\$\{[\s\S]*?\}\$/g, " ");
+    s = s.replace(/&nbsp;/gi, " ");
+    s = s.replace(/\s+/g, " ").trim();
+
+    return s;
+  }
+
+  function getEntryKey(entry = {}) {
+    const key = safeString(
+      entry.activeEffectKey ??
+      entry.key ??
+      entry.rawKey ??
+      ""
+    );
+
+    if (key) return key;
+
+    const propPath = safeString(entry.propPath);
+    if (propPath.startsWith("system.props.")) {
+      return propPath.slice("system.props.".length);
+    }
+
+    return propPath;
+  }
+
+  function getEntrySections(entry = {}) {
+    return [
+      entry.category,
+      entry.section,
+      entry.sectionPath,
+      entry.tabName,
+      entry.parentTitle,
+      entry.source,
+      ...(Array.isArray(entry.tags) ? entry.tags : [])
+    ]
+      .flat(Infinity)
+      .map(plainText)
+      .filter(Boolean);
+  }
+
+  function hasFocusedStatusSection(entry = {}) {
+    const sections = getEntrySections(entry)
+      .map(s => s.toLowerCase());
+
+    return FOCUSED_STATUS_SECTION_NAMES.some(sectionName => {
+      const wanted = sectionName.toLowerCase();
+      return sections.some(s => s === wanted || s.includes(wanted));
+    });
+  }
+
+  function isBlockedFocusedKey(key, entry = {}) {
+    const clean = safeString(key);
+
+    if (!clean) return true;
+    if (FOCUSED_BLOCKED_KEYS.has(clean)) return true;
+
+    // Avoid option rows like NA / RS / IM, or tiny raw option IDs.
+    if (/^[A-Z]{1,3}$/.test(clean)) return true;
+
+    // Avoid panel/tab/container keys.
+    if (/_panel$/i.test(clean)) return true;
+    if (/_tab$/i.test(clean)) return true;
+    if (/active_effect_list/i.test(clean)) return true;
+
+    const type = safeString(entry.type ?? entry.fieldType).toLowerCase();
+
+    if (["tab", "panel", "activeeffectcontainer", "dynamictable"].includes(type)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  function matchesFocusedKeyPattern(key) {
+    return FOCUSED_KEY_PATTERNS.some(re => re.test(String(key ?? "")));
+  }
+
+  function isFocusedSuggestionEntry(entry = {}) {
+    if (!CFG.focusedActorModifierSuggestions) return true;
+
+    const key = getEntryKey(entry);
+    if (isBlockedFocusedKey(key, entry)) return false;
+
+    // Strongest filter: exact mechanical key pattern.
+    if (matchesFocusedKeyPattern(key)) return true;
+
+    // Backup filter: field catalogue says this came from a wanted Status tab section.
+    if (hasFocusedStatusSection(entry)) return true;
+
+    return false;
+  }
+
+  function makeFocusedManualEntry(row = {}, actor = null) {
+    const key = safeString(row.key);
+    if (!key) return null;
+
+    const props = actor?.system?.props ?? {};
+    const hasProp = Object.prototype.hasOwnProperty.call(props, key);
+
+    // For base aliases, only include them when the actor actually has that key.
+    // This prevents suggesting base_dex on an actor that only uses dex_base.
+    const isBaseAlias = /^(base_(dex|mig|ins|wlp)|(dex|mig|ins|wlp)_base)$/i.test(key);
+
+    if (isBaseAlias && !hasProp) return null;
+
+    return {
+      key,
+      activeEffectKey: key,
+      propPath: `system.props.${key}`,
+      label: row.label,
+      category: row.category,
+      section: [row.category],
+      valueKind: row.valueKind ?? "number",
+      currentValue: hasProp ? props[key] : undefined,
+      recommendedChange: {
+        key,
+        mode: CONST?.ACTIVE_EFFECT_MODES?.ADD ?? 2,
+        value: "1",
+        priority: 20
+      },
+      isRecommended: true,
+      isFocusedManual: true,
+      source: "Focused Actor Modifier"
+    };
+  }
+
+  function buildFocusedManualEntries(actor = null) {
+    if (!CFG.includeFocusedFallbackKeys) return [];
+
+    return FOCUSED_EXTRA_KEYS
+      .map(row => makeFocusedManualEntry(row, actor))
+      .filter(Boolean);
+  }
+
+  function dedupeFocusedEntries(entries = []) {
+    const byKey = new Map();
+
+    for (const entry of asArray(entries)) {
+      const key = getEntryKey(entry);
+      if (!key) continue;
+
+      const existing = byKey.get(key);
+
+      if (!existing) {
+        byKey.set(key, entry);
+        continue;
+      }
+
+      // Prefer manual focused entries, then recommended entries.
+      const existingScore =
+        (existing.isFocusedManual ? 100 : 0) +
+        (existing.isRecommended ? 20 : 0);
+
+      const nextScore =
+        (entry.isFocusedManual ? 100 : 0) +
+        (entry.isRecommended ? 20 : 0);
+
+      if (nextScore > existingScore) {
+        byKey.set(key, entry);
+      }
+    }
+
+    return Array.from(byKey.values());
+  }
+
+  function focusedRank(entry = {}, query = "") {
+    const key = getEntryKey(entry);
+    const q = safeString(query).toLowerCase();
+
+    let rank = 0;
+
+    if (entry.isFocusedManual) rank += 10000;
+    if (hasFocusedStatusSection(entry)) rank += 5000;
+
+    if (/^(current|max)_(hp|mp|ip)$/i.test(key)) rank += 4500;
+    if (/^(base_(dex|mig|ins|wlp)|(dex|mig|ins|wlp)_base)$/i.test(key)) rank += 4300;
+    if (/^(bonus|override)_(dex|mig|ins|wlp)$/i.test(key)) rank += 4200;
+    if (/^(base|bonus|override)_(defense|magic_defense)$/i.test(key)) rank += 4100;
+
+    if (/^attack_accuracy_mod_/i.test(key)) rank += 3500;
+    if (/^extra_damage_mod_/i.test(key)) rank += 3400;
+    if (/^damage_receiving_/i.test(key)) rank += 3300;
+    if (/^affinity_\d+$/i.test(key)) rank += 2500;
+    if (/_ef$/i.test(key)) rank += 2400;
+    if (/^condition_/i.test(key) || /_status$/i.test(key)) rank += 2300;
+
+    if (q) {
+      const text = [
+        key,
+        entry.label,
+        entry.category,
+        getEntrySections(entry).join(" ")
+      ].join(" ").toLowerCase();
+
+      if (key.toLowerCase() === q) rank += 3000;
+      else if (key.toLowerCase().startsWith(q)) rank += 2000;
+      else if (key.toLowerCase().includes(q)) rank += 1200;
+      else if (text.includes(q)) rank += 400;
+    }
+
+    if (entry.isRecommended) rank += 100;
+
+    return rank;
+  }
+
+  function applyFocusedSuggestionProfile(entries = [], options = {}) {
+    if (!CFG.focusedActorModifierSuggestions) {
+      return dedupeFocusedEntries(entries);
+    }
+
+    const manualEntries = buildFocusedManualEntries(options.actor ?? null);
+
+    const focused = [
+      ...asArray(entries),
+      ...manualEntries
+    ]
+      .filter(entry => !CFG.showOnlyFocusedSuggestions || isFocusedSuggestionEntry(entry));
+
+    return dedupeFocusedEntries(focused)
+      .sort((a, b) => focusedRank(b, options.query) - focusedRank(a, options.query));
   }
 
   function getSuggestions(query = "", options = {}) {
@@ -532,31 +866,36 @@
     const q = safeString(query);
     const limit = Number(options.limit ?? CFG.limit) || CFG.limit;
 
+    const rawRows = [];
+
+    // First ask the field catalogue.
     try {
       if (typeof catalogue?.getSuggestions === "function") {
         const rows = catalogue.getSuggestions(q, {
-          limit,
+          limit: Math.max(limit * 4, 40),
           cloneResult: false
         });
 
-        if (Array.isArray(rows) && rows.length) {
-          return rows
-            .map(normalizeSuggestionEntry)
-            .filter(Boolean)
-            .slice(0, limit);
+        if (Array.isArray(rows)) {
+          rawRows.push(...rows);
         }
       }
     } catch (_e) {}
 
-    return getSessionEntries(options)
-      .map(entry => ({
-        entry,
-        score: scoreLocalSuggestion(q, entry)
-      }))
-      .filter(row => row.score > 0 || !q)
-      .sort((a, b) => b.score - a.score)
-      .map(row => normalizeSuggestionEntry(row.entry))
+    // Then add cached/session rows so focused keys are still available even
+    // when the catalogue's broad search would otherwise rank junk above them.
+    rawRows.push(...getSessionEntries(options));
+
+    const focusedRows = applyFocusedSuggestionProfile(rawRows, {
+      actor: options.actor ?? options.session?.actor ?? null,
+      actorUuid: options.actorUuid ?? options.session?.actor?.uuid ?? null,
+      query: q
+    });
+
+    return focusedRows
+      .map(normalizeSuggestionEntry)
       .filter(Boolean)
+      .sort((a, b) => focusedRank(b.entry ?? b, q) - focusedRank(a.entry ?? a, q))
       .slice(0, limit);
   }
 
