@@ -56,11 +56,11 @@
 
     useLibWrapper: {
       name: "AE Conditional Gate Prefer libWrapper",
-      hint: "Uses libWrapper when available, with direct prototype patching as fallback.",
+      hint: "Usually leave this OFF. AE Syntax owns the libWrapper patch; AE Gate should use the direct backup layer to avoid startup self-conflict warnings.",
       scope: "world",
       config: true,
       type: Boolean,
-      default: true
+      default: false
     }
   };
 
