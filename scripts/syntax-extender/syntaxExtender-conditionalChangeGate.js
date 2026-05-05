@@ -56,7 +56,7 @@
 
     useLibWrapper: {
       name: "AE Conditional Gate Prefer libWrapper",
-      hint: "Usually leave this OFF. AE Syntax owns the libWrapper patch; AE Gate should use the direct backup layer to avoid startup self-conflict warnings.",
+      hint: "Usually leave this OFF. AE Syntax and AE Gate both touch the same Active Effect methods, so direct patching avoids libWrapper self-conflict warnings.",
       scope: "world",
       config: true,
       type: Boolean,

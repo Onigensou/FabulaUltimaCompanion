@@ -78,11 +78,11 @@
 
     useLibWrapper: {
       name: "AE Syntax Prefer libWrapper",
-      hint: "Uses libWrapper when available, with direct prototype patching as fallback.",
+      hint: "Usually leave this OFF when AE Conditional Gate is also installed. Both systems patch the same Active Effect methods, so direct patching avoids libWrapper self-conflict warnings.",
       scope: "world",
       config: true,
       type: Boolean,
-      default: true
+      default: false
     }
   };
 
